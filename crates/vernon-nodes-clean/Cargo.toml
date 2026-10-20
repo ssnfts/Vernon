@@ -1,0 +1,14 @@
+﻿[package]
+name = "vernon-nodes-clean"
+description = "Stage 2 Clean/Align: decimate, outliers, coarse+ICP alignment, signed deviation reports, watertight wrap"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+vernon-core.workspace = true
+vernon-graph.workspace = true
+vernon-io.workspace = true
+glam.workspace = true
+serde.workspace = true
+serde_json.workspace = true

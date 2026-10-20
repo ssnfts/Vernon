@@ -1,0 +1,13 @@
+﻿[package]
+name = "vernon-nodes-solar"
+description = "Stage 7/7b Solar and Flatten: sun position, sky model, incident radiation, surface temperature vs HDT, panel flattening"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+vernon-core.workspace = true
+vernon-graph.workspace = true
+glam.workspace = true
+serde.workspace = true
+serde_json.workspace = true

@@ -1,0 +1,14 @@
+﻿[package]
+name = "vernon-nodes-surface"
+description = "Stage 3 Mesh to Surface: quad remesh, SubD, auto-surfacing, mesh sections, curve fit, loft, STEP hand-off"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+vernon-core.workspace = true
+vernon-graph.workspace = true
+vernon-io.workspace = true
+glam.workspace = true
+serde.workspace = true
+serde_json.workspace = true

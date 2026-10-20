@@ -1,0 +1,17 @@
+﻿[package]
+name = "vernon-cli"
+description = "Headless Vernon: cook .vrn graphs, list node types"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "vernon-cli"
+path = "src/main.rs"
+
+[dependencies]
+vernon-core.workspace = true
+vernon-graph.workspace = true
+vernon-io.workspace = true
+anyhow.workspace = true
+serde_json.workspace = true

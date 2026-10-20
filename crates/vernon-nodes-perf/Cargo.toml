@@ -1,0 +1,13 @@
+﻿[package]
+name = "vernon-nodes-perf"
+description = "Stage 8 Performance: aero calculator, point-mass lap model, coastdown and pressure-tap validation"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+vernon-core.workspace = true
+vernon-graph.workspace = true
+glam.workspace = true
+serde.workspace = true
+serde_json.workspace = true

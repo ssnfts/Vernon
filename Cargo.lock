@@ -3023,6 +3023,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "vernon-cli"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "serde_json",
+ "vernon-core",
+ "vernon-graph",
+ "vernon-io",
+]
+
+[[package]]
 name = "vernon-core"
 version = "0.1.0"
 dependencies = [
@@ -3050,6 +3061,118 @@ version = "0.1.0"
 dependencies = [
  "glam",
  "thiserror 2.0.21",
+ "vernon-core",
+]
+
+[[package]]
+name = "vernon-nodes-capture"
+version = "0.1.0"
+dependencies = [
+ "glam",
+ "serde",
+ "serde_json",
+ "vernon-core",
+ "vernon-graph",
+ "vernon-io",
+]
+
+[[package]]
+name = "vernon-nodes-cfd"
+version = "0.1.0"
+dependencies = [
+ "glam",
+ "serde",
+ "serde_json",
+ "vernon-core",
+ "vernon-graph",
+]
+
+[[package]]
+name = "vernon-nodes-clean"
+version = "0.1.0"
+dependencies = [
+ "glam",
+ "serde",
+ "serde_json",
+ "vernon-core",
+ "vernon-graph",
+ "vernon-io",
+]
+
+[[package]]
+name = "vernon-nodes-fea"
+version = "0.1.0"
+dependencies = [
+ "glam",
+ "serde",
+ "serde_json",
+ "vernon-core",
+ "vernon-graph",
+]
+
+[[package]]
+name = "vernon-nodes-geo"
+version = "0.1.0"
+dependencies = [
+ "glam",
+ "serde",
+ "serde_json",
+ "vernon-core",
+ "vernon-graph",
+ "vernon-io",
+]
+
+[[package]]
+name = "vernon-nodes-perf"
+version = "0.1.0"
+dependencies = [
+ "glam",
+ "serde",
+ "serde_json",
+ "vernon-core",
+ "vernon-graph",
+]
+
+[[package]]
+name = "vernon-nodes-print"
+version = "0.1.0"
+dependencies = [
+ "glam",
+ "serde",
+ "serde_json",
+ "vernon-core",
+ "vernon-graph",
+ "vernon-io",
+]
+
+[[package]]
+name = "vernon-nodes-solar"
+version = "0.1.0"
+dependencies = [
+ "glam",
+ "serde",
+ "serde_json",
+ "vernon-core",
+ "vernon-graph",
+]
+
+[[package]]
+name = "vernon-nodes-surface"
+version = "0.1.0"
+dependencies = [
+ "glam",
+ "serde",
+ "serde_json",
+ "vernon-core",
+ "vernon-graph",
+ "vernon-io",
+]
+
+[[package]]
+name = "vernon-render"
+version = "0.1.0"
+dependencies = [
+ "glam",
  "vernon-core",
 ]
 

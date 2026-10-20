@@ -1,0 +1,10 @@
+﻿[package]
+name = "vernon-render"
+description = "Vernon viewport renderer: offscreen wgpu mesh rendering for egui viewports"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+vernon-core.workspace = true
+glam.workspace = true
