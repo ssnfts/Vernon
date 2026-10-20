@@ -1,0 +1,25 @@
+[workspace]
+resolver = "2"
+members = ["crates/*", "app"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+repository = "https://github.com/vernon3d/vernon"
+rust-version = "1.80"
+
+[workspace.dependencies]
+glam = { version = "0.30", features = ["serde"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+indexmap = { version = "2", features = ["serde"] }
+thiserror = "2"
+anyhow = "1"
+rayon = "1"
+vernon-core = { path = "crates/vernon-core" }
+vernon-graph = { path = "crates/vernon-graph" }
+vernon-io = { path = "crates/vernon-io" }
+
+[profile.dev.package."*"]
+opt-level = 2

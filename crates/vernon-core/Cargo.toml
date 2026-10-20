@@ -1,0 +1,12 @@
+[package]
+name = "vernon-core"
+description = "Vernon geometry kernel: points, primitives, attributes, groups, reports"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+glam.workspace = true
+serde.workspace = true
+indexmap.workspace = true
+thiserror.workspace = true

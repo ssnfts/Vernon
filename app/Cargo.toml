@@ -1,0 +1,19 @@
+[package]
+name = "vernon"
+description = "Vernon desktop app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+vernon-core.workspace = true
+vernon-graph.workspace = true
+vernon-io.workspace = true
+eframe = { version = "0.32", default-features = false, features = ["wgpu", "default_fonts", "accesskit"] }
+egui_extras = { version = "0.32" }
+# Default features enable the platform backends (DX12/Vulkan/Metal) eframe leaves off.
+wgpu = "25"
+glam.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
