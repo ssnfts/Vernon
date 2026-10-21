@@ -8,3 +8,12 @@ license.workspace = true
 [dependencies]
 vernon-core.workspace = true
 glam.workspace = true
+# Version-matched to the app (eframe 0.32 + "wgpu" feature => egui-wgpu 0.32, wgpu 25).
+wgpu = "25"
+egui-wgpu = { version = "0.32", default-features = false }
+egui = { version = "0.32", default-features = false }
+bytemuck = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+pollster = "0.4"
+naga = { version = "25", features = ["wgsl-in"] }
