@@ -4,6 +4,8 @@ Clean-room spec. Sources are public pages, papers and regulations listed in sect
 Reference tools are named here for documentation only; they never appear in UI strings (see `CLEAN_ROOM.md`).
 No vendor binary, install folder or help file was inspected. Where a fact reached us only through a search snippet or a
 third-party summary, section 6 says so, and the item is marked "verify" in the golden tests.
+Revision 2 (2026-10-22) extends the interrupted first draft: every arithmetic case was re-run, the report's braking, aero-balance and duct-heat
+rows were added (nodes and tests), regulation and open-source detail was added, and a stray note in test 7 and a node-name slip in section 4 were fixed.
 
 ## 1. Scope and reference tools
 
@@ -17,7 +19,8 @@ and a noise-floor verdict for the cheap physical tests (coastdown, surface-press
 | Vernon reference script (pure Python, ours) | written for this spec | the numbers in section 5 that are marked "ref script" |
 | Surface-pressure puck on a differential gauge | forum posts and an SAE paper by the method's author | on-road Cp spot checks |
 | Tuft flow visualisation | two Chalmers/SAE papers (abstract level) | qualitative attached/separated map |
-| Coastdown regression | US federal regulation text (heavy-vehicle CdA method) and a trade article | CdA and Crr from a speed log |
+| Coastdown regression | US federal regulation text (heavy-vehicle CdA method, two sections) and a trade article | CdA and Crr from a speed log |
+| OpenLAP (open source, GPL-3.0) | repository README only (read 2026-10-22); its source was not used | optional second reference run **as a separate process**; never linked or copied |
 
 Out of scope: transient or single-track (bicycle) models, load transfer, optimal racing line, tyre curves beyond a
 load-sensitivity slope, ride-height/pitch/yaw aero maps (the reference tool omits them too), banking and elevation
@@ -46,6 +49,12 @@ Conventions: SI internally (m, s, kg, N, Pa, W); display km/h and kgf where usef
   channels; export to a spreadsheet. A Chalmers in-house point-mass tool with the same method predicted 78.3 s against a real best of
   83.1 s on one autocross lap (the simulated car was 5.8 percent faster); the authors treat the tool as a delta engine.
 - Limits to preserve: no pitch/yaw/ride-height aero, perfect driver, flat road. Do not claim absolute accuracy better than a few percent.
+- Method family: a Sheffield Hallam paper (abstract only) describes a one-dimensional quasi-steady model with combined tyre-road grip, aero and power
+  limits, a general curve parameter instead of arc length, and an iterative speed solve; it notes that drag and downforce move the braking point.
+  That matches section 3.5 and supports a node that works on any monotone path parameter, so Vernon stores `s` and `ds` explicitly.
+- Open-source second reference: OpenLAP's README (GPL-3.0) also calls its model a simple point mass, takes a track as distance, speed and lateral
+  acceleration or yaw rate (plus optional elevation and banking, both zero-able), a "grip factor" defaulting to 1, optional data filtering (0.5 s
+  suggested) and a mesh size of 1-5 m. Vernon adopts the same 1-5 m mesh range; nothing else is taken from it.
 
 Vernon vehicle parameters (`vehicle.v1`; V = Vernon-chosen default, not copied from a tool):
 
@@ -75,6 +84,8 @@ Vernon vehicle parameters (`vehicle.v1`; V = Vernon-chosen default, not copied f
   closed or open, data frequency in Hz, a "g-force compensator" (values above 1.0 suggested for hairpins), approximate track
   length, analysis mode (isolate the fastest lap vs process everything), smoothing factor (default 3). The `.OLTra` internals are
   not published on the page.
+- Open-source tracks (OpenLAP README) are built from logged distance, speed and lateral acceleration or yaw rate; Vernon's GPS and
+  log importers accept the same channels (curvature from yaw rate: kappa = omega/v, from lateral acceleration: kappa = a_y/v2).
 - Vernon equivalents: `track.v1` stores `closed`, arc length `s[]`, signed curvature `kappa[]` (left positive), `ds[]`, and a
   segment list (type, length, radius); import from a polyline/curve, from GPS, or from a hand-entered segment list.
 
@@ -82,7 +93,9 @@ Vernon vehicle parameters (`vehicle.v1`; V = Vernon-chosen default, not copied f
 Quantities: q = 1/2 rho v2; D = q CdA; F_down = q ClA; P_aero = 1/2 rho CdA v3; corner v = sqrt(mu g R / (1 - mu rho ClA R / 2m));
 braking a = mu (g + 1/2 rho ClA v2 / m) + 1/2 rho CdA v2 / m; Cp = (p - p_inf)/q; duct heat Q = mdot cp dT. Every worked number in the note
 (rho 1.127 and 1.098, q at 200 km/h, corner gains +0.5/+2.0/+4.2 percent, top speed 262.7 -> 256.3 km/h, ~1340 N at 250 km/h)
-reproduces to the printed rounding; see golden tests 1-4. Two caveats found while reproducing them: the +2.0 percent figure is
+reproduces to the printed rounding; see golden tests 1-4. The same table's other rows are covered by tests 21-23: braking deceleration
+(1.142 g at 200 km/h for the example car, +14.2 percent over a no-aero stop), aero balance (front percent = L_f/(L_f+L_r) x 100) and duct heat
+(mdot = rho V A, Q = mdot c_p dT, c_p about 1005 J/(kg K)). Two caveats found while reproducing them: the +2.0 percent figure is
 +2.04 percent unrounded, and the top-speed pair assumes rolling resistance on weight only (`rr_includes_downforce = false`).
 
 ### 2.4 Coastdown (regression of a speed log)
@@ -92,13 +105,23 @@ reproduces to the printed rounding; see golden tests 1-4. Two caveats found whil
   directions and paired, wind component along the road at or below 6 mph (about 2.7 m/s), road surface at or below 50 C,
   elevation logged if grade exceeds 0.02 percent, high-speed and low-speed windows fitted, outlier filter, yaw filter within 1.0 degree of the
   median, CdA values beyond 2 SD dropped, at least 24 points retained.
+- The sister heavy-vehicle rule (40 CFR 1066.310, same SAE basis) adds: at least 16 valid runs, 8 per direction, and at least 8 per direction after
+  outlier removal; start at or above about 70 mph and log down to 15 mph or lower; wind forecast not above 6 mph; speed sampled at about 10 Hz; each run
+  duration within 2 SD of its direction's mean; grade included as a function of distance if it varies by more than 0.02 percent. Force per interval
+  F_i = -M_e dv/dt; the fit is F_i (grade-corrected) against v2, intercept = constant resistance, slope = drag term; CdA = 2 x slope / rho, with a stated
+  reference density of 1.17 kg/m3 and a temperature/pressure correction (the rendered formula was garbled, so Vernon always uses the measured rho per run).
+- Field precision: a conference study of 19 vehicles fitting Cd and rolling resistance to road coastdowns reports mean accuracy error under 5.2 percent and
+  precision error under 6.1 percent (abstract only). A 2025 SAE paper argues for a physically grounded model with few free parameters; its
+  search summary says a third free speed exponent on rolling resistance gave unrealistically low drag. Hence the two-term default in 3.8.
 - Known noise sources: wind, driveline drag, tyre temperature, mass and rotational inertia, grade, density. Useful for large
   changes (wing on/off), not for trims.
 
 ### 2.5 Surface-pressure puck
 - Observable: a small flat puck taped to a panel, a tube to a low-range differential gauge, the other side to a static reference
   (a pitot-type static port or a sealed vessel). Read the steady gauge value at a fixed speed. Total cost under US$100 as reported by the
-  author; recommended gauge range about 3 in. w.c. for general use and 0-1 in. w.c. for pure aero work. A reported rear-door reading
+  author; recommended gauge range about 3 in. w.c. for general use and 0-1 in. w.c. for pure aero work. The kit list on the author's forum post is a
+  two-port differential gauge, the puck, a sealed vessel as the static reference, a ball valve and hose; pucks go on panels above and below the car
+  (both signs of pressure), and the same post prices the kit at US$100-200, so "under US$100" in the note is the low end. 1 psi = 27.69 in. w.c. A reported rear-door reading
   moved from about -91 Pa to -103 Pa after a deliberate separation-inducing device. A gauge cannot follow fast vortex shedding.
 - Repeatability evidence (search summary of the same author's posts): -91 Pa on a logger vs -73 Pa on the gauge for the same panel,
   attributed partly to gusts and a hotter day, so a spot check carries a floor of tens of pascals.
@@ -147,6 +170,9 @@ forward-backward family: Chalmers thesis flowchart, Rossi 2020, the FSAE QSS pap
 7. Channels: a_x = (v_{i+1}^2 - v_i^2)/(2 ds); a_y = v2 kappa; mode (limit/accel/brake/cruise); F_drive, F_brake, D, L, N, gear and rpm if geared,
    P_wheel = F_drive v; energy = sum max(P_wheel,0) dt / eta_drive (optional regeneration fraction on braking). Event tables: apex speed per corner
    segment (minimum of v), end-of-straight speed (maximum before the next brake zone), segment times.
+Constant-radius arcs: at v = v_lim there is no friction left for drag and rolling resistance, so a_acc < 0 and the speed sags a hair below v_lim
+(stadium bend: 71.58 -> 71.55 km/h, about 0.005 s per lap). Keep it (flag `hold_limit_speed` = false); holding v = v_lim exactly is a legal option and the
+documented difference to test against a reference tool.
 Discretisation rule: ds <= R_min/20, never above 5 m; lap time drifts by under 0.1 percent between ds = 0.5 and 5 m on the golden track (section 5, test 8).
 
 ### 3.6 Sweeps and sensitivities
@@ -190,7 +216,12 @@ Per frame: detect tuft segments (ridge or threshold plus skeleton), estimate ima
 CFD streamline direction. Classes (Vernon-proposed placeholders, no published thresholds): attached if |dtheta| <= 30 degrees and the angle SD over the sequence <= 15 degrees; reversed if |dtheta| > 120 degrees;
 separated/unsteady if SD > 30 degrees. Output a per-tuft table and a coloured map. Cite the research method (continuous capture, orientation measurement, streamline, separation line, saddle point), not any numbers.
 
-## 4. Proposed Vernon nodes (stage `perf`, 16 nodes)
+### 3.11 Aero balance and duct heat (closed-form rows of the report table)
+Aero balance: front percent = 100 L_f/(L_f + L_r), with L_f, L_r from per-axle ClA (CFD force split about the axle line) at the same q; report it per speed and warn
+outside 35-65 percent (Vernon-proposed band; a point-mass lap model ignores balance, so the number is advisory). Duct heat: mdot = rho V A (V the mean duct speed,
+A the cross-section), Q = mdot c_p dT with c_p = 1005 J/(kg K) (dry air near room temperature); also report the inverse, dT = Q/(mdot c_p).
+
+## 4. Proposed Vernon nodes (stage `perf`, 17 nodes)
 
 Labels are generic. `emulates` strings may name the reference tool; UI strings may not. **now** = implement with a real algorithm; **wb** = white-box stub first (ports and params correct).
 Contracts (Json): `env.v1` {rho, T_c, p_pa, rh}, `vehicle.v1` (table above), `track.v1`, `lap_result.v1`, `coast_fit.v1`, `cp_table.v1`, `perf_report.v1`.
@@ -198,10 +229,11 @@ Contracts (Json): `env.v1` {rho, T_c, p_pa, rh}, `vehicle.v1` (table above), `tr
 | Id | Label | Inputs | Outputs | Key params (default; range; unit) | Status |
 |---|---|---|---|---|---|
 | `perf.air_density` | Air Density | none (params) | `env` | `temp_c` (20; -40-60; C), `pressure_pa` (101325; 5e4-1.1e5), `rel_humidity` (0; 0-1), `dry_gas_const` (287.058) | now |
-| `perf.aero_loads` | Aero Loads | `env`, `vehicle` or params | `table` (v, q, drag N, down N, P_aero W), `report` | `cda_m2`, `cla_m2`, `speeds_kmh` (list 50-300), `scale_from_rho` (off) | now |
+| `perf.aero_loads` | Aero Loads | `env`, `vehicle` or params | `table` (v, q, drag N, down N, P_aero W), `report` | `cda_m2`, `cla_m2`, `speeds_kmh` (list 50-300), `scale_from_rho` (off), `cla_front_m2`/`cla_rear_m2` (optional; adds aero-balance column), `brake_mu` (1; 0.2-3; adds braking-decel column, 2.3) | now |
+| `perf.duct_heat` | Duct Heat | `env`, params | `report` (mdot, Q or dT) | `duct_speed_ms` (20; 0-100), `duct_area_m2` (0.01; 1e-4-1), `delta_t_k` (30; 0-200), `cp_j_kgk` (1005; 900-1100), `solve_for` (heat/delta_t) | now |
 | `perf.top_speed` | Top Speed | `env`, `vehicle` | `report` (v_max, power split) | `power_w` (150000), `crr` (0.012), `rr_includes_downforce` (false), `cda_m2` | now |
 | `perf.vehicle` | Vehicle Definition | optional `aero` Json from the airflow stage (CdA, ClA) | `vehicle` | table in 2.1 | now |
-| `perf.gg_envelope` | Grip Envelope | `vehicle`, `env` | `table` (v, a_y max, a_x accel/brake by a_y) | `speeds` (0-v_cap; 20 points), `ay_points` (21) | now |
+| `perf.gg_envelope` | Grip Envelope | `vehicle`, `env` | `table` (v, a_y max, a_x accel/brake by a_y; the a_y = 0 brake column reproduces the note's braking formula) | `speeds` (0-v_cap; 20 points), `ay_points` (21) | now |
 | `perf.corner_limits` | Corner Speed Table | `vehicle`, `env` | `table` (R, v_lim, gain vs no-aero %) | `radii_m` (list 15-500), `compare_cla` (0) | now |
 | `perf.track_from_path` | Track From Path | `curve` Geometry or GPS CSV `file` | `track` | `ds_m` (1; 0.1-20), `smooth_window_m` (15; 0-100), `curvature_gain` (1; 0.5-3), `closed` (auto), `kappa_straight` (0.001), `min_seg_m` (3) | now |
 | `perf.track_from_segments` | Track From Segments | `segments` Json [type, length_m, radius_m] | `track` | `closed` (true), `ds_m` (1) | now |
@@ -216,7 +248,7 @@ Contracts (Json): `env.v1` {rho, T_c, p_pa, rh}, `vehicle.v1` (table above), `tr
 
 Gate rules: (1) warn if |claimed dCdA| < the coastdown minimum detectable change; (2) fail if CFD CdA lies outside the coastdown 95 percent interval by more than 0.05 m2;
 (3) warn if Cp RMS residual > 0.1; (4) always print the lap-time value of the claimed change so the number the next decision needs is in the report.
-Graph shape: `air_density -> vehicle -> lap_sim <- track_from_path`, `lap_sim -> lap_sweep -> validation_gate`, `coastdown_fit` and `pressure_to_cp -> cp_compare` feeding the same gate.
+Graph shape: `air_density -> vehicle -> lap_sim <- track_from_path`, `lap_sim -> lap_sweep -> validation_gate`, `coastdown_fit` and `pressure_cp -> cp_compare` feeding the same gate; `aero_loads`, `top_speed` and `duct_heat` are stand-alone calculators fed by `air_density`.
 
 ## 5. Golden test ideas (arithmetic cases were computed here and can be asserted now; "ref script" = Vernon's own solver, to be replaced by licensed-tool output)
 
@@ -227,10 +259,12 @@ Graph shape: `air_density -> vehicle -> lap_sim <- track_from_path`, `lap_sim ->
 5. Constant-power launch, no drag, no rolling resistance: traction ends at v = P/(m mu g) = 10.9255 m/s at t = 1.1141 s, s = 6.086 m; 0 -> 100 km/h in 4.1579 s. Pure constant power: v(5 s) = 32.733 m/s, s(5 s) = 109.11 m. Open-track solver at ds = 0.5 m matches within 0.5 percent.
 6. Skidpad. R 15.25 m (circle of 360 nodes), mu 1.5, no aero, no rolling resistance: v = 14.9776 m/s, lap 6.3975 s. Solver must match to 1e-6 relative.
 7. Stadium lap (ref script, ds = 1 m): two 400 m straights, two 180-degree bends of R 40 m (length 1051.33 m), closed; m 1400, 150 kW at the wheels, mu 1.0, crr 0.012 on N, no brake cap, e = 0, trapezoid time. Results: base (rho 1.11, CdA 0.64, ClA 0.5)
-   **35.896 s**, v_max 163.56 km/h, v_min 71.55 km/h. Variants: rho 1.225 35.922; ClA 0 35.992; ClA 1.0 35.801; CdA 0.69 35.923; CdA 0.59 35.870; CdA 0 and ClA 0 35.672; mu 1.2 33.959; mass 1500 35.213?? -> use 36.213;
+   **35.896 s**, v_max 163.56 km/h, v_min 71.55 km/h. Variants: rho 1.225 35.922; ClA 0 35.992; ClA 1.0 35.801; CdA 0.69 35.923; CdA 0.59 35.870; CdA 0 and ClA 0 35.672; mu 1.2 33.959; mass 1500 36.213;
    e = 0.05 36.173; brake cap 0.8 g 36.252. Tolerances: +/-0.05 s or 0.15 percent for a different implementation.
+   Speed trace of the base case (node i is s = i m from the start of straight 1; bends are s = 400-526 m and 926-1052 m; the start node is at 71.59 km/h): s = 100 m 120.35 km/h; 200 m 144.23; 300 m 160.77;
+   peak 163.56 at s = 320 m, where braking begins; 399 m 73.39 (end of the brake zone, 80 m long); 463 m (apex) 71.55; 550 m 89.20; 600 m 111.81; 800 m 156.93; 900 m 109.60 (braking). Tolerance 0.5 km/h or 0.3 percent.
 8. Discretisation. Same stadium at ds 0.5, 2, 5 m: 35.901, 35.893, 35.876 s. The solver must stay within 0.1 percent of 35.896 for ds <= 5 m.
-9. Density and power together. Same stadium, rho 1.11 with P fixed at 150 kW: 35.896 s; with P scaled by 1.11/1.225 (k = 1): 36.375 s, +1.3 percent against 35.922 s at 1.225. The engine loss, not the aero density, is most of the lap-time effect.
+9. Density and power together. Same stadium, rho 1.11 with P fixed at 150 kW: 35.896 s; with 150 kW defined at rho_ref 1.225 and scaled by 1.11/1.225 (k = 1, 135.9 kW): 36.375 s, +1.3 percent against 35.922 s at 1.225. The engine loss, not the aero density, is most of the lap-time effect.
 10. Sensitivity (stadium). dt/d(CdA) = 0.53 s/m2 (0.0053 s per 0.01 m2); dt/d(ClA) = -0.19 s/m2 (0.0019 s per 0.01 m2); break-even d(ClA)/d(CdA) = 2.8. A sweep must be monotonic: time rises with CdA and mass, falls with ClA, mu, power.
 11. Solver invariants (any track): v <= v_lim everywhere; |a_x| within the g-g-v envelope (1e-6); closed-track seam: v[0] = v[n] within 1e-9; lap time unchanged by rotating the start node (1e-6); reverse track on a symmetric circuit gives the same time.
 12. Coastdown closed form (rho 1.11, M 1400, Crr 0.012, CdA 0.64): A = 164.752 N, B = 0.3552 N s2/m2, characteristic speed sqrt(A/B) = 21.537 m/s. 100 -> 60 km/h takes 46.243 s over 1005.77 m; 120 -> 40 km/h 95.324 s over 1944.04 m; deceleration at 100 km/h 0.3134 m/s2. A noise-free 10 Hz log 120 -> 20 km/h (136.3 s) fits to Crr 0.01200 and CdA 0.6400 (1e-4).
@@ -241,7 +275,11 @@ Graph shape: `air_density -> vehicle -> lap_sim <- track_from_path`, `lap_sim ->
 17. Track from path. A regular 360-gon of R 15.25 m sampled at 1 m: kappa = 0.065574 +/- 0.1 percent, length 95.82 m +/- 0.1 percent, closed. A straight line gives kappa = 0. Adding 0.3 m white noise to a R 50 m circle then smoothing: confirm kappa within 10 percent (target to confirm, not computed).
 18. Tuft classes. Synthetic tufts at 0, 20, 90 and 180 degrees to the flow with SD 5 degrees: attached, attached, separated, reversed with the default thresholds (confirm thresholds on real footage).
 19. Gate. Claimed dCdA 0.01 m2 with SE_diff 0.03 m2 gives a warning "below noise floor" and prints the lap value (0.0053 s on the stadium); claimed 0.10 m2 passes the detectability rule.
-20. Reference-tool cross-check (licensed copy, user-made vehicle and track files only, run as separate steps): stadium and skidpad inputs; compare lap time within 1 percent, apex speed 1 percent, end-of-straight speed 2 percent, energy 3 percent (targets to confirm). Record: segment units, whether drag is applied at the corner limit, time integration rule, rolling-resistance basis, how Cd and frontal area are entered, shift model. Differences become documented parameters, not silent changes.
+20. Reference-tool cross-check (licensed copy, user-made vehicle and track files only, run as separate steps): stadium and skidpad inputs; compare lap time within 1 percent, apex speed 1 percent, end-of-straight speed 2 percent, energy 3 percent (targets to confirm). Record: segment units, whether drag is applied at the corner limit, time integration rule, rolling-resistance basis, how Cd and frontal area are entered, shift model. Differences become documented parameters, not silent changes. A second, open-source reference (OpenLAP, GPL-3.0) may be run the same way as a separate process on the same user-made inputs; compare only outputs, never code.
+21. Braking row (rho 1.11, m 1400, mu 1.0, CdA 0.64, ClA 0.5, no rolling term): a = mu(g + 0.5 rho ClA v2/m) + 0.5 rho CdA v2/m gives 11.2015 m/s2 (1.1422 g) at 200 km/h and 10.1554 m/s2 (1.0356 g) at 100 km/h, i.e. +14.22 and +3.56 percent over mu g = 9.80665. Adding Crr 0.012 on N at 200 km/h gives 11.3265. Tolerance 1e-6 relative.
+22. Grip envelope at 50 m/s (same car, no rolling term): N/m = 10.3022 m/s2 so a_y,max = 10.3022 (1.0505 g); at a_y = 0.6, 0.8, 1.0 of that, the longitudinal limit is 8.2417, 6.1813, 0.0 m/s2 (ellipse sqrt(1 - r2)). Tolerance 1e-6 relative.
+23. Balance and duct (rho 1.11, c_p 1005): ClA front 0.2 and rear 0.3 m2 gives front balance 40.0 percent at any speed. V 20 m/s, A 0.01 m2, dT 30 K gives mdot 0.2220 kg/s and Q 6693.3 W; V 30 m/s, A 0.02 m2, dT 25 K gives 0.6660 kg/s and 16733.25 W (exact to 1e-9).
+24. Validation-gate round trip: feed tests 4, 10 and 13 into `perf.validation_gate` with claimed dCdA +0.05 m2 (0.64 -> 0.69), a coastdown minimum detectable change of 0.02 m2: the report prints lap value +0.027 s (35.923 - 35.896 on the stadium), top-speed value -6.32 km/h (262.67 -> 256.35), and passes the detectability rule (0.05 > 0.02).
 
 ## 6. Sources
 
@@ -254,28 +292,31 @@ Vendor pages (docs only):
 
 Third-party descriptions of the tool (snippet only unless stated):
 - https://fsae.com/forums/archive/index.php/t-3319.html (403 on fetch; the "10 parameters" and 10 percent statements come from the search summary)
-- https://www.scribd.com/document/457377590/OptimumLap-Getting-Started and https://studylib.net/doc/25891610/toaz.info-optimumlap-getting-started-pr-82588aeec9ec858fd... (body not retrievable; combined friction limit and listed limitations from the summary)
+- https://www.scribd.com/document/457377590/OptimumLap-Getting-Started and https://studylib.net/doc/25891610 (body not retrievable; combined friction limit and listed limitations from the summary)
 - https://www.researchgate.net/publication/337750048_Development_Of_An_Algorithm_For_Prediction_Of_Racing_Vehicle_Dynamics_And_Comparison_With_A_Commercial_Software (three-column track text file, via summary)
 - https://saemobilus.sae.org/papers/lap-time-simulation-formula-sae-vehicle-quasi-steady-state-model-2016-36-0164
 - https://saemobilus.sae.org/papers/lap-time-simulation-tool-development-electric-formula-student-car-2019-01-0163
 
 Lap-simulation method:
 - Albertsson, Nilsson, Wigh, "Lap Time Simulation For A Formula Student Car", Chalmers bachelor thesis, 2024 (full text read): https://odr.chalmers.se/bitstreams/2c14d842-430d-4bbd-b55f-06859f59c555/download
-- Rossi et al., "A Simple Mono-Dimensional Approach for Lap Time Optimisation", Applied Sciences 10(4):1498, 2020 (snippet only): https://www.mdpi.com/2076-3417/10/4/1498/htm and https://shura.shu.ac.uk/25882
+- Rossi et al., "A Simple Mono-Dimensional Approach for Lap Time Optimisation", Applied Sciences 10(4):1498, 2020 (abstract only; the MDPI full text returned 403): https://www.mdpi.com/2076-3417/10/4/1498/htm and https://shura.shu.ac.uk/25882/
+- OpenLAP README (GPL-3.0; point-mass model, track inputs, mesh 1-5 m; source not used): https://github.com/mc12027/OpenLAP-Lap-Time-Simulator
 
 Air density:
 - https://en.wikipedia.org/wiki/Density_of_air (formulas, constants, Tetens, error statement)
 
 Coastdown:
 - 40 CFR 1037.528, coastdown CdA for tractors (read; equations 1037.528-16 not rendered): https://www.law.cornell.edu/cfr/text/40/1037.528 and https://www.ecfr.gov/current/title-40/chapter-I/subchapter-U/part-1037/subpart-F/section-1037.528
-- 40 CFR 1066.310 (snippet only): https://www.law.cornell.edu/cfr/text/40/1066.310
+- 40 CFR 1066.310 (read 2026-10-22; run counts, speed window, wind, 10 Hz, force-versus-v2 fit, CdA = 2 x slope / rho): https://www.law.cornell.edu/cfr/text/40/1066.310
+- Conference study of 19 vehicles, coastdown accuracy under 5.2 percent and precision under 6.1 percent (abstract page; the publisher link redirected to a login endpoint and was not followed): https://research.tec.mx/vivo-tec/display/AcademicArticleSCO_85045831816
+- "On the Critical Importance of Physical Modelling for the Analysis of Coast-Down Data", SAE 2025-01-8774 (search summary only; page returned HTTP 500): https://saemobilus.sae.org/papers/critical-importance-physical-modelling-analysis-coastdown-data-2025-01-8774
 - SAE J2263 is cited by the regulation; its text was not read (name only).
 - https://cleanfleetreport.com/?p=33672 (basic method and noise sources)
 - https://theicct.org/wp-content/uploads/2021/06/ICCT_aero_drag_briefing_20190814.pdf (search snippet only)
 
 Surface pressure and tufts:
-- https://ecomodder.com/forum/639288-post1.html (unreachable when fetched; -91 to -103 Pa figures come from the toolchain note); https://ecomodder.com/forum/624360-post1.html and https://ecomodder.com/forum/637126-post2.html (search snippets: kit, cost, -91 vs -73 Pa)
-- https://autospeed.com.au/cms/A_111111/article.html (snippet: gauge range advice)
+- https://ecomodder.com/forum/639288-post1.html (unreachable when fetched; -91 to -103 Pa figures come from the toolchain note); https://ecomodder.com/forum/624360-post1.html (read 2026-10-22: kit list, sealed vessel, panels above and below, US$100-200) and https://ecomodder.com/forum/637126-post2.html (search snippet: -91 vs -73 Pa); https://ecomodder.com/forum/624373-post2.html (search listing only)
+- https://autospeed.com.au/cms/A_111111/article.html (search snippet: gauge range advice; the listing title for this page looked unrelated, so the 0-1 and 3 in. w.c. advice is "verify")
 - Edgar, "On-road Aerodynamic Measurement Techniques", SAE 2022-01-1096 (snippet only): https://saemobilus-test.cld.sae.org/papers/road-aerodynamic-measurement-techniques-2022-01-1096
 - https://research.chalmers.se/publication/237074 and https://saemobilus.sae.org/papers/surface-flow-visualization-a-full-scale-passenger-car-quantitative-tuft-image-processing-2016-01-1582 (abstracts)
 - https://research.chalmers.se/publication/247549 (on-road tuft study, abstract)

@@ -233,6 +233,9 @@ pub struct ViewportRenderer {
     bind_group_layout: wgpu::BindGroupLayout,
     pipelines: Pipelines,
     meshes: HashMap<u64, GpuMesh>,
+    /// Generation each versioned mesh was uploaded at (see `upload_versioned`).
+    generations: HashMap<u64, u64>,
+    uploads: u64,
     targets: HashMap<u64, Target>,
 }
 
@@ -279,6 +282,8 @@ impl ViewportRenderer {
             bind_group_layout,
             pipelines,
             meshes: HashMap::new(),
+            generations: HashMap::new(),
+            uploads: 0,
             targets: HashMap::new(),
         }
     }
@@ -294,8 +299,32 @@ impl ViewportRenderer {
         self.upload_buffers(key, &b)
     }
 
+    /// Upload `geo` under `key` only when `generation` differs from the one
+    /// already cached (use the node cook generation). Returns the handle and
+    /// whether an upload happened.
+    pub fn upload_versioned(
+        &mut self,
+        key: u64,
+        generation: u64,
+        geo: &Geometry,
+    ) -> (MeshHandle, bool) {
+        if self.meshes.contains_key(&key) && self.generations.get(&key) == Some(&generation) {
+            return (MeshHandle(key), false);
+        }
+        let h = self.upload(key, geo);
+        self.generations.insert(key, generation);
+        (h, true)
+    }
+
+    /// Number of mesh uploads performed so far (for cache tests).
+    pub fn upload_count(&self) -> u64 {
+        self.uploads
+    }
+
     /// Upload pre-built buffers (lets callers build them off-thread).
     pub fn upload_buffers(&mut self, key: u64, b: &MeshBuffers) -> MeshHandle {
+        self.uploads += 1;
+        self.generations.remove(&key);
         let dev = &self.device;
         let buf = |label: &str, bytes: &[u8], usage: wgpu::BufferUsages| -> Option<wgpu::Buffer> {
             (!bytes.is_empty()).then(|| {
@@ -327,14 +356,26 @@ impl ViewportRenderer {
             },
             tri_ib: buf("vernon tri ib", bytemuck::cast_slice(&b.tri_indices), idx),
             tri_index_count: b.tri_indices.len() as u32,
-            point_vb: buf("vernon point vb", bytemuck::cast_slice(&b.point_vertices), vtx),
+            point_vb: buf(
+                "vernon point vb",
+                bytemuck::cast_slice(&b.point_vertices),
+                vtx,
+            ),
             point_count: n_points as u32,
             edge_ib: buf("vernon edge ib", bytemuck::cast_slice(&b.edge_indices), idx),
             edge_index_count: b.edge_indices.len() as u32,
-            curve_ib: buf("vernon curve ib", bytemuck::cast_slice(&b.curve_indices), idx),
+            curve_ib: buf(
+                "vernon curve ib",
+                bytemuck::cast_slice(&b.curve_indices),
+                idx,
+            ),
             curve_index_count: b.curve_indices.len() as u32,
             loose_vb: buf("vernon loose vb", bytemuck::cast_slice(&loose), vtx),
-            loose_count: if loose_all { n_points as u32 } else { loose.len() as u32 },
+            loose_count: if loose_all {
+                n_points as u32
+            } else {
+                loose.len() as u32
+            },
             loose_all,
             has_point_color: b.has_point_color,
             bounds: b.bounds,
@@ -358,10 +399,12 @@ impl ViewportRenderer {
 
     /// Drop a cached mesh. Returns true if it existed.
     pub fn remove_mesh(&mut self, key: u64) -> bool {
+        self.generations.remove(&key);
         self.meshes.remove(&key).map(destroy_mesh).is_some()
     }
 
     pub fn clear_meshes(&mut self) {
+        self.generations.clear();
         for (_, m) in self.meshes.drain() {
             destroy_mesh(m);
         }
@@ -380,7 +423,9 @@ impl ViewportRenderer {
     pub fn items_bounds(&self, items: &[DrawItem]) -> Aabb {
         let mut out = Aabb::empty();
         for it in items {
-            let Some(b) = self.mesh_bounds(it.mesh) else { continue };
+            let Some(b) = self.mesh_bounds(it.mesh) else {
+                continue;
+            };
             if b.is_empty() {
                 continue;
             }
@@ -416,7 +461,12 @@ impl ViewportRenderer {
         match t.texture_id {
             Some(id) if !t.reregister => id,
             Some(id) => {
-                r.update_egui_texture_from_wgpu_texture(&self.device, &t.frame.color_view, filter, id);
+                r.update_egui_texture_from_wgpu_texture(
+                    &self.device,
+                    &t.frame.color_view,
+                    filter,
+                    id,
+                );
                 t.reregister = false;
                 id
             }
@@ -467,7 +517,12 @@ impl ViewportRenderer {
             normal_mat: Mat4::IDENTITY.to_cols_array_2d(),
             wire_color: [0.0, 0.0, 0.0, 1.0],
             eye,
-            viewport: [size[0] as f32, size[1] as f32, view.point_size.max(1.0), 1.0],
+            viewport: [
+                size[0] as f32,
+                size[1] as f32,
+                view.point_size.max(1.0),
+                1.0,
+            ],
             params: [1.0, AMBIENT, 0.0, 0.0],
         };
         let stride = self.uniform_stride as usize;
@@ -478,7 +533,11 @@ impl ViewportRenderer {
                 .meshes
                 .get(&it.mesh.0)
                 .is_some_and(|m| m.has_point_color);
-            let wire = if it.selected { SELECTED_WIRE_COLOR } else { it.wire_color };
+            let wire = if it.selected {
+                SELECTED_WIRE_COLOR
+            } else {
+                it.wire_color
+            };
             let edge_alpha = match view.shading {
                 ShadingMode::Shaded => SELECTED_EDGE_ALPHA,
                 _ => 1.0,
@@ -652,7 +711,8 @@ impl ViewportRenderer {
         let t = self.targets.get(&viewport_id)?;
         let [w, h] = t.frame.size;
         let row = w * 4;
-        let padded = row.div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT) * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+        let padded =
+            row.div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT) * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
         let buf = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("vernon readback"),
             size: u64::from(padded) * u64::from(h),
@@ -747,9 +807,11 @@ impl Drop for ViewportRenderer {
 }
 
 fn destroy_mesh(m: GpuMesh) {
-    for b in [m.tri_vb, m.tri_ib, m.point_vb, m.edge_ib, m.curve_ib, m.loose_vb]
-        .into_iter()
-        .flatten()
+    for b in [
+        m.tri_vb, m.tri_ib, m.point_vb, m.edge_ib, m.curve_ib, m.loose_vb,
+    ]
+    .into_iter()
+    .flatten()
     {
         b.destroy();
     }

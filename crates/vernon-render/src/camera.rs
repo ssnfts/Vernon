@@ -16,7 +16,7 @@
 //! singularity. Projections use reverse-Z (near = 1, far = 0) for depth
 //! precision across a whole car at millimetre scale.
 
-use glam::{Mat4, Vec2, Vec3, Vec4Swizzles};
+use glam::{DVec3, Mat4, Vec2, Vec3, Vec4Swizzles};
 use vernon_core::Aabb;
 
 /// One of the six axis-aligned orthographic views.
@@ -210,7 +210,11 @@ impl Camera {
 
     /// View -> clip matrix (reverse-Z: near maps to depth 1, far to 0).
     pub fn proj_matrix(&self, aspect: f32) -> Mat4 {
-        let aspect = if aspect.is_finite() && aspect > 0.0 { aspect } else { 1.0 };
+        let aspect = if aspect.is_finite() && aspect > 0.0 {
+            aspect
+        } else {
+            1.0
+        };
         let d = self.distance.max(1e-6);
         if self.ortho {
             let hh = self.half_height_at_target().max(1e-6);
@@ -284,6 +288,23 @@ impl Camera {
         self.zoom((-scroll * 0.0025).exp());
     }
 
+    /// Zoom by `factor` (< 1 zooms in) keeping the point of the target plane
+    /// under the cursor fixed on screen. `cursor` is relative to the
+    /// viewport's top-left corner, `size` in the same units. Exact for both
+    /// perspective and orthographic views.
+    pub fn zoom_at(&mut self, factor: f32, cursor: Vec2, size: Vec2) {
+        if !(factor.is_finite() && factor > 0.0) {
+            return;
+        }
+        let size = size.max(Vec2::ONE);
+        let ndc = Vec2::new(cursor.x / size.x * 2.0 - 1.0, 1.0 - cursor.y / size.y * 2.0);
+        let before = self.half_height_at_target();
+        self.zoom(factor);
+        let shrink = before - self.half_height_at_target();
+        let aspect = size.x / size.y;
+        self.target += (self.right() * (ndc.x * aspect) + self.up() * ndc.y) * shrink;
+    }
+
     /// Frame a bounding box: centre it and pick a distance so its bounding
     /// sphere fits the viewport for both perspective and orthographic modes.
     /// Empty boxes are ignored.
@@ -291,19 +312,57 @@ impl Camera {
         if bounds.is_empty() {
             return;
         }
-        let aspect = if aspect.is_finite() && aspect > 0.0 { aspect } else { 1.0 };
+        let aspect = if aspect.is_finite() && aspect > 0.0 {
+            aspect
+        } else {
+            1.0
+        };
         let c = bounds.center();
         let r = ((bounds.size().length() * 0.5) as f32).max(0.5);
         let margin = 1.05;
-        let half_y = self.fov_y * 0.5;
-        let tan_x = half_y.tan() * aspect;
-        if self.ortho {
-            let t = half_y.tan() * aspect.min(1.0);
-            self.distance = r * margin / t;
-        } else {
-            let half_min = half_y.min(tan_x.atan());
-            self.distance = r * margin / half_min.sin();
+        let tan_y = (self.fov_y * 0.5).tan();
+        let tan_x = tan_y * aspect;
+        // Tight fit: project the eight box corners onto the camera axes
+        // (relative to the box centre) instead of fitting the bounding sphere.
+        let (right, up, fwd) = (self.right(), self.up(), self.forward());
+        let (mut ex, mut ey) = (0.0f32, 0.0f32);
+        let mut dist = 0.0f32;
+        let mut z_min = f32::INFINITY;
+        for i in 0..8 {
+            let corner = DVec3::new(
+                if i & 1 == 0 {
+                    bounds.min.x
+                } else {
+                    bounds.max.x
+                },
+                if i & 2 == 0 {
+                    bounds.min.y
+                } else {
+                    bounds.max.y
+                },
+                if i & 4 == 0 {
+                    bounds.min.z
+                } else {
+                    bounds.max.z
+                },
+            ) - c;
+            let o = Vec3::new(corner.x as f32, corner.y as f32, corner.z as f32);
+            let (x, y, z) = (o.dot(right).abs(), o.dot(up).abs(), o.dot(fwd));
+            ex = ex.max(x);
+            ey = ey.max(y);
+            z_min = z_min.min(z);
+            // Perspective: the corner at depth `d + z` must satisfy
+            // `x / ((d + z) tan_x) <= 1 / margin`, likewise for y.
+            dist = dist.max(margin * x / tan_x - z).max(margin * y / tan_y - z);
         }
+        self.distance = if self.ortho {
+            // Orthographic: the visible half-height is `distance * tan_y`.
+            margin * ey.max(ex / aspect) / tan_y
+        } else {
+            // Keep the nearest corner clearly in front of the eye.
+            dist.max(0.1 * r - z_min)
+        };
+        self.distance = self.distance.clamp(1e-3, 1e9);
         self.target = Vec3::new(c.x as f32, c.y as f32, c.z as f32);
         self.scene_radius = r;
     }
@@ -320,7 +379,11 @@ impl Camera {
         let a = near.xyz() / near.w;
         let b = mid.xyz() / mid.w;
         let dir = (b - a).normalize_or_zero();
-        let dir = if dir == Vec3::ZERO { self.forward() } else { dir };
+        let dir = if dir == Vec3::ZERO {
+            self.forward()
+        } else {
+            dir
+        };
         (a, dir)
     }
 }
@@ -356,13 +419,19 @@ mod tests {
             assert!(close(v.transform_vector3(right), Vec3::X), "{p:?}");
             assert!(close(v.transform_vector3(up), Vec3::Y), "{p:?}");
             assert!(close(v.transform_vector3(fwd), Vec3::NEG_Z), "{p:?}");
-            assert!(close(v.transform_point3(c.target), Vec3::new(0.0, 0.0, -c.distance)));
+            assert!(close(
+                v.transform_point3(c.target),
+                Vec3::new(0.0, 0.0, -c.distance)
+            ));
             assert_eq!(c.label(), p.axis().unwrap().label());
         }
         let p = Camera::preset(ViewPreset::Perspective);
         assert!(!p.ortho);
         assert_eq!(p.label(), "Perspective");
-        assert!(p.forward().z < 0.0, "perspective looks down onto the ground");
+        assert!(
+            p.forward().z < 0.0,
+            "perspective looks down onto the ground"
+        );
     }
 
     #[test]
@@ -383,9 +452,15 @@ mod tests {
     #[test]
     fn grid_plane_follows_view() {
         assert_eq!(Camera::preset(ViewPreset::Top).grid_plane(), GridPlane::XY);
-        assert_eq!(Camera::preset(ViewPreset::Front).grid_plane(), GridPlane::XZ);
+        assert_eq!(
+            Camera::preset(ViewPreset::Front).grid_plane(),
+            GridPlane::XZ
+        );
         assert_eq!(Camera::preset(ViewPreset::Left).grid_plane(), GridPlane::YZ);
-        assert_eq!(Camera::preset(ViewPreset::Perspective).grid_plane(), GridPlane::XY);
+        assert_eq!(
+            Camera::preset(ViewPreset::Perspective).grid_plane(),
+            GridPlane::XY
+        );
     }
 
     fn corners(b: &Aabb) -> Vec<Vec3> {
@@ -424,12 +499,18 @@ mod tests {
                     let clip = vp * Vec4::new(corner.x, corner.y, corner.z, 1.0);
                     assert!(clip.w > 0.0, "{p:?} corner behind the eye");
                     let ndc = clip.xyz() / clip.w;
-                    assert!(ndc.x.abs() <= 1.0 && ndc.y.abs() <= 1.0, "{p:?} aspect {aspect}: {ndc:?} outside view");
+                    assert!(
+                        ndc.x.abs() <= 1.0 && ndc.y.abs() <= 1.0,
+                        "{p:?} aspect {aspect}: {ndc:?} outside view"
+                    );
                     assert!((0.0..=1.0).contains(&ndc.z), "{p:?} depth {}", ndc.z);
                     max_extent = max_extent.max(ndc.x.abs()).max(ndc.y.abs());
                 }
                 // Not absurdly far away either.
-                assert!(max_extent > 0.35, "{p:?} aspect {aspect}: box too small ({max_extent})");
+                assert!(
+                    max_extent > 0.35,
+                    "{p:?} aspect {aspect}: box too small ({max_extent})"
+                );
                 assert!(close(c.target, Vec3::new(0.0, 0.0, 650.0)));
             }
         }
@@ -467,6 +548,59 @@ mod tests {
         assert!((z.distance - 500.0).abs() < 1e-3);
         z.zoom_scroll(100.0);
         assert!(z.distance < 500.0);
+    }
+
+    /// World point on the target plane under a pixel.
+    fn plane_point(c: &Camera, px: Vec2, size: Vec2) -> Vec3 {
+        let (o, d) = c.screen_ray(px, size);
+        let t = (c.target - o).dot(c.forward()) / d.dot(c.forward());
+        o + d * t
+    }
+
+    #[test]
+    fn zoom_at_keeps_cursor_point_fixed() {
+        let size = Vec2::new(800.0, 600.0);
+        let cursor = Vec2::new(620.0, 140.0);
+        for p in [ViewPreset::Perspective, ViewPreset::Top, ViewPreset::Front] {
+            let mut c = Camera::preset(p);
+            c.target = Vec3::new(10.0, -20.0, 30.0);
+            c.distance = 500.0;
+            let before = plane_point(&c, cursor, size);
+            c.zoom_at(0.5, cursor, size);
+            assert!((c.distance - 250.0).abs() < 1e-3, "{p:?}");
+            let after = plane_point(&c, cursor, size);
+            assert!(
+                (before - after).length() < 1e-2,
+                "{p:?}: {before:?} vs {after:?}"
+            );
+        }
+        // Non-finite factors are ignored.
+        let mut c = Camera::default();
+        let before = c;
+        c.zoom_at(f32::NAN, cursor, size);
+        assert_eq!(c, before);
+    }
+
+    #[test]
+    fn zoom_extents_is_tight_for_flat_views() {
+        // A long flat box seen from the front fills most of the viewport.
+        let b = Aabb {
+            min: DVec3::new(-2300.0, -900.0, 0.0),
+            max: DVec3::new(2300.0, 900.0, 1300.0),
+        };
+        for ortho in [false, true] {
+            let mut c = Camera::preset(ViewPreset::Front);
+            c.ortho = ortho;
+            c.zoom_extents(&b, 16.0 / 9.0);
+            let vp = c.view_proj(16.0 / 9.0);
+            let mut ext = 0.0f32;
+            for corner in corners(&b) {
+                let clip = vp * Vec4::new(corner.x, corner.y, corner.z, 1.0);
+                let ndc = clip.xyz() / clip.w;
+                ext = ext.max(ndc.x.abs()).max(ndc.y.abs());
+            }
+            assert!((0.9..=1.0).contains(&ext), "ortho {ortho}: extent {ext}");
+        }
     }
 
     #[test]

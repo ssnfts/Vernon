@@ -33,7 +33,7 @@ pub struct PointVertex {
 }
 
 /// GPU-ready arrays for one geometry.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct MeshBuffers {
     /// Shaded triangle vertices.
     pub tri_vertices: Vec<MeshVertex>,
@@ -55,6 +55,22 @@ pub struct MeshBuffers {
     pub smooth: bool,
     /// Bounds of all points (mm).
     pub bounds: Aabb,
+}
+
+impl Default for MeshBuffers {
+    fn default() -> Self {
+        Self {
+            tri_vertices: Vec::new(),
+            tri_indices: Vec::new(),
+            point_vertices: Vec::new(),
+            edge_indices: Vec::new(),
+            curve_indices: Vec::new(),
+            loose_points: Vec::new(),
+            has_point_color: false,
+            smooth: false,
+            bounds: Aabb::empty(),
+        }
+    }
 }
 
 impl MeshBuffers {

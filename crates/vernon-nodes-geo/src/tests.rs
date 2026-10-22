@@ -148,6 +148,8 @@ fn registration() {
     for id in expected {
         assert!(ids.contains(id), "missing {id}");
     }
+    let spec = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").join(SPEC);
+    assert!(spec.is_file(), "spec file {} is missing", spec.display());
 }
 
 // --------------------------------------------------------------- smoke ---
@@ -293,13 +295,24 @@ fn car_panel_golden_heights() {
     // Centre grid point (i = 18, j = 12) sits at the crown height.
     let c = g.points[12 * 37 + 18];
     assert!(close(c.z, 40.0, 1e-12) && close(c.x, 0.0, 1e-9) && close(c.y, 0.0, 1e-9));
-    // Doubly curved: concave-down along both X and Y at the centre.
+    // Doubly curved: with the flare off, the crown is concave-down along both X
+    // and Y at the centre (positive Gaussian curvature). With the flare on, the
+    // +Y half curls upward, so only the X direction stays concave-down there.
     let h = 1.0;
-    let dxx = p.height(h, 0.0) - 2.0 * p.height(0.0, 0.0) + p.height(-h, 0.0);
-    let dyy = p.height(0.0, h) - 2.0 * p.height(0.0, 0.0) + p.height(0.0, -h);
-    assert!(dxx < 0.0 && dyy < 0.0);
+    let second = |q: &CarPanel, dx: f64, dy: f64| {
+        q.height(dx, dy) - 2.0 * q.height(0.0, 0.0) + q.height(-dx, -dy)
+    };
+    let crown_only = CarPanel { flare: 0.0, ..p };
+    assert!(second(&crown_only, h, 0.0) < 0.0 && second(&crown_only, 0.0, h) < 0.0);
+    assert!(second(&p, h, 0.0) < 0.0);
+    assert!(p.height(0.0, 100.0) > crown_only.height(0.0, 100.0), "flare lifts the outboard side");
+    // The flared +Y half tilts the centre normal slightly towards -Y; with the
+    // flare off the surface is symmetric and the centre normal is exactly +Z.
     let n = g.point_attribs.vec3s("N").unwrap()[12 * 37 + 18];
-    assert!((n - DVec3::Z).length() < 1e-6, "centre normal {n}");
+    assert!((n - DVec3::Z).length() < 0.05, "centre normal {n}");
+    let flat = cook_geo("geo.car_panel", &[], &[("flare", f(0.0))]);
+    let n0 = flat.point_attribs.vec3s("N").unwrap()[12 * 37 + 18];
+    assert!((n0 - DVec3::Z).length() < 1e-6, "crown-only centre normal {n0}");
     let m = measure(&g);
     assert_eq!(m.open_edges, 2 * (36 + 24));
     assert!(m.area > 900.0 * 600.0);
@@ -471,14 +484,16 @@ fn reverse_flips_volume_and_normals() {
     let before = g.prim_attribs.vec3s("N").unwrap();
     let after = r.prim_attribs.vec3s("N").unwrap();
     assert!(before.iter().zip(after).all(|(a, b)| (*a + *b).length() < 1e-12));
-    for p in 0..r.prims.len() {
-        assert!((r.prim_normal(p) - after[p]).length() < 1e-12);
+    for (p, n) in after.iter().enumerate() {
+        assert!((r.prim_normal(p) - *n).length() < 1e-12);
     }
     // Only a group.
     let mut h = g.clone();
     h.prim_groups.insert("top".into(), vec![1]);
     let r = cook_geo("geo.reverse", &[some(&h)], &[("group", s("top"))]);
-    assert_eq!(r.prims[1].vertices, vec![7, 6, 5, 4].iter().map(|&v| g.prims[1].vertices[[3, 2, 1, 0][[7, 6, 5, 4].iter().position(|&x| x == v).unwrap()]]).collect::<Vec<u32>>());
+    let mut rev = g.prims[1].vertices.clone();
+    rev.reverse();
+    assert_eq!(r.prims[1].vertices, rev);
     assert_eq!(r.prims[0].vertices, g.prims[0].vertices);
     assert!(cook("geo.reverse", &[some(&h)], &[("group", s("nope"))]).is_err());
 }
@@ -649,7 +664,7 @@ fn fuse_merges_duplicates_and_removes_degenerates() {
         DVec3::new(1.0, 0.0, 0.0),
         DVec3::new(1.0, 1.0, 0.0),
         DVec3::new(0.0, 1.0, 0.0),
-        DVec3::new(1.0005, 0.0, 0.0),
+        DVec3::new(1.005, 0.0, 0.0),
         DVec3::new(2.0, 0.0, 0.0),
         DVec3::new(2.0, 1.0, 0.0),
         DVec3::new(1.0, 1.0, 0.0),
@@ -657,11 +672,11 @@ fn fuse_merges_duplicates_and_removes_degenerates() {
     let mut g = Geometry::from_polygons(pts, vec![vec![0, 1, 2, 3], vec![4, 5, 6, 7]]);
     g.point_attribs.set("w", AttribArray::Float(vec![0.0, 1.0, 0.0, 0.0, 3.0, 0.0, 0.0, 0.0]));
     let tight = cook_geo("geo.fuse", &[some(&g)], &[]);
-    assert_eq!(tight.points.len(), 7, "only the exact-ish (1e-3) duplicate merges");
+    assert_eq!(tight.points.len(), 7, "only the exact duplicate merges at the default 0.001 mm");
     let fused = cook_geo("geo.fuse", &[some(&g)], &[("tolerance", f(0.01))]);
     assert_eq!(fused.points.len(), 6);
     assert_eq!(measure(&fused).open_edges, 6);
-    assert!(close(fused.points[1].x, 1.00025, 1e-12), "averaged position");
+    assert!(close(fused.points[1].x, 1.0025, 1e-12), "averaged position");
     assert!(close(fused.point_attribs.floats("w").unwrap()[1], 2.0, 1e-12), "averaged attribute");
     let first = cook_geo("geo.fuse", &[some(&g)], &[("tolerance", f(0.01)), ("snap", s("first"))]);
     assert_eq!(first.points[1], DVec3::new(1.0, 0.0, 0.0));

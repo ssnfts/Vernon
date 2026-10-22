@@ -3060,6 +3060,7 @@ name = "vernon-io"
 version = "0.1.0"
 dependencies = [
  "glam",
+ "miniz_oxide 0.8.9",
  "thiserror 2.0.21",
  "vernon-core",
 ]
@@ -3172,8 +3173,14 @@ dependencies = [
 name = "vernon-render"
 version = "0.1.0"
 dependencies = [
+ "bytemuck",
+ "egui",
+ "egui-wgpu",
  "glam",
+ "naga",
+ "pollster",
  "vernon-core",
+ "wgpu",
 ]
 
 [[package]]

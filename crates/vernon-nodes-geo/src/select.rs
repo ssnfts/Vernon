@@ -275,7 +275,7 @@ pub fn set_attrib(table: &mut AttribTable, len: usize, name: &str, value: &Attri
         table.set(name, AttribArray::new(ty, len));
     }
     let col = table.get_mut(name).expect("column exists");
-    let on = |i: usize| mask.map_or(true, |m| m.get(i).copied().unwrap_or(false));
+    let on = |i: usize| mask.is_none_or(|m| m.get(i).copied().unwrap_or(false));
     match (col, value) {
         (AttribArray::Float(c), AttribArray::Float(v)) => {
             c.iter_mut().enumerate().filter(|(i, _)| on(*i)).for_each(|(_, x)| *x = v[0])

@@ -229,7 +229,7 @@ pub fn prim_centroid(geo: &Geometry, prim: usize) -> DVec3 {
 /// `None`).
 pub fn reverse_winding(geo: &mut Geometry, sel: Option<&[bool]>) {
     for (i, p) in geo.prims.iter_mut().enumerate() {
-        if p.closed && sel.map_or(true, |s| s[i]) {
+        if p.closed && sel.is_none_or(|s| s[i]) {
             p.vertices.reverse();
         }
     }

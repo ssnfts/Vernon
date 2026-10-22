@@ -74,11 +74,9 @@ pub fn fuse_points(geo: &Geometry, tol: f64, average: bool, remove_degenerate: b
         }
     } else {
         let mut seen: HashMap<[u64; 3], u32> = HashMap::new();
-        for i in 0..n {
-            let p = geo.points[i];
+        for (i, p) in geo.points.iter().enumerate() {
             let key = [p.x.to_bits(), p.y.to_bits(), p.z.to_bits()];
-            let r = *seen.entry(key).or_insert(i as u32);
-            parent[i] = r;
+            parent[i] = *seen.entry(key).or_insert(i as u32);
         }
     }
 
@@ -307,7 +305,7 @@ impl NodeOp for ReverseNode {
         let mut out = (*g).clone();
         reverse_winding(&mut out, sel.as_deref());
         if params.bool("flip_normals")? {
-            let selected = |i: usize| sel.as_ref().map_or(true, |s| s[i]);
+            let selected = |i: usize| sel.as_ref().is_none_or(|s| s[i]);
             if let Some(AttribArray::Vec3(ns)) = out.prim_attribs.get_mut("N") {
                 for (i, n) in ns.iter_mut().enumerate() {
                     if selected(i) {
@@ -442,7 +440,7 @@ pub fn triangulate(geo: &Geometry, sel: Option<&[bool]>, fan: bool) -> Geometry 
     let mut prims = Vec::new();
     let mut src = Vec::new();
     for (pi, p) in geo.prims.iter().enumerate() {
-        let selected = sel.map_or(true, |s| s[pi]);
+        let selected = sel.is_none_or(|s| s[pi]);
         if !selected || !p.closed || p.vertices.len() <= 3 {
             prims.push(p.clone());
             src.push(pi);

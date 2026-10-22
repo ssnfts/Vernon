@@ -1,6 +1,6 @@
 # Spec: solar incident radiation, sun position and panel surface-temperature check (reference: Ladybug Incident Radiation, Blender Sun Position / Helio, hand energy balance)
 
-Status: draft v0.1, 2026-10-21. Clean-room spec: public help pages, papers and open-source docs only (see CLEAN_ROOM.md).
+Status: draft v0.2, 2026-10-22 (v0.1 2026-10-21, extended and re-verified). Clean-room spec: public help pages, papers and open-source docs only (see CLEAN_ROOM.md).
 Vernon stage served: 7 solar / UV dose and surface temperature. It consumes the surface meshes from stages 2-6, and emits per-face W/m2, kWh/m2, surface temperature and heat-deflection margin that the material choice and the FEA stage check.
 Marker key: **(doc)** stated by a vendor/project page, **(inf)** inferred from wording, **(V)** a Vernon design choice, **(calc)** number computed by the spec author with the stated equations (re-derive before freezing).
 Source tags (section 6): [F] fetched this session, [S] seen only in search results, [R] recalled from memory, verify before relying on it, [rep] value taken from the project report (`3D printed body kit toolchain.md`), not re-fetched.
@@ -27,7 +27,7 @@ Inputs (doc): a sky matrix (ground reflectance is taken from it, no separate inp
 | Parameter | Type / range | Default | Observed behaviour |
 |---|---|---|---|
 | grid_size | float > 0, model units | required | sub-division size for Breps; smaller = finer and slower; should be smaller than the smallest geometry or context piece (doc) |
-| offset_dist | float >= 0, model units | 10 cm expressed in model units (doc) | test points are lifted off the surface along the normal so the surface does not block itself |
+| offset_dist | float >= 0, model units | component: 10 cm expressed in model units; library class: 0 (doc, both pages; lift direction not stated, inf: along the face normal) | test points are lifted off the surface so the surface does not block itself |
 | irradiance | bool | false | false = cumulative kWh/m2 over the sky-matrix period; true = average W/m2 over the period (doc; whether night hours count in the average is not stated, inf: all hours of the period) |
 | cpu_count | int | all cores minus one, min 1 | parallel ray intersection (doc) |
 | by_vertex (library only) | bool | false | per vertex instead of per face; total assumes equal area per vertex (doc) |
@@ -37,7 +37,7 @@ Outputs (doc): test points; results per point (kWh/m2); total over all input geo
 Limits (doc): no solar reflections; ground reflection is a crude emissive ground hemisphere using the sky matrix ground reflectance, and putting ground geometry into the context blocks that approximation; the CAD ray intersector is fast for simple scenes but scales poorly with many points / complex context; for complex scenes or reflections the vendor points to a separate Radiance-based tool. A forum thread reports odd Tregenza results for very low sun [S].
 
 ### 2.2 Sky matrix component (reference: LB Cumulative Sky Matrix)
-Inputs (doc): north (-360..360, counter-clockwise angle from north to +Y, default 0; 90 = west); location; annual hourly direct normal and diffuse horizontal collections; hoys (hours of year, default whole year); high_density (false = Tregenza, true = Reinhart, about 4x the patches); ground_ref (0..1, default 0.2); working folder. Output: a sky matrix of per-patch radiation (units not stated on the page, inf: cumulative kWh/m2-equivalent per patch). Built by `gendaymtx` (doc).
+Inputs (doc): north (-360..360, counter-clockwise angle from north to +Y, default 0; 90 = west); location; annual hourly direct normal and diffuse horizontal collections; hoys (hours of year, default whole year); high_density (false = Tregenza, true = Reinhart, about 4x the patches); ground_ref (0..1, default 0.2); working folder. Output: a sky matrix of per-patch radiation. Units (doc, library skymatrix page [F]): per-patch values are cumulative kWh/m2 over the weather duration, and dividing by the duration in hours gives average W/m2; ground reflectance 0..1 (default 0.2) is stored with the matrix; north is the counter-clockwise angle from North to +Y (90 = west, 270 = east); hoys 0..8760, default whole year. The page lists no `gendaymtx` flags and no sun-hour offset. Built by `gendaymtx` (doc). Implementer reading (inf): a patch value is the irradiance on a surface facing that patch head-on, so the intersection-matrix factor (0..1) is the cosine of incidence times visibility, and the Vernon mapping is `R_p = (Lsky_p*Omega_p + Bsun_p)/1000` kWh/m2 (3.4, 3.5).
 `gendaymtx` facts (doc): Perez all-weather model; reads EPW or a plain 5-column weather format; column per time step, row per patch; row 0 is the ground; `-m 1` = 145 sky patches (Tregenza), `-m 4` = 2305; `-g` ground colour default 20 % grey; `-r` rotation about zenith; `-d` sun only, `-s` no sun; `-O1` total solar radiance (W/sr/m2) instead of visible; first patch sits on the horizon toward +Y and patches spiral up; the sun is spread over the four nearest patches weighted by closeness.
 
 ### 2.3 EPW weather file (EnergyPlus data dictionary)
@@ -96,7 +96,7 @@ sunrise/sunset zenith 90.833 deg: ha_s = acos(cos(90.833)/(cos lat cos decl) - t
 sunrise_utc[min] = 720 - 4*(lon + ha_s) - eqtime; sunset: use -ha_s; solar noon_utc = 720 - 4*lon - eqtime
 ```
 Algorithm tiers (V): `noaa_low` (above; NOAA states 1901-2099 for the spreadsheet form, fine for EPW years); `noaa_meeus` (Meeus-based series, [R] constants: geometric mean longitude L0 = 280.46646 + T(36000.76983 + 0.0003032 T); mean anomaly M = 357.52911 + T(35999.05029 - 0.0001537 T); eccentricity e = 0.016708634 - T(0.000042037 + 1.267e-7 T); equation of centre C from sin M, sin 2M, sin 3M with coefficients 1.914602, 0.019993, 0.000289; apparent longitude subtracts 0.00569 + 0.00478 sin(125.04 - 1934.136 T); obliquity 23 deg 26' 21.448'' - 46.815''T plus 0.00256 cos(125.04 - 1934.136 T); T = Julian centuries from J2000); `spa` (Reda and Andreas, +-0.0003 deg for years -2000..6000, [S] NREL page; table-driven heliocentric series, nutation, aberration, parallax, topocentric correction; needs delta-T). Refraction (doc, NOAA): none above 85 deg altitude; 5..85 deg: (58.1/tan h - 0.07/tan^3 h + 0.000086/tan^5 h)/3600; -0.575..5 deg: (1735 - 518.2h + 103.4h^2 - 12.79h^3 + 0.711h^4)/3600; below -0.575: -20.774/tan h/3600 (degrees). Default refraction OFF for radiation (the sun disk is not visible geometry), ON for sunrise/sunset reports.
-Model frame: sun unit vector `s = (sin(a') cos(h), cos(a') sin... ` precisely `s = (sin(a')*cos(alt), cos(a')*cos(alt), sin(alt))` with `a' = az - north_angle` where `north_angle` (deg, counter-clockwise from north to +Y, default 0, same convention as the sky-matrix reference) so +Y is north, +X is east, +Z up. The vehicle frame is a separate transform (V).
+Model frame: sun unit vector `s = (sin(a')*cos(alt), cos(a')*cos(alt), sin(alt))` with `a' = az - north_angle` where `north_angle` (deg, counter-clockwise from north to +Y, default 0, same convention as the sky-matrix reference) so +Y is north, +X is east, +Z up. The vehicle frame is a separate transform (V).
 Hour instant (V): sun evaluated at the middle of the EPW hour (clock = hour - 0.5) with a parameter `sun_time_offset_h`, default -0.5; hours whose sun altitude at the mid-instant is below -0.27 deg carry zero direct.
 
 ### 3.3 Sky patches (Tregenza / Reinhart)
@@ -190,10 +190,11 @@ Tolerances are Vernon pass criteria. "(ref)" = record from a licensed/open copy 
 
 **G5 sun position** (lat 25.2048, lon 55.2708, tz +4, no DST; `noaa_low` vs `noaa_meeus` agree within the stated spread, SPA to 0.001 deg):
 - 2026-06-21 12:00 local: altitude 85.0 +-0.15 (low 85.07, Meeus 84.96); azimuth untested (within 5 deg of zenith).
-- 2026-12-21 12:00: altitude 41.2 +-0.05; azimuth 174.87 +-0.1.
-- 2026-06-21 07:00: altitude 18.2 +-0.15; azimuth 72.05 +-0.1.
-- 2026-08-01 15:00: altitude 53.5 +-0.15; azimuth 266.6 +-0.5.
-- 2026-03-20 12:00: altitude 63.7 +-0.25; azimuth 164.8 +-0.3.
+- 2026-12-21 12:00: altitude 41.21 +-0.05; azimuth 174.89 +-0.1.
+- 2026-06-21 07:00: altitude 18.23 +-0.15; azimuth 72.06 +-0.1.
+- 2026-08-01 15:00: altitude 53.54 +-0.15; azimuth 266.77 +-0.5.
+- 2026-03-20 12:00: altitude 63.51 +-0.25; azimuth 164.67 +-0.3.
+- (calc re-run 2026-10-22 with `noaa_low`, 365-day year; the Meeus tier differs by up to ~0.1 deg, so the tolerances above are wide enough for both.)
 - Sunrise / noon / sunset (zenith 90.833, +-2 min): 21 Jun 05:29 / 12:20 / 19:11 (day length 13.71 h); 21 Dec 07:00 / 12:17 / 17:34 (10.57 h).
 - SPA reference case [R] (recall; verify with the NREL download before freezing): 2003-10-17 12:30:30 UTC-7, lat 39.742476, lon -105.1786, elevation 1830.14 m, 820 mb, 11 degC, delta-T 67 s, refraction 0.5667 deg -> zenith 50.1116, azimuth 194.3402 (eastward from north); tolerance +-0.001 deg for `spa`. Use whole minutes elsewhere: 30 s shifts hour angle by 0.125 deg.
 - (ref) Blender Sun Position elevation/azimuth for the same Dubai inputs, tolerance +-0.3 deg; Helio same, +-0.3 deg.
@@ -215,7 +216,9 @@ Tolerances are Vernon pass criteria. "(ref)" = record from a licensed/open copy 
 Fetched this session [F]:
 - https://docs.ladybug.tools/ladybug-primer/components/3_analyzegeometry/incident_radiation (inputs, outputs, limits of the incident radiation component)
 - https://docs.ladybug.tools/ladybug-primer/components/2_visualizedata/cumulative_sky_matrix (sky matrix inputs, Tregenza vs Reinhart, ground_ref 0.2)
-- https://www.ladybug.tools/ladybug-radiance/docs/ladybug_radiance.study.radiation.html (RadiationStudy arguments, units, exclusions)
+- https://www.ladybug.tools/ladybug-radiance/docs/ladybug_radiance.study.radiation.html (RadiationStudy arguments, units, exclusions; re-read 2026-10-22: radiation_values kWh/m2, irradiance_values W/m2, total_radiation(conversion_to_meters) kWh, offset_distance default 0)
+- https://www.ladybug.tools/ladybug-radiance/docs/ladybug_radiance.skymatrix.html (SkyMatrix: per-patch kWh/m2, divide by hours for W/m2, ground_reflectance default 0.2, north convention, hoys, high_density; fetched 2026-10-22)
+- https://www.ladybug.tools/ladybug/docs/ladybug.sunpath.html (Ladybug Sunpath docs; fetched but the page text is 590k characters and the first 100k held no algorithm detail, so nothing is taken from it; the library is copyleft, so its source is not read for this spec)
 - https://www.radiance-online.org/learning/documentation/manual-pages/pdfs/gendaymtx.pdf (gendaymtx options, patch layout, Perez)
 - https://raw.githubusercontent.com/LBNL-ETA/Radiance/master/src/cal/cal/reinhart.cal (patch geometry; read for the algorithm only, nothing copied)
 - https://raw.githubusercontent.com/LBNL-ETA/Radiance/master/src/gen/gendaymtx.c (sky generation steps; summarised, nothing copied)
@@ -242,4 +245,6 @@ Papers recalled from memory [R], verify before implementing:
 
 From the project report [rep] (not re-fetched): Abu Dhabi peak irradiance 1041 W/m2 (https://khazna.ku.ac.ae/en/publications/measurement-of-solar-energy-radiation-in-abu-dhabi-uae/); HDT figures (https://www.lesimprimantes3d.fr/dl/Bambu_Lab_Filament-guide.pdf, https://wiki.polymaker.com/polymaker-wiki-pt/produtos-polymaker/mais-sobre-nossos-produtos/documentos/fichas-tecnicas/abs-asa/polymaker-tm-asa, https://www.additive-x.com/shop/mpattachments/file/viewonline/id/916/product_id/2729); PAHT-CF annealing (https://qidi3d.com/blogs/print-lab/best-filament-car-interiors-abs-asa); CF-ABS failure (https://hackaday.com/2025/12/10/failed-3d-printed-part-brings-down-small-plane/); weathering panel temperature 70 degC (https://www.q-lab.com/weathering/weathering-test-standards/sae-j2527); flat-plate solar-load validation (https://simscale.com/docs/validation-cases/solar-radiation).
 
-Open questions: units and normalisation of the reference sky-matrix values; instant of the sun inside an EPW hour; whether the irradiance average includes night hours; Perez coefficient table (read from the paper); reference EPW for Dubai (a public typical-year file, to be chosen and licence-checked before use as a golden fixture); the exact default f_UV.
+Unreachable on 2026-10-22 (DNS or HTTP 403), so the SPA reference case in G5 stays [R]: https://midcdmz.nrel.gov/spa/, https://www.nrel.gov/docs/fy08osti/34302.pdf, https://docs.nrel.gov/docs/fy08osti/34302.pdf, https://www.mikrocontroller.net/attachment/157160/NREL_SPA.pdf. Verify against the NREL report or its C test driver before freezing the `spa` golden.
+
+Open questions: whether the reference sky-matrix patch value is exactly `L*Omega` (head-on irradiance) as assumed in 2.2, to be confirmed by recording a (ref) run; instant of the sun inside an EPW hour (the reference sunpath docs were not readable); whether the irradiance average includes night hours; Perez coefficient table (read from the paper); reference EPW for Dubai (a public typical-year file, to be chosen and licence-checked before use as a golden fixture); the exact default f_UV.

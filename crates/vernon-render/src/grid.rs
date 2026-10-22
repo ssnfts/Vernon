@@ -23,8 +23,16 @@ pub struct GridColors {
 /// times a power of 10 so there are at most [`MAX_GRID_LINES_PER_SIDE`]
 /// lines per side.
 pub fn effective_spacing(spacing: f32, extent: f32) -> f32 {
-    let mut s = if spacing.is_finite() && spacing > 0.0 { spacing } else { 10.0 };
-    let extent = if extent.is_finite() { extent.abs() } else { 0.0 };
+    let mut s = if spacing.is_finite() && spacing > 0.0 {
+        spacing
+    } else {
+        10.0
+    };
+    let extent = if extent.is_finite() {
+        extent.abs()
+    } else {
+        0.0
+    };
     while extent / s > MAX_GRID_LINES_PER_SIDE {
         s *= 10.0;
     }
@@ -70,14 +78,26 @@ pub fn build_grid(
     for i in (iu - k)..=(iu + k) {
         let u = i as f32 * s;
         let color = color_for(i);
-        out.push(PointVertex { pos: to3(u, v0), color });
-        out.push(PointVertex { pos: to3(u, v1), color });
+        out.push(PointVertex {
+            pos: to3(u, v0),
+            color,
+        });
+        out.push(PointVertex {
+            pos: to3(u, v1),
+            color,
+        });
     }
     for i in (iv - k)..=(iv + k) {
         let v = i as f32 * s;
         let color = color_for(i);
-        out.push(PointVertex { pos: to3(u0, v), color });
-        out.push(PointVertex { pos: to3(u1, v), color });
+        out.push(PointVertex {
+            pos: to3(u0, v),
+            color,
+        });
+        out.push(PointVertex {
+            pos: to3(u1, v),
+            color,
+        });
     }
     out
 }
@@ -110,7 +130,13 @@ mod tests {
     fn grid_spacing_adapts() {
         assert_eq!(effective_spacing(10.0, 500.0), 10.0);
         assert_eq!(effective_spacing(10.0, 25_000.0), 1000.0);
-        let g = build_grid(GridPlane::XY, Vec3::new(5000.0, 0.0, 0.0), 25_000.0, 10.0, &C);
+        let g = build_grid(
+            GridPlane::XY,
+            Vec3::new(5000.0, 0.0, 0.0),
+            25_000.0,
+            10.0,
+            &C,
+        );
         let lines = g.len() / 2;
         assert!(lines <= 2 * (2 * MAX_GRID_LINES_PER_SIDE as usize + 1));
         // Centre snapped to the effective spacing.
