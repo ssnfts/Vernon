@@ -4,10 +4,11 @@
 use glam::{DMat3, DMat4, DVec3};
 use serde_json::{json, Value};
 use vernon_core::{Geometry, Prim, Report, Severity};
-use vernon_graph::{CookContext, CookError, CookResult, Params};
+use vernon_graph::{CookContext, CookError, CookResult, Data, NodeOp, NodeTypeInfo, Params, Registry};
 
 pub const SPEC_ALIGN: &str = "docs/specs/alignment-deviation.md";
 pub const SPEC_MESH: &str = "docs/specs/rhino8-mesh-tools.md";
+pub const SPEC_CAPTURE: &str = "docs/specs/capture-scanning.md";
 
 /// Small deterministic PRNG (SplitMix64); no external dependency.
 pub struct Rng(u64);
@@ -209,4 +210,74 @@ pub fn point_normals(g: &Geometry) -> Option<&[DVec3]> {
         .vec3s("N")
         .ok()
         .filter(|n| n.len() == g.points.len())
+}
+
+/// Signature of a node cook function.
+pub type CookFn = fn(&CookContext, &[Option<Data>], &Params) -> CookResult<Vec<Data>>;
+
+/// A node type built from two plain functions, so each node is a `info`
+/// builder plus a `cook` function with no per-node struct boilerplate.
+pub struct FnNode {
+    pub info: fn() -> NodeTypeInfo,
+    pub cook: CookFn,
+}
+
+impl NodeOp for FnNode {
+    fn info(&self) -> NodeTypeInfo {
+        (self.info)()
+    }
+
+    fn cook(&self, ctx: &CookContext, inputs: &[Option<Data>], params: &Params) -> CookResult<Vec<Data>> {
+        (self.cook)(ctx, inputs, params)
+    }
+}
+
+/// Register one function-pair node.
+pub fn add(reg: &mut Registry, info: fn() -> NodeTypeInfo, cook: CookFn) {
+    reg.add(FnNode { info, cook });
+}
+
+/// Read a JSON input port; `None` when unconnected.
+pub fn opt_json(inputs: &[Option<Data>], index: usize) -> CookResult<Option<std::sync::Arc<Value>>> {
+    match inputs.get(index).and_then(|d| d.as_ref()) {
+        None => Ok(None),
+        Some(Data::Json(v)) => Ok(Some(v.clone())),
+        Some(other) => Err(CookError::WrongInput {
+            index,
+            expected: vernon_graph::DataKind::Json,
+            found: other.kind(),
+        }),
+    }
+}
+
+/// Required JSON input port.
+pub fn json_in(inputs: &[Option<Data>], index: usize, name: &str) -> CookResult<std::sync::Arc<Value>> {
+    opt_json(inputs, index)?.ok_or_else(|| CookError::MissingInput {
+        index,
+        name: name.to_string(),
+    })
+}
+
+/// Lower-case `choice` parameter.
+pub fn choice<'a>(p: &'a Params, name: &str) -> CookResult<&'a str> {
+    p.str(name)
+}
+
+/// Per-point millimetre length of the bounding-box diagonal (0 when empty).
+pub fn diag(g: &Geometry) -> f64 {
+    g.bounds().size().length()
+}
+
+/// Positions of all points as a flat check that they are finite.
+pub fn all_finite(g: &Geometry) -> bool {
+    g.points.iter().all(|p| p.is_finite())
+}
+
+/// Percent helper that avoids dividing by zero.
+pub fn pct(part: usize, whole: usize) -> f64 {
+    if whole == 0 {
+        0.0
+    } else {
+        100.0 * part as f64 / whole as f64
+    }
 }

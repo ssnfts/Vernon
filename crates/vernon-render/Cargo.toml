@@ -1,4 +1,4 @@
-﻿[package]
+[package]
 name = "vernon-render"
 description = "Vernon viewport renderer: offscreen wgpu mesh rendering for egui viewports"
 version.workspace = true

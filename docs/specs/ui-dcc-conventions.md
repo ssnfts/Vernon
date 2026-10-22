@@ -12,7 +12,8 @@ brief, verify before relying on it, **[design]** a Vernon choice, not a claim ab
 |---|---|---|
 | 3ds Max help: window, status bar, create panel, command panel, scene explorer, schematic view, navigation, grid, viewport controls, time slider, time configuration, type-in, walk-through | 2015 to 2026 help pages | layout and behaviour model |
 | Same help: ViewCube overview (2025) and its scripting properties page (2019) | read | ViewCube behaviour |
-| Same help: track bar, transform gizmo detail, home icon, quad menus | search summaries 2017 to 2027 | secondary, tagged [snip] |
+| Same help: track bar, utilities panel, rollout order (read 2024 to 2026) | read | track bar and Utilities behaviour |
+| Same help: transform gizmo detail, home icon, scene explorer menus | search summaries 2017 to 2027 | secondary, tagged [snip] |
 | Shoemake arcball (1992), Moller-Trumbore (1997), layered graph drawing (1993), Kahn (1962), Ritter (1990), WCAG 2.1 | published | algorithms in section 3 |
 
 Out of scope: rendering features, animation curves and rigging, MAXScript, material editors (Slate is reduced to "same node editor, different node set"), plug-in SDKs,
@@ -102,10 +103,10 @@ G toggles grid visibility. The status bar shows the size of one grid square [doc
 | Hierarchy | parent-child links, joints and inverse kinematics | doc |
 | Motion | animation controllers and trajectories of the selected object | doc |
 | Display | hide and unhide, freeze, display options | doc |
-| Utilities | one rollout that lists and launches small tools | snip |
+| Utilities | one rollout that lists and launches small tools: a "more" dialog adds tools missing from the current button set, a "sets" list switches button sets, and a configure dialog builds custom sets of up to 32 buttons; a running tool keeps its button lit, clicking it again or another button ends it, and some tools add rollouts below or open their own dialog | doc |
 
-Name and colour appear at the top of every tab except Create, where they sit in a rollout [doc]. Rollouts can be dragged to reorder and (snip) their open or closed state
-persists across sessions [doc]. Creating: choose a type, click or drag in a viewport (one click, a drag, or a sequence by type), then edit parameters at once or later [doc].
+Name and colour appear at the top of every tab except Create, where they sit in a rollout [doc]. Rollouts can be dragged to reorder (the order is kept in a small text file in the
+application's ui folder), and each rollout's open or closed state persists across sessions [doc]. Creating: choose a type, click or drag in a viewport (one click, a drag, or a sequence by type), then edit parameters at once or later [doc].
 Right-click ends a sequence [recalled].
 
 ### 2.7 Modifier stack
@@ -127,9 +128,10 @@ Right-click ends a sequence [recalled].
 ### 2.8 Time slider, track bar, time configuration
 
 Time slider [doc]: sits in the status area, floatable or dockable; shows current frame over segment length (the sample reads 25/100); dragging scrubs and plays the animation
-under it; end arrows step one frame, or jump key to key when key mode is on; right-click opens a key-creation dialog; default range 0 to 100. Track bar [doc/snip]:
-frame-numbered strip to move, copy and delete keys; position, rotation and scale keys drawn red, green, blue [snip]; a mini curve editor button swaps slider and track bar for
-a curve view until its close button is pressed [doc/snip]. Time configuration [doc]:
+under it; end arrows step one frame, or jump key to key when key mode is on; right-click opens a key-creation dialog; default range 0 to 100. Track bar [doc]:
+strip directly under the time slider and above the status bar, floatable and dockable; shows the keys of the selected objects against frame numbers and lets you move, copy and
+delete keys or edit their properties; position, rotation and scale keys are drawn red, green, blue, other keys grey, selected transform keys white, and the current-frame
+marker is a blue bar; a button at its left end opens a mini curve editor that swaps slider and track bar for a curve view until its close button is pressed. Time configuration [doc]:
 
 | Setting | Behaviour | Default |
 |---|---|---|
@@ -310,8 +312,9 @@ integers and strings.
     pixel sizes, strictly decreasing. Default inactive opacity 0.5.
 7. Grid: spacing 10, major 10, extent 7: 15 lines per axis, 1 major (the axis through the origin). Spacing 100, major 10, extent 10: 21 lines per axis, 3 major (-1000, 0,
     1000). Adaptive: 10 mm at 5 mm/px is 2 px, so spacing becomes 100 mm (20 px); at 0.5 mm/px it stays 10 mm (20 px).
-8. Stack: box 100 mm spanning z 0 to 100, planar cut at z = 40 keeping the upper part. Bulb on: end result volume 600,000 mm3 (matches the slicing spec test 1); bulb off: 1,000,000 mm3; Show End Result off with the box entry selected: 1,000,000 mm3 even with the cut on. Editing the cut re-evaluates only the cut and later nodes (cache hits on
-    the box = 1).
+8. Stack: box 100 mm spanning z 0 to 100, planar cut at z = 40 keeping the upper part. Bulb on: end result volume 600,000 mm3 (matches the slicing spec test 1);
+    bulb off: 1,000,000 mm3; Show End Result off with the box entry selected: 1,000,000 mm3 even with the cut on. Editing the cut re-evaluates only the cut and later
+    nodes (cache hits on the box = 1).
 9. Time: 30 fps, segment 0-100: duration 3.333 s, frame count 101; frame 45 = 1.5 s. 24 fps: frame 36 = 1.5 s. 25 fps: 100 frames = 4.0 s. Defaults segment 0-100, speed 1x,
     rate 30. Display of frame 35 at 30 fps: frames "35", timecode "0:1:5", frames_ticks "35:0", min_sec_ticks "0:1:800". Slider text at frame 25 of a 0-100 segment: "25/100".
     Ping-pong over segment 0-10 at frames 0..25 visits 0..10 then 9..0 then 1..5.
@@ -348,10 +351,12 @@ Read in full or in part (Autodesk help pages, paraphrased, no text copied):
 - https://graphicsinterface.org/wp-content/uploads/gi1992-18.pdf (arcball; abstract level); https://en-cg-web.coecis.cornell.edu/pubs/1997/MT97.html (Moller-Trumbore citation page)
 - https://web.eecs.utk.edu/~bvanderz/cs461/dotguide.pdf (dot guide, cites the 1993 layout paper)
 
+Read in a later pass (upgraded from summary to doc):
+- https://help.autodesk.com/cloudhelp/2024/ENU/3DSMax-Basics/files/GUID-A55E4702-263E-4768-9964-5866698784DA.htm (track bar, key colours, mini curve editor); https://help.autodesk.com/cloudhelp/2024/ENU/3DSMax-Basics/files/GUID-6ED10DFF-77FC-42D1-884D-23EDF7C131FC.htm (utilities panel); https://help.autodesk.com/cloudhelp/2026/ENU/3DSMax-Customizing/files/GUID-E625E116-6070-4A02-9A31-672BA6A0A954.htm (rollout reorder and persistence)
+
 Seen only as search-result summaries (treat as unverified):
-- https://help.autodesk.com/cloudhelp/2024/ENU/3DSMax-Basics/files/GUID-A55E4702-263E-4768-9964-5866698784DA.htm (track bar, key colours, mini curve editor); https://help.autodesk.com/cloudhelp/2027/ENU/3DSMax-Tutorial/files/GUID-F9386A18-B2DE-4971-ADD2-6D22416E6F3B.htm (navigation circle, Home icon)
-- https://help.autodesk.com/cloudhelp/2024/ENU/3DSMax-Basics/files/GUID-6ED10DFF-77FC-42D1-884D-23EDF7C131FC.htm (utilities panel); https://help.autodesk.com/cloudhelp/2026/ENU/3DSMax-Customizing/files/GUID-E625E116-6070-4A02-9A31-672BA6A0A954.htm (rollout reorder and persistence); https://help.autodesk.com/cloudhelp/2017/ENU/3DSMax/files/GUID-A0647085-9080-4741-96F9-C711E9C1CA1E.htm (scene explorer menus)
+- https://help.autodesk.com/cloudhelp/2027/ENU/3DSMax-Tutorial/files/GUID-F9386A18-B2DE-4971-ADD2-6D22416E6F3B.htm (navigation circle, Home icon); https://help.autodesk.com/cloudhelp/2017/ENU/3DSMax/files/GUID-A0647085-9080-4741-96F9-C711E9C1CA1E.htm (scene explorer menus)
 - https://webaim.org/articles/contrast/ (contrast explainer); https://doi.org/10.1145/368996.369025 (Kahn 1962, cited from memory, publisher blocks scripted access)
 
 Internal: CLEAN_ROOM.md; `3D printed body kit toolchain.md` (rho, q, CdA numbers, verified in lines 70-72); docs/specs/slicing-printing.md (cut and heat-gate numbers, line
-332). 
+332).

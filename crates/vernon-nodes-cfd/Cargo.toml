@@ -1,4 +1,4 @@
-﻿[package]
+[package]
 name = "vernon-nodes-cfd"
 description = "Stage 5 CFD: OpenFOAM automotive case generation, convergence study, force coefficients, Cp maps"
 version.workspace = true
@@ -11,3 +11,5 @@ vernon-graph.workspace = true
 glam.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+indexmap.workspace = true
+rayon.workspace = true

@@ -75,13 +75,24 @@ pub(crate) fn read(bytes: &[u8], file: &str) -> IoResult<Geometry> {
             if nrows == 0 || single_int {
                 continue;
             }
-            return Err(parse_err(file, i + 1, format!("expected numbers, found '{line}'")));
+            return Err(parse_err(
+                file,
+                i + 1,
+                format!("expected numbers, found '{line}'"),
+            ));
         }
         if more || !matches!(n, 3 | 4 | 6 | 7 | 9) {
             return Err(parse_err(
                 file,
                 i + 1,
-                format!("{} columns: expected 3, 4, 6, 7 or 9", if more { ">9".to_string() } else { n.to_string() }),
+                format!(
+                    "{} columns: expected 3, 4, 6, 7 or 9",
+                    if more {
+                        ">9".to_string()
+                    } else {
+                        n.to_string()
+                    }
+                ),
             ));
         }
         if nrows == 0 {
@@ -134,9 +145,13 @@ pub(crate) fn read(bytes: &[u8], file: &str) -> IoResult<Geometry> {
         let eight_bit = c
             .iter()
             .any(|v| v.max_element() > 1.0 || v.min_element() < 0.0)
-            || c.iter().all(|v| v.to_array().iter().all(|x| x.fract() == 0.0));
+            || c.iter()
+                .all(|v| v.to_array().iter().all(|x| x.fract() == 0.0));
         let k = if eight_bit { 1.0 / 255.0 } else { 1.0 };
-        let c = c.into_iter().map(|v| (v * k).clamp(DVec3::ZERO, DVec3::ONE)).collect();
+        let c = c
+            .into_iter()
+            .map(|v| (v * k).clamp(DVec3::ZERO, DVec3::ONE))
+            .collect();
         geo.point_attribs.set("Cd", AttribArray::Vec3(c));
     }
     if let Some(o) = intensity_at {
@@ -220,7 +235,10 @@ mod tests {
         let c = g.point_attribs.vec3s("Cd").unwrap();
         assert!((c[0].y - 128.0 / 255.0).abs() < 1e-12 && c[0].x == 1.0);
         let g = rd("0 0 0 0.5 0.25 1.0\n").unwrap();
-        assert_eq!(g.point_attribs.vec3s("Cd").unwrap()[0], DVec3::new(0.5, 0.25, 1.0));
+        assert_eq!(
+            g.point_attribs.vec3s("Cd").unwrap()[0],
+            DVec3::new(0.5, 0.25, 1.0)
+        );
     }
 
     #[test]
@@ -234,7 +252,10 @@ mod tests {
     fn pts_count_lines_intensity_and_colour() {
         let g = rd("3\n1 2 3 100 255 0 0\n4 5 6 200 0 255 0\n7 8 9 300 0 0 255\n").unwrap();
         assert_eq!(g.point_count(), 3);
-        assert_eq!(g.point_attribs.floats("intensity").unwrap(), &[100.0, 200.0, 300.0]);
+        assert_eq!(
+            g.point_attribs.floats("intensity").unwrap(),
+            &[100.0, 200.0, 300.0]
+        );
         assert_eq!(g.point_attribs.vec3s("Cd").unwrap()[2], DVec3::Z);
         // A second scan header in the middle is skipped.
         let g = rd("2\n0 0 0 1\n1 1 1 2\n2\n2 2 2 3\n3 3 3 4\n").unwrap();
@@ -263,9 +284,14 @@ mod tests {
 
     #[test]
     fn xyz_round_trip_keeps_normals_and_quantises_colour() {
-        let mut g = Geometry::from_points(vec![DVec3::new(-0.0, 1.5, 1e-7), DVec3::new(1234.5678, -9.0, 0.1 + 0.2)]);
-        g.point_attribs
-            .set("N", AttribArray::Vec3(vec![DVec3::Z, DVec3::new(0.6, 0.0, 0.8)]));
+        let mut g = Geometry::from_points(vec![
+            DVec3::new(-0.0, 1.5, 1e-7),
+            DVec3::new(1234.5678, -9.0, 0.1 + 0.2),
+        ]);
+        g.point_attribs.set(
+            "N",
+            AttribArray::Vec3(vec![DVec3::Z, DVec3::new(0.6, 0.0, 0.8)]),
+        );
         g.point_attribs.set(
             "Cd",
             AttribArray::Vec3(vec![DVec3::new(1.0, 0.0, 0.5), DVec3::new(0.2, 0.4, 0.6)]),
@@ -273,27 +299,49 @@ mod tests {
         let mut buf = Vec::new();
         write(&mut buf, &g, 1.0, false).unwrap();
         let text = String::from_utf8(buf.clone()).unwrap();
-        assert!(text.starts_with("0 1.5 0.0000001 0 0 1 255 0 128\n"), "{text}");
+        assert!(
+            text.starts_with("0 1.5 0.0000001 0 0 1 255 0 128\n"),
+            "{text}"
+        );
         let b = read(&buf, "t").unwrap();
         assert_eq!(b.points[1], g.points[1]);
-        assert_eq!(b.point_attribs.vec3s("N").unwrap(), g.point_attribs.vec3s("N").unwrap());
-        let (c0, c1) = (g.point_attribs.vec3s("Cd").unwrap(), b.point_attribs.vec3s("Cd").unwrap());
-        assert!(c0.iter().zip(c1).all(|(a, b)| (*a - *b).abs().max_element() <= 0.5 / 255.0 + 1e-12));
+        assert_eq!(
+            b.point_attribs.vec3s("N").unwrap(),
+            g.point_attribs.vec3s("N").unwrap()
+        );
+        let (c0, c1) = (
+            g.point_attribs.vec3s("Cd").unwrap(),
+            b.point_attribs.vec3s("Cd").unwrap(),
+        );
+        assert!(c0
+            .iter()
+            .zip(c1)
+            .all(|(a, b)| (*a - *b).abs().max_element() <= 0.5 / 255.0 + 1e-12));
     }
 
     #[test]
     fn pts_round_trip() {
-        let mut g = Geometry::from_points(vec![DVec3::new(1.0, 2.0, 3.0), DVec3::new(-4.0, 5.5, 6.0)]);
-        g.point_attribs.set("intensity", AttribArray::Float(vec![0.25, -800.0]));
+        let mut g =
+            Geometry::from_points(vec![DVec3::new(1.0, 2.0, 3.0), DVec3::new(-4.0, 5.5, 6.0)]);
         g.point_attribs
-            .set("Cd", AttribArray::Vec3(vec![DVec3::X, DVec3::new(0.0, 1.0, 1.0)]));
+            .set("intensity", AttribArray::Float(vec![0.25, -800.0]));
+        g.point_attribs.set(
+            "Cd",
+            AttribArray::Vec3(vec![DVec3::X, DVec3::new(0.0, 1.0, 1.0)]),
+        );
         let mut buf = Vec::new();
         write(&mut buf, &g, 1.0, true).unwrap();
         assert!(String::from_utf8_lossy(&buf).starts_with("2\n1 2 3 0.25 255 0 0\n"));
         let b = read(&buf, "t.pts").unwrap();
         assert_eq!(b.points, g.points);
-        assert_eq!(b.point_attribs.floats("intensity").unwrap(), &[0.25, -800.0]);
-        assert_eq!(b.point_attribs.vec3s("Cd").unwrap(), g.point_attribs.vec3s("Cd").unwrap());
+        assert_eq!(
+            b.point_attribs.floats("intensity").unwrap(),
+            &[0.25, -800.0]
+        );
+        assert_eq!(
+            b.point_attribs.vec3s("Cd").unwrap(),
+            g.point_attribs.vec3s("Cd").unwrap()
+        );
     }
 
     #[test]

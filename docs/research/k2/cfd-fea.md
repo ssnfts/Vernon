@@ -1,6 +1,6 @@
 # k2 vetting: CFD + FEA + result maps
 
-Scope: vernon-nodes-cfd, vernon-nodes-fea, app viewport result maps. Reviewed 2026-10-22 against `crates/vernon-core` (geometry, report, attrib), `crates/vernon-graph` (node, param, data, graph), `docs/specs/automotive-cfd.md`, `docs/specs/structural-fea.md`, `CLEAN_ROOM.md`. Claims are ids k01-k97 in k2's order (k01-k36 CFD chunk, k37-k68 CalculiX chunk, k69-k97 result-map chunk). Verdicts: ACCEPT = adopt (or bug finding confirmed), ADAPT = adopt idea in Vernon's API, REJECT = do not adopt.
+Scope: vernon-nodes-cfd, vernon-nodes-fea, app viewport result maps. Reviewed 2026-10-22 against `crates/vernon-core` (geometry, report, attrib), `crates/vernon-graph` (node, param, data, graph), `docs/specs/automotive-cfd.md`, `docs/specs/structural-fea.md`, `CLEAN_ROOM.md`. Claims are ids k01-k97 in k2's order (k01-k36 CFD chunk, k37-k68 CalculiX chunk, k69-k97 result-map chunk). Verdicts: ACCEPT = adopt (or bug finding confirmed), ADAPT = adopt idea in Vernon's API, REJECT = do not adopt. Totals over 97 claims: ACCEPT 39, ADAPT 41, REJECT 17. Numbers in the table were re-computed independently on 2026-10-22 (Navier plate, air density and viscosity, orthotropic C33, GCI worked examples, porous d and f, dynamic pressure, flat-plate Cf).
 
 ## 1. Summary
 

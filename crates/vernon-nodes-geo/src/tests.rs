@@ -1,5 +1,4 @@
-use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::collections::HashSet;
 
 use vernon_core::{AttribArray, DVec3, Geometry, Prim};
 use vernon_graph::{CookContext, CookResult, Data, DataKind, ParamKind, ParamValue, Params, Registry, Stage};
@@ -739,5 +738,40 @@ fn panel_pipeline_merge_mirror_measure() {
     let r = report[1].as_report().unwrap();
     assert_eq!(r.metrics["point_count"].value, (2 * 13 * 9 - 13) as f64);
     assert!(close(r.metrics["size_y"].value, 1200.0, 1e-9));
-    let _ = (HashMap::<u8, u8>::new(), PathBuf::new());
+}
+
+#[test]
+fn unwired_inputs_give_clean_errors_not_panics() {
+    let reg = registry();
+    for info in reg.types() {
+        if info.inputs.is_empty() {
+            continue;
+        }
+        let op = reg.get(&info.id).unwrap();
+        let params = Params::from_specs(&info.params);
+        let ins: Vec<Option<Data>> = info.inputs.iter().map(|_| None).collect();
+        let res = op.cook(&ctx(&info.id), &ins, &params);
+        // A required input left unwired must be a cook error, never a panic.
+        let any_required = info.inputs.iter().any(|p| p.required);
+        assert!(res.is_err() || !any_required, "{} cooked with every input unwired", info.id);
+        assert!(any_required, "{} has no required input", info.id);
+    }
+}
+
+#[test]
+fn closed_primitives_are_outward_euler_two() {
+    let shapes = [
+        ("box", make_box(DVec3::new(10.0, 20.0, 30.0), DVec3::ZERO, 1)),
+        ("sphere", make_sphere(40.0, 12, 24, DVec3::ZERO)),
+        ("tube", make_tube(20.0, 20.0, 80.0, 2, 16, true, 2, DVec3::ZERO)),
+    ];
+    for (name, g) in shapes {
+        let edges = crate::util::edge_counts(&g);
+        assert!(edges.values().all(|&n| n == 2), "{name} has an open or non-manifold edge");
+        let euler = g.points.len() as i64 - edges.len() as i64 + g.prims.len() as i64;
+        assert_eq!(euler, 2, "{name} Euler characteristic");
+        assert!(measure(&g).volume > 0.0, "{name} winds inward");
+    }
+    let cube = make_box(DVec3::splat(10.0), DVec3::ZERO, 1);
+    assert_eq!((cube.points.len(), crate::util::edge_counts(&cube).len(), cube.prims.len()), (8, 12, 6));
 }

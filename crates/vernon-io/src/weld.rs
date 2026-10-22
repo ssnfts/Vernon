@@ -63,7 +63,11 @@ pub fn weld_points(geo: &mut Geometry, tolerance: f64) -> usize {
         let mut map: HashMap<[u64; 3], u32> = HashMap::new();
         for (i, &p) in geo.points.iter().enumerate() {
             // `+ 0.0` folds -0.0 into 0.0 so they weld.
-            let key = [(p.x + 0.0).to_bits(), (p.y + 0.0).to_bits(), (p.z + 0.0).to_bits()];
+            let key = [
+                (p.x + 0.0).to_bits(),
+                (p.y + 0.0).to_bits(),
+                (p.z + 0.0).to_bits(),
+            ];
             remap[i] = *map.entry(key).or_insert_with(|| {
                 keep.push(i);
                 (keep.len() - 1) as u32
@@ -191,8 +195,7 @@ mod tests {
             ],
             vec![vec![0, 1, 2], vec![0, 1, 4, 3]],
         );
-        g.prim_attribs
-            .set("w", AttribArray::Float(vec![1.0, 2.0]));
+        g.prim_attribs.set("w", AttribArray::Float(vec![1.0, 2.0]));
         g.prim_groups.insert("both".into(), vec![0, 1]);
         g.point_groups.insert("p".into(), vec![2, 4]);
         weld_points(&mut g, 1e-6);

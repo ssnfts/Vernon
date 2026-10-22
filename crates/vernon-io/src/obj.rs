@@ -157,8 +157,46 @@ pub(crate) fn read(bytes: &[u8], file: &str) -> IoResult<Geometry> {
     } else if !uvs.is_empty() && uvs.len() == np && geo.prims.is_empty() {
         geo.point_attribs.set("uv", AttribArray::Vec3(uvs));
     }
+    if let Some(part) = recover_parts(&mut groups, geo.prims.len()) {
+        geo.prim_attribs.set("part", AttribArray::Int(part));
+    }
     geo.prim_groups = groups;
     Ok(geo)
+}
+
+/// Group name the writer gives to prims whose integer `part` attribute is `n`.
+fn part_group(n: i64) -> String {
+    format!("part_{n:02}")
+}
+
+/// Turn `part_NN` groups back into the `part` attribute, but only when every
+/// prim belongs to exactly one of them (as written by [`write`]).
+fn recover_parts(groups: &mut BTreeMap<String, Vec<u32>>, prim_count: usize) -> Option<Vec<i64>> {
+    let number = |name: &str| -> Option<i64> {
+        let digits = name.strip_prefix("part_")?;
+        (!digits.is_empty() && digits.len() <= 9 && digits.bytes().all(|b| b.is_ascii_digit()))
+            .then(|| digits.parse().ok())?
+    };
+    let mut part = vec![-1_i64; prim_count];
+    let mut names = Vec::new();
+    for (name, members) in groups.iter() {
+        let Some(n) = number(name) else { continue };
+        for &p in members {
+            let slot = part.get_mut(p as usize)?;
+            if *slot >= 0 {
+                return None;
+            }
+            *slot = n;
+        }
+        names.push(name.clone());
+    }
+    if names.is_empty() || part.contains(&-1) {
+        return None;
+    }
+    for name in names {
+        groups.remove(&name);
+    }
+    Some(part)
 }
 
 /// Resolve a 1-based (or negative, relative) OBJ index against `count`
@@ -169,7 +207,9 @@ fn resolve(
     what: &str,
     err: &dyn Fn(String) -> crate::IoError,
 ) -> IoResult<u32> {
-    let tok = tok.filter(|s| !s.is_empty()).ok_or_else(|| err(format!("missing {what} index")))?;
+    let tok = tok
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| err(format!("missing {what} index")))?;
     let i: i64 = tok
         .parse()
         .map_err(|_| err(format!("bad {what} index '{tok}'")))?;
@@ -213,10 +253,35 @@ pub(crate) fn write<W: Write>(w: &mut W, geo: &Geometry, scale: f64) -> IoResult
             writeln!(w, "vn {} {} {}", n.x, n.y, n.z)?;
         }
     }
-    for prim in &geo.prims {
+    // Group membership per prim; an integer `part` attribute becomes `part_NN`.
+    let mut names: Vec<Vec<String>> = vec![Vec::new(); geo.prims.len()];
+    for (name, members) in &geo.prim_groups {
+        let name: String = name
+            .chars()
+            .map(|c| if c.is_whitespace() { '_' } else { c })
+            .collect();
+        for &p in members {
+            if let Some(n) = names.get_mut(p as usize) {
+                n.push(name.clone());
+            }
+        }
+    }
+    if let Ok(part) = geo.prim_attribs.ints("part") {
+        for (n, &v) in names.iter_mut().zip(part) {
+            if v >= 0 {
+                n.push(part_group(v));
+            }
+        }
+    }
+    let mut current: &[String] = &[];
+    for (prim, prim_names) in geo.prims.iter().zip(&names) {
         let (kw, min) = if prim.closed { ("f", 3) } else { ("l", 2) };
         if prim.vertices.len() < min {
             continue;
+        }
+        if prim_names.as_slice() != current {
+            current = prim_names;
+            writeln!(w, "g {}", current.join(" "))?;
         }
         w.write_all(kw.as_bytes())?;
         for &v in &prim.vertices {
@@ -241,6 +306,45 @@ mod tests {
 
     fn rd(s: &str) -> Geometry {
         read_bytes(Format::Obj, s.as_bytes(), &ReadOptions::default()).unwrap()
+    }
+
+    #[test]
+    fn groups_and_part_attribute_round_trip() {
+        let mut g = Geometry::make_box(DVec3::ONE);
+        let n = g.prim_count();
+        g.prim_attribs.set(
+            "part",
+            AttribArray::Int((0..n as i64).map(|i| i / 3).collect()),
+        );
+        g.prim_groups
+            .insert("top and sides".into(), vec![1, 2, 3, 5]);
+        let bytes = write_bytes(Format::Obj, &g, &WriteOptions::default()).unwrap();
+        let text = String::from_utf8(bytes.clone()).unwrap();
+        assert!(text.contains("g part_00"), "{text}");
+        assert!(text.contains("g part_01"), "{text}");
+        let back = rd(&text);
+        assert_eq!(
+            back.prim_attribs.ints("part").unwrap(),
+            g.prim_attribs.ints("part").unwrap()
+        );
+        // The part groups are consumed; the user group survives (spaces become '_').
+        assert_eq!(back.prim_groups.len(), 1);
+        assert_eq!(back.prim_groups["top_and_sides"], vec![1, 2, 3, 5]);
+        assert_eq!(back.prims, g.prims);
+    }
+
+    #[test]
+    fn part_groups_are_left_alone_when_they_do_not_cover_every_prim() {
+        let g = rd("v 0 0 0
+v 1 0 0
+v 0 1 0
+g part_01
+f 1 2 3
+g other
+f 1 2 3
+");
+        assert!(g.prim_attribs.ints("part").is_err());
+        assert!(g.prim_groups.contains_key("part_01"));
     }
 
     #[test]
@@ -297,8 +401,12 @@ l 1 3 5
         g.compute_normals();
         g.prim_attribs.remove("N");
         let n = g.point_count();
-        let cd: Vec<DVec3> = (0..n).map(|i| DVec3::new(i as f64 / 8.0, 0.5, 1.0)).collect();
-        let uv: Vec<DVec3> = (0..n).map(|i| DVec3::new(i as f64, 1.0 - i as f64, 0.0)).collect();
+        let cd: Vec<DVec3> = (0..n)
+            .map(|i| DVec3::new(i as f64 / 8.0, 0.5, 1.0))
+            .collect();
+        let uv: Vec<DVec3> = (0..n)
+            .map(|i| DVec3::new(i as f64, 1.0 - i as f64, 0.0))
+            .collect();
         g.point_attribs.set("Cd", AttribArray::Vec3(cd.clone()));
         g.point_attribs.set("uv", AttribArray::Vec3(uv.clone()));
         let bytes = write_bytes(Format::Obj, &g, &WriteOptions::default()).unwrap();

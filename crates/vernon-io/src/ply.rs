@@ -133,7 +133,9 @@ fn parse_header(bytes: &[u8], file: &str) -> IoResult<Header> {
                 })
             }
             Some("element") => {
-                let name = t.next().ok_or_else(|| err("element without a name".into()))?;
+                let name = t
+                    .next()
+                    .ok_or_else(|| err("element without a name".into()))?;
                 let count = t
                     .next()
                     .and_then(|c| c.parse::<usize>().ok())
@@ -148,7 +150,9 @@ fn parse_header(bytes: &[u8], file: &str) -> IoResult<Header> {
                 let el = elements
                     .last_mut()
                     .ok_or_else(|| err("property before any element".into()))?;
-                let ty = t.next().ok_or_else(|| err("property without a type".into()))?;
+                let ty = t
+                    .next()
+                    .ok_or_else(|| err("property without a type".into()))?;
                 let scalar = |s: Option<&str>| {
                     s.and_then(Scalar::parse)
                         .ok_or_else(|| err(format!("unknown property type {s:?}")))
@@ -160,7 +164,9 @@ fn parse_header(bytes: &[u8], file: &str) -> IoResult<Header> {
                 } else {
                     PropKind::Scalar(scalar(Some(ty))?)
                 };
-                let name = t.next().ok_or_else(|| err("property without a name".into()))?;
+                let name = t
+                    .next()
+                    .ok_or_else(|| err("property without a name".into()))?;
                 el.props.push(Property {
                     name: name.to_string(),
                     kind,
@@ -171,7 +177,33 @@ fn parse_header(bytes: &[u8], file: &str) -> IoResult<Header> {
             Some(other) => return Err(err(format!("unknown header keyword '{other}'"))),
         }
     }
-    let encoding = encoding.ok_or_else(|| parse_err(file, line_no, "PLY header has no format line"))?;
+    let encoding =
+        encoding.ok_or_else(|| parse_err(file, line_no, "PLY header has no format line"))?;
+    // Declared counts are untrusted: every row costs at least a few bytes, so
+    // a count the remaining data cannot hold is rejected before allocating.
+    let remaining = bytes.len().saturating_sub(pos);
+    for el in &elements {
+        let min_row: usize = match encoding {
+            Encoding::Ascii => (2 * el.props.len()).saturating_sub(1),
+            _ => el
+                .props
+                .iter()
+                .map(|p| match p.kind {
+                    PropKind::Scalar(t) | PropKind::List(t, _) => t.size(),
+                })
+                .sum(),
+        };
+        if el.count.saturating_mul(min_row.max(1)) > remaining {
+            return Err(parse_err(
+                file,
+                line_no,
+                format!(
+                    "element '{}' declares {} rows but only {remaining} bytes of data follow",
+                    el.name, el.count
+                ),
+            ));
+        }
+    }
     Ok(Header {
         encoding,
         elements,
@@ -205,7 +237,13 @@ impl Source for AsciiSrc<'_> {
                     self.line += 1;
                     self.cur = l.split_ascii_whitespace();
                 }
-                None => return Err(parse_err(self.file, self.line, "unexpected end of PLY data")),
+                None => {
+                    return Err(parse_err(
+                        self.file,
+                        self.line,
+                        "unexpected end of PLY data",
+                    ))
+                }
             }
         }
     }
@@ -225,7 +263,10 @@ impl Source for BinSrc<'_> {
             parse_err(
                 self.file,
                 0,
-                format!("unexpected end of binary PLY data at body byte {}", self.pos),
+                format!(
+                    "unexpected end of binary PLY data at body byte {}",
+                    self.pos
+                ),
             )
         })?;
         self.pos += n;
@@ -234,7 +275,11 @@ impl Source for BinSrc<'_> {
             ($ty:ty, $n:literal) => {{
                 let mut a = [0u8; $n];
                 a.copy_from_slice(b);
-                (if be { <$ty>::from_be_bytes(a) } else { <$ty>::from_le_bytes(a) }) as f64
+                (if be {
+                    <$ty>::from_be_bytes(a)
+                } else {
+                    <$ty>::from_le_bytes(a)
+                }) as f64
             }};
         }
         Ok(match t {
@@ -406,12 +451,20 @@ pub(crate) fn read(bytes: &[u8], file: &str) -> IoResult<Geometry> {
     Ok(geo)
 }
 
-fn read_vertices(el: &Element, src: &mut dyn Source, geo: &mut Geometry, file: &str) -> IoResult<()> {
+fn read_vertices(
+    el: &Element,
+    src: &mut dyn Source,
+    geo: &mut Geometry,
+    file: &str,
+) -> IoResult<()> {
     let mut extras = Vec::new();
     let roles = roles(el, vertex_role, &mut extras);
     let has = |f: fn(&Role) -> bool| roles.iter().any(f);
     for axis in 0..3 {
-        if !roles.iter().any(|r| matches!(r, Role::Pos(a) if *a == axis)) {
+        if !roles
+            .iter()
+            .any(|r| matches!(r, Role::Pos(a) if *a == axis))
+        {
             return Err(parse_err(file, 0, "PLY vertex element lacks x, y or z"));
         }
     }
@@ -490,7 +543,11 @@ fn read_faces(el: &Element, src: &mut dyn Source, geo: &mut Geometry) -> IoResul
                         let v = src.scalar(it)?;
                         // Negative or fractional indices are invalid; map them
                         // out of range so the final check reports them.
-                        verts.push(if v >= 0.0 && v.fract() == 0.0 { v as u32 } else { u32::MAX });
+                        verts.push(if v >= 0.0 && v.fract() == 0.0 {
+                            v as u32
+                        } else {
+                            u32::MAX
+                        });
                     }
                 }
                 (PropKind::Scalar(t), role) => {
@@ -588,10 +645,7 @@ fn clamp_i32(v: i64) -> i32 {
 }
 
 /// Float/Int attributes that can be written as plain scalar properties.
-fn scalar_attribs<'a>(
-    table: &'a AttribTable,
-    reserved: fn(&str) -> bool,
-) -> Vec<(&'a str, &'a AttribArray)> {
+fn scalar_attribs(table: &AttribTable, reserved: fn(&str) -> bool) -> Vec<(&str, &AttribArray)> {
     table
         .iter()
         .filter(|(name, col)| {
@@ -605,7 +659,11 @@ fn scalar_attribs<'a>(
 
 fn header_props<W: Write>(w: &mut W, attribs: &[(&str, &AttribArray)]) -> IoResult<()> {
     for (name, col) in attribs {
-        let ty = if matches!(col, AttribArray::Int(_)) { "int" } else { "double" };
+        let ty = if matches!(col, AttribArray::Int(_)) {
+            "int"
+        } else {
+            "double"
+        };
         writeln!(w, "property {ty} {name}")?;
     }
     Ok(())
@@ -631,13 +689,21 @@ pub(crate) fn write<W: Write>(w: &mut W, geo: &Geometry, scale: f64, ascii: bool
         .collect();
     let prim_cd = geo.prim_attribs.vec3s("Cd").ok();
     let prim_extra = scalar_attribs(&geo.prim_attribs, |n| face_role(n).is_some());
-    let max_deg = faces.iter().map(|&i| geo.prims[i].vertices.len()).max().unwrap_or(3);
+    let max_deg = faces
+        .iter()
+        .map(|&i| geo.prims[i].vertices.len())
+        .max()
+        .unwrap_or(3);
     let wide = max_deg > 255;
     if geo.points.len() > i32::MAX as usize {
         return Err(IoError::Other("too many points for PLY int indices".into()));
     }
 
-    let fmt = if ascii { "ascii" } else { "binary_little_endian" };
+    let fmt = if ascii {
+        "ascii"
+    } else {
+        "binary_little_endian"
+    };
     writeln!(w, "ply\nformat {fmt} 1.0\ncomment Vernon export")?;
     writeln!(w, "element vertex {}", geo.points.len())?;
     writeln!(w, "property double x\nproperty double y\nproperty double z")?;
@@ -645,7 +711,10 @@ pub(crate) fn write<W: Write>(w: &mut W, geo: &Geometry, scale: f64, ascii: bool
         writeln!(w, "property float nx\nproperty float ny\nproperty float nz")?;
     }
     if cd.is_some() {
-        writeln!(w, "property uchar red\nproperty uchar green\nproperty uchar blue")?;
+        writeln!(
+            w,
+            "property uchar red\nproperty uchar green\nproperty uchar blue"
+        )?;
     }
     if uv.is_some() {
         writeln!(w, "property float s\nproperty float t")?;
@@ -656,7 +725,10 @@ pub(crate) fn write<W: Write>(w: &mut W, geo: &Geometry, scale: f64, ascii: bool
         let ct = if wide { "int" } else { "uchar" };
         writeln!(w, "property list {ct} int vertex_indices")?;
         if prim_cd.is_some() {
-            writeln!(w, "property uchar red\nproperty uchar green\nproperty uchar blue")?;
+            writeln!(
+                w,
+                "property uchar red\nproperty uchar green\nproperty uchar blue"
+            )?;
         }
         header_props(w, &prim_extra)?;
     }
@@ -736,21 +808,35 @@ mod tests {
         let nf = g.prim_count();
         g.point_attribs.set(
             "Cd",
-            AttribArray::Vec3((0..np).map(|i| DVec3::new(i as f64 / 255.0, 1.0, 0.0)).collect()),
+            AttribArray::Vec3(
+                (0..np)
+                    .map(|i| DVec3::new(i as f64 / 255.0, 1.0, 0.0))
+                    .collect(),
+            ),
         );
         g.point_attribs.set(
             "uv",
-            AttribArray::Vec3((0..np).map(|i| DVec3::new(i as f64 * 0.25, 0.5, 0.0)).collect()),
+            AttribArray::Vec3(
+                (0..np)
+                    .map(|i| DVec3::new(i as f64 * 0.25, 0.5, 0.0))
+                    .collect(),
+            ),
         );
         g.point_attribs.set(
             "dist",
             AttribArray::Float((0..np).map(|i| i as f64 * 0.1 - 0.3).collect()),
         );
-        g.prim_attribs
-            .set("part", AttribArray::Int((0..nf as i64).map(|i| i % 3).collect()));
+        g.prim_attribs.set(
+            "part",
+            AttribArray::Int((0..nf as i64).map(|i| i % 3).collect()),
+        );
         g.prim_attribs.set(
             "Cd",
-            AttribArray::Vec3((0..nf).map(|i| DVec3::new(0.0, i as f64 / 255.0, 1.0)).collect()),
+            AttribArray::Vec3(
+                (0..nf)
+                    .map(|i| DVec3::new(0.0, i as f64 / 255.0, 1.0))
+                    .collect(),
+            ),
         );
         g
     }
@@ -838,7 +924,10 @@ end_header\r
         assert_eq!(g.prims[1].vertices, vec![0, 2, 3]);
         let cd = g.point_attribs.vec3s("Cd").unwrap();
         assert!(approx(cd[3], DVec3::new(0.2, 0.4, 0.6), 1e-12));
-        assert_eq!(g.point_attribs.ints("alpha").unwrap(), &[255, 255, 255, 255]);
+        assert_eq!(
+            g.point_attribs.ints("alpha").unwrap(),
+            &[255, 255, 255, 255]
+        );
         assert_eq!(g.point_attribs.floats("quality").unwrap()[3], 2.0);
         assert!((g.surface_area() - 1.0).abs() < 1e-12);
     }
@@ -871,6 +960,55 @@ end_header\r
         let back = rd(&bytes).unwrap();
         assert!(back.is_point_cloud());
         assert_eq!(back.point_attribs.vec3s("N").unwrap()[1], DVec3::X);
+    }
+
+    #[test]
+    fn absurd_declared_counts_fail_fast_without_allocating() {
+        for fmt in [
+            "ascii 1.0",
+            "binary_little_endian 1.0",
+            "binary_big_endian 1.0",
+        ] {
+            let h = format!(
+                "ply
+format {fmt}
+element vertex 4000000000
+property float x
+property float y
+property float z
+property float q
+end_header
+0 0 0
+"
+            );
+            assert!(rd(h.as_bytes()).is_err(), "{fmt}");
+        }
+        let faces = "ply
+format ascii 1.0
+element vertex 0
+property float x
+property float y
+property float z
+element face 4000000000
+property list uchar int vertex_indices
+end_header
+";
+        assert!(rd(faces.as_bytes()).is_err());
+        // A list whose declared length exceeds the data is an error, not a hang.
+        let list = "ply
+format binary_little_endian 1.0
+element vertex 3
+property float x
+property float y
+property float z
+element face 1
+property list uint int vertex_indices
+end_header
+";
+        let mut b = list.as_bytes().to_vec();
+        b.extend_from_slice(&[0; 36]);
+        b.extend_from_slice(&u32::MAX.to_le_bytes());
+        assert!(rd(&b).is_err());
     }
 
     #[test]

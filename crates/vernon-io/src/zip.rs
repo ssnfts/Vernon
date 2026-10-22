@@ -77,14 +77,18 @@ fn u64_at(d: &[u8], o: usize) -> Option<u64> {
 /// Normalise a part name: forward slashes, no leading slash.
 pub(crate) fn normalize(name: &str) -> String {
     let n = name.replace('\\', "/");
-    n.trim_start_matches('/').trim_start_matches("./").to_string()
+    n.trim_start_matches('/')
+        .trim_start_matches("./")
+        .to_string()
 }
 
 impl<'a> Archive<'a> {
     pub(crate) fn open(data: &'a [u8], file: &'a str, limits: Limits) -> IoResult<Self> {
         let bad = |m: &str| parse_err(file, 0, format!("bad ZIP archive: {m}"));
         if data.len() < 22 {
-            return Err(bad("file is shorter than an end-of-central-directory record"));
+            return Err(bad(
+                "file is shorter than an end-of-central-directory record",
+            ));
         }
         // The end record sits at the very end, optionally followed by a comment.
         let lo = data.len().saturating_sub(22 + 65_535);
@@ -119,7 +123,10 @@ impl<'a> Archive<'a> {
         if total.saturating_mul(46) > data.len() as u64 {
             return Err(bad("entry count exceeds the archive size"));
         }
-        if cd_off.checked_add(cd_size).is_none_or(|e| e > data.len() as u64) {
+        if cd_off
+            .checked_add(cd_size)
+            .is_none_or(|e| e > data.len() as u64)
+        {
             return Err(bad("central directory lies outside the file"));
         }
 
@@ -130,8 +137,10 @@ impl<'a> Archive<'a> {
             if u32_at(data, pos) != Some(SIG_CENTRAL) {
                 return Err(bad("bad central directory entry"));
             }
-            let g16 = |o: usize| u16_at(data, pos + o).ok_or_else(|| bad("truncated central entry"));
-            let g32 = |o: usize| u32_at(data, pos + o).ok_or_else(|| bad("truncated central entry"));
+            let g16 =
+                |o: usize| u16_at(data, pos + o).ok_or_else(|| bad("truncated central entry"));
+            let g32 =
+                |o: usize| u32_at(data, pos + o).ok_or_else(|| bad("truncated central entry"));
             let flags = g16(8)?;
             let method = g16(10)?;
             let crc = g32(16)?;
@@ -152,19 +161,21 @@ impl<'a> Archive<'a> {
             while e + 4 <= extra.len() {
                 let id = u16_at(extra, e).unwrap_or(0);
                 let sz = u16_at(extra, e + 2).unwrap_or(0) as usize;
-                let body = extra.get(e + 4..e + 4 + sz).ok_or_else(|| bad("bad extra field"))?;
+                let body = extra
+                    .get(e + 4..e + 4 + sz)
+                    .ok_or_else(|| bad("bad extra field"))?;
                 if id == 1 {
                     let mut o = 0;
-                    let mut take = |v: &mut u64, sat: bool| -> IoResult<()> {
-                        if sat {
+                    let mut take = |v: &mut u64| -> IoResult<()> {
+                        if *v == 0xFFFF_FFFF {
                             *v = u64_at(body, o).ok_or_else(|| bad("short ZIP64 extra field"))?;
                             o += 8;
                         }
                         Ok(())
                     };
-                    take(&mut uncomp, uncomp == 0xFFFF_FFFF)?;
-                    take(&mut comp, comp == 0xFFFF_FFFF)?;
-                    take(&mut local_offset, local_offset == 0xFFFF_FFFF)?;
+                    take(&mut uncomp)?;
+                    take(&mut comp)?;
+                    take(&mut local_offset)?;
                 }
                 e += 4 + sz;
             }
@@ -173,7 +184,9 @@ impl<'a> Archive<'a> {
             if name.ends_with('/') {
                 continue; // directory entry
             }
-            index.entry(name.to_ascii_lowercase()).or_insert(entries.len());
+            index
+                .entry(name.to_ascii_lowercase())
+                .or_insert(entries.len());
             entries.push(Entry {
                 name,
                 method,
@@ -200,7 +213,8 @@ impl<'a> Archive<'a> {
     }
 
     pub(crate) fn contains(&self, name: &str) -> bool {
-        self.index.contains_key(&normalize(name).to_ascii_lowercase())
+        self.index
+            .contains_key(&normalize(name).to_ascii_lowercase())
     }
 
     /// Inflate the named entry (case-insensitive), or `None` if absent.
@@ -233,8 +247,10 @@ impl<'a> Archive<'a> {
         if u32_at(self.data, lo) != Some(SIG_LOCAL) {
             return Err(bad("bad local header".into()));
         }
-        let name_len = u16_at(self.data, lo + 26).ok_or_else(|| bad("truncated local header".into()))?;
-        let extra_len = u16_at(self.data, lo + 28).ok_or_else(|| bad("truncated local header".into()))?;
+        let name_len =
+            u16_at(self.data, lo + 26).ok_or_else(|| bad("truncated local header".into()))?;
+        let extra_len =
+            u16_at(self.data, lo + 28).ok_or_else(|| bad("truncated local header".into()))?;
         let start = lo + 30 + name_len as usize + extra_len as usize;
         let end = start
             .checked_add(e.comp as usize)
@@ -248,8 +264,12 @@ impl<'a> Archive<'a> {
                 }
                 raw.to_vec()
             }
-            8 => decompress_to_vec_with_limit(raw, e.uncomp as usize)
-                .map_err(|err| bad(format!("corrupt or oversized deflate stream ({:?})", err.status)))?,
+            8 => decompress_to_vec_with_limit(raw, e.uncomp as usize).map_err(|err| {
+                bad(format!(
+                    "corrupt or oversized deflate stream ({:?})",
+                    err.status
+                ))
+            })?,
             m => return Err(bad(format!("unsupported compression method {m}"))),
         };
         if out.len() as u64 != e.uncomp {
@@ -274,7 +294,11 @@ const fn crc_table() -> [u32; 256] {
         let mut c = i as u32;
         let mut k = 0;
         while k < 8 {
-            c = if c & 1 != 0 { 0xEDB8_8320 ^ (c >> 1) } else { c >> 1 };
+            c = if c & 1 != 0 {
+                0xEDB8_8320 ^ (c >> 1)
+            } else {
+                c >> 1
+            };
             k += 1;
         }
         t[i] = c;
@@ -406,8 +430,11 @@ mod tests {
         let mut z = ZipWriter::new();
         z.add("[Content_Types].xml", b"<Types/>").unwrap();
         z.add("3D/big.bin", &vec![7u8; 100_000]).unwrap();
-        z.add("noise.bin", &(0..=255u8).cycle().take(3000).collect::<Vec<_>>())
-            .unwrap();
+        z.add(
+            "noise.bin",
+            &(0..=255u8).cycle().take(3000).collect::<Vec<_>>(),
+        )
+        .unwrap();
         z.finish().unwrap()
     }
 
@@ -495,7 +522,12 @@ mod tests {
                 }
             }
         }
-        assert!(Archive::open(b"not a zip at all, but long enough to scan", "t", Limits::default()).is_err());
+        assert!(Archive::open(
+            b"not a zip at all, but long enough to scan",
+            "t",
+            Limits::default()
+        )
+        .is_err());
     }
 
     #[test]
@@ -527,7 +559,7 @@ mod tests {
         b.extend_from_slice(&0xFFFF_FFFFu32.to_le_bytes());
         b.extend_from_slice(&(name.len() as u16).to_le_bytes());
         b.extend_from_slice(&(extra.len() as u16).to_le_bytes());
-        b.extend_from_slice(&[0; 12]);
+        b.extend_from_slice(&[0; 10]);
         b.extend_from_slice(&0u32.to_le_bytes()); // local offset 0
         b.extend_from_slice(name);
         b.extend_from_slice(&extra);

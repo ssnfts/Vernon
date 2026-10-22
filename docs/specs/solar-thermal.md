@@ -1,6 +1,6 @@
 # Spec: solar incident radiation, sun position and panel surface-temperature check (reference: Ladybug Incident Radiation, Blender Sun Position / Helio, hand energy balance)
 
-Status: draft v0.2, 2026-10-22 (v0.1 2026-10-21, extended and re-verified). Clean-room spec: public help pages, papers and open-source docs only (see CLEAN_ROOM.md).
+Status: draft v0.3, 2026-10-22 (v0.1 2026-10-21; v0.2 extended; v0.3 fixed the azimuth equation sign and made the G8/G11 direct-beam goldens consistent with G5). Clean-room spec: public help pages, papers and open-source docs only (see CLEAN_ROOM.md).
 Vernon stage served: 7 solar / UV dose and surface temperature. It consumes the surface meshes from stages 2-6, and emits per-face W/m2, kWh/m2, surface temperature and heat-deflection margin that the material choice and the FEA stage check.
 Marker key: **(doc)** stated by a vendor/project page, **(inf)** inferred from wording, **(V)** a Vernon design choice, **(calc)** number computed by the spec author with the stated equations (re-derive before freezing).
 Source tags (section 6): [F] fetched this session, [S] seen only in search results, [R] recalled from memory, verify before relying on it, [rep] value taken from the project report (`3D printed body kit toolchain.md`), not re-fetched.
@@ -91,7 +91,9 @@ decl[rad] = 0.006918 - 0.399912 cos g + 0.070257 sin g - 0.006758 cos 2g + 0.000
 time_offset[min] = eqtime + 4*lon[deg east] - 60*tz[h]       tst[min] = hr*60 + mn + sec/60 + time_offset
 ha[deg] = tst/4 - 180
 cos(zenith) = sin(lat) sin(decl) + cos(lat) cos(decl) cos(ha)
-cos(180 - az) = -(sin(lat) cos(zenith) - sin(decl)) / (cos(lat) sin(zenith));  az = 360 - that angle when ha > 0 (afternoon)
+A = acos( (sin(decl) - sin(lat) cos(zenith)) / (cos(lat) sin(zenith)) )  [clamp the argument to -1..1]
+az = A when ha <= 0 (morning), az = 360 - A when ha > 0 (afternoon)      clockwise from true north
+(the NOAA PDF prints this as cos(180 - az) = -(sin(lat) cos(zenith) - sin(decl)) / (cos(lat) sin(zenith)); read literally with az = A that form gives the supplementary angle, e.g. az 5 deg instead of 175 deg for a winter-noon southern sun, so Vernon uses the A form above, checked against the G5 values)
 sunrise/sunset zenith 90.833 deg: ha_s = acos(cos(90.833)/(cos lat cos decl) - tan lat tan decl)
 sunrise_utc[min] = 720 - 4*(lon + ha_s) - eqtime; sunset: use -ha_s; solar noon_utc = 720 - 4*lon - eqtime
 ```
@@ -164,7 +166,7 @@ Labels contain no vendor names. Status: **now** = fully specified above and smal
 | solar.sky_temperature | Sky Temperature | hourly table row(s) | t_sky_c, ir_w_m2, depression_k | source (epw_ir/clark_allen/fixed_depression), depression_k (15), correlation (clark_allen/martin_berdahl/brunt/idso) | EnergyPlus climate calcs | now |
 | solar.sky_matrix | Sky Patch Matrix | hourly table, location, hoy list | patch matrix (Lsky, Bsun, Lgnd), patch table | density_mf (1/2/4), ground_reflectance (0.2), sky_model (perez/isotropic), north_angle_deg (0), sun_spread (4), conserve_horizontal (true) | gendaymtx via sky matrix component | WB (perez), now (isotropic) |
 | solar.incident_radiation | Incident Radiation | sky matrix, study mesh, context meshes | per-face kWh/m2 and W/m2, total kWh, intersection matrix, report | grid_size_mm (50), offset_mm (1), irradiance (false), by_vertex (false), sun_mode (patch/exact), patch_subsamples (1), ground_mode (hemisphere/none), average_over (all/daylight) | LB Incident Radiation | now |
-| solar.sun_exposure_map | Relative Sun Exposure | study mesh, context, sun vectors | per-face 0..1 map | weights (uniform/dni), normalise (true) | Cycles/VOP dot(N,L)+shadow bake | now |
+| solar.sun_exposure_map | Relative Sun Exposure | study mesh, context, sun vectors | per-face 0..1 map | weights (uniform/dni), normalise (true) | Blender Cycles diffuse-direct bake (cos and shadow) | now |
 | solar.surface_balance | Surface Temperature Balance | per-face W/m2, face normals, weather/design row | per-face Ts_c, hc, convergence report | alpha (0.95), emissivity (0.9), wind_m_s, hc_model (mcadams/mowitt), sky_model (fixed_depression/epw), ground_offset_k (0), back_h (0), t_inside_c | report energy balance | now |
 | solar.balance_sweep | Balance Sweep Table | design inputs | table alpha x wind x Ta of Ts | alphas (0.95,0.6,0.3), winds (0,1,3), t_air (45,50), g (1000) | report result table | now |
 | solar.material_table | Material Heat Table | none (data) or user CSV | rows: material, hdt_c, hdt_annealed_c, tg_c, water_abs_pct, source_tag | preset (report_v1) | report material table | now |
@@ -194,7 +196,7 @@ Tolerances are Vernon pass criteria. "(ref)" = record from a licensed/open copy 
 - 2026-06-21 07:00: altitude 18.23 +-0.15; azimuth 72.06 +-0.1.
 - 2026-08-01 15:00: altitude 53.54 +-0.15; azimuth 266.77 +-0.5.
 - 2026-03-20 12:00: altitude 63.51 +-0.25; azimuth 164.67 +-0.3.
-- (calc re-run 2026-10-22 with `noaa_low`, 365-day year; the Meeus tier differs by up to ~0.1 deg, so the tolerances above are wide enough for both.)
+- (calc re-run 2026-10-22 with `noaa_low`, 365-day year, azimuth by the A form of 3.2, all five rows and the sunrise/sunset rows reproduced; the Meeus tier differs by up to ~0.1 deg, so the tolerances above are wide enough for both.)
 - Sunrise / noon / sunset (zenith 90.833, +-2 min): 21 Jun 05:29 / 12:20 / 19:11 (day length 13.71 h); 21 Dec 07:00 / 12:17 / 17:34 (10.57 h).
 - SPA reference case [R] (recall; verify with the NREL download before freezing): 2003-10-17 12:30:30 UTC-7, lat 39.742476, lon -105.1786, elevation 1830.14 m, 820 mb, 11 degC, delta-T 67 s, refraction 0.5667 deg -> zenith 50.1116, azimuth 194.3402 (eastward from north); tolerance +-0.001 deg for `spa`. Use whole minutes elsewhere: 30 s shifts hour angle by 0.125 deg.
 - (ref) Blender Sun Position elevation/azimuth for the same Dubai inputs, tolerance +-0.3 deg; Helio same, +-0.3 deg.
@@ -203,13 +205,13 @@ Tolerances are Vernon pass criteria. "(ref)" = record from a licensed/open copy 
 
 **G7 uniform-sky analytic** (L = DHI/pi, no sun, rho_g 0): unoccluded horizontal point E = DHI within 1.0 % (MF1), 0.2 % (MF2), 0.1 % (MF4); vertical wall E = DHI/2 within 0.5 %. Horizontal point at the foot of an infinitely tall vertical wall (half the dome blocked, centre-ray visibility): E = DHI/2 with worst-case error over 120 wall azimuths 5.6 % (MF1), 3.3 % (MF2), 0.1 % (MF4); gate at 6 / 4 / 1 %. A plate 1 mm above the point covering the whole dome gives E = 0 exactly.
 
-**G8 direct beam** (Dubai, DNI 800, DHI 0, ground 0): 21 Dec 12:00 (alt 41.19, az 174.84): horizontal 526.8, south wall 599.6 W/m2 (exact mode +-0.1 %; patch mode south wall 598.8 / 593.9 / 602.2 for MF 1/2/4, gate +-5 %). 21 Jun 12:00: horizontal 796.9 (conserved: patch = exact within 0.01 %). 1 Aug 15:00 (alt 53.4, az 266.4): horizontal 642.3, west wall normal -X exact 476.0, patch 494.5 / 481.8 / 471.3 (+3.9 / +1.2 / -1.0 %). 21 Jun 07:00 (alt 18.1, az 72): horizontal 248.5, east wall exact 723.2, patch 718.1 / 713.2 / 697.3 (-0.7 / -1.4 / -3.6 %).
+**G8 direct beam** (Dubai, DNI 800, DHI 0, ground 0; sun from `noaa_low` as in G5; patch mode = 4 nearest patch centres by dot product, weights 1/(1.002 - s.v), horizontal-conserving rescale of 3.4 step 6): 21 Dec 12:00 (alt 41.21, az 174.89): horizontal 527.1, south wall exact 599.4 W/m2 (exact mode +-0.1 %); patch mode south wall 599.1 / 594.0 / 602.3 for MF 1/2/4 (-0.0 / -0.9 / +0.5 %, gate +-5 %). 21 Jun 12:00 (alt 85.07): horizontal 797.0 (conserved: patch = exact within 0.01 %). 1 Aug 15:00 (alt 53.54, az 266.77): horizontal 643.4, west wall (normal -X) exact 474.7, patch 494.0 / 481.7 / 471.5 (+4.1 / +1.5 / -0.7 %). 21 Jun 07:00 (alt 18.23, az 72.06): horizontal 250.3, east wall exact 722.9, patch 721.8 / 715.0 / 700.9 (-0.2 / -1.1 / -3.0 %). Patch-mode error is a property of the 4-patch spread (the sun is smeared over about 12-30 deg), so the gates are +-5 % at MF 1 and 2 and +-4 % at MF 4, not an exactness claim.
 
 **G9 ground and totals**: DNI = DHI = 0 with ground GHI term only, rho_g 0.2 and GHI 1000: vertical wall 100 W/m2 (+-1 %), horizontal 0. Total kWh equals sum(E_f * A_f) for a 1 m x 2 m flat quad at 50 mm grid (area 2 m2, 2000 mm sides). Synthetic one-year EPW (constant DNI 500, DHI 100 for 4380 sun hours): horizontal annual ~ sum of GHI within 1 % in patch mode.
 
 **G10 EPW**: synthetic file with 8 header lines and 8760 rows x 35 fields round-trips; a row with DNI 9999 yields 0 and report count 1; hour 24 maps to hoy index 23 of that day; time zone and elevation parse exactly.
 
-**G11 end-to-end** (report chain): design hour Dubai summer, DNI 900, DHI 100 -> horizontal black ASA panel: G = 900 sin(alt) + 100; with alt 85 G = 996.6 W/m2, Ts ~ 104.6 degC (Ta 45, still), verdict fail against ASA 100. Same panel white -> 61 degC, ok. Vertical wall at 12:00 on 21 Dec (DNI 800, DHI 100, rho_g 0.2): E about 599.6 + 50 + 0.2 * (526.8 + 100)/2 = ~712 W/m2 (patch mode +-5 %).
+**G11 end-to-end** (report chain): design hour Dubai summer, DNI 900, DHI 100 -> horizontal black ASA panel: G = 900 sin(alt) + 100; with alt 85 G = 996.6 W/m2, Ts ~ 104.6 degC (Ta 45, still), verdict fail against ASA 100. Same panel white -> 61 degC, ok. Vertical wall at 12:00 on 21 Dec (DNI 800, DHI 100, rho_g 0.2): E about 599.4 + 50 + 0.2 * (527.1 + 100)/2 = ~712 W/m2 (patch mode +-5 %).
 
 ## 6. Sources (every URL consulted or cited)
 

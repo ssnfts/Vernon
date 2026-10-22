@@ -6,8 +6,9 @@ use std::collections::HashMap;
 use glam::DVec3;
 use serde_json::{json, Value};
 use vernon_core::{Geometry, Metric, Report, Severity};
+use vernon_graph::node::inputs;
 use vernon_graph::{
-    inputs, CookContext, CookResult, Data, DataKind, NodeOp, NodeTypeInfo, ParamSpec, Params, PortSpec,
+    CookContext, CookResult, Data, DataKind, NodeOp, NodeTypeInfo, ParamSpec, Params, PortSpec,
 };
 
 use crate::linalg::{fit_similarity, Sim3};

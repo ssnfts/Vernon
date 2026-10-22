@@ -21,7 +21,10 @@ pub(crate) struct Tag<'a> {
 impl<'a> Tag<'a> {
     /// Value of the attribute with exactly this (qualified) name.
     pub(crate) fn attr(&self, name: &str) -> Option<&str> {
-        self.attrs.iter().find(|(k, _)| *k == name).map(|(_, v)| v.as_ref())
+        self.attrs
+            .iter()
+            .find(|(k, _)| *k == name)
+            .map(|(_, v)| v.as_ref())
     }
 
     /// Value of the attribute whose local name matches, ignoring any prefix.
@@ -170,7 +173,12 @@ impl<'a> Reader<'a> {
                 Some(_) => {}
             }
             let ks = i;
-            while i < b.len() && !b[i].is_ascii_whitespace() && b[i] != b'=' && b[i] != b'>' && b[i] != b'/' {
+            while i < b.len()
+                && !b[i].is_ascii_whitespace()
+                && b[i] != b'='
+                && b[i] != b'>'
+                && b[i] != b'/'
+            {
                 i += 1;
             }
             let key = &src[ks..i];
@@ -242,13 +250,14 @@ fn unescape(s: &str) -> Result<Cow<'_, str>, String> {
             "quot" => out.push('"'),
             "apos" => out.push('\''),
             _ => {
-                let code = if let Some(h) = ent.strip_prefix("#x").or_else(|| ent.strip_prefix("#X")) {
-                    u32::from_str_radix(h, 16).ok()
-                } else if let Some(d) = ent.strip_prefix('#') {
-                    d.parse::<u32>().ok()
-                } else {
-                    None
-                };
+                let code =
+                    if let Some(h) = ent.strip_prefix("#x").or_else(|| ent.strip_prefix("#X")) {
+                        u32::from_str_radix(h, 16).ok()
+                    } else if let Some(d) = ent.strip_prefix('#') {
+                        d.parse::<u32>().ok()
+                    } else {
+                        None
+                    };
                 match code.and_then(char::from_u32) {
                     Some(c) => out.push(c),
                     None => return Err(format!("unknown entity '&{ent};'")),
@@ -306,7 +315,14 @@ mod tests {
         let ev = events(src).unwrap();
         assert_eq!(
             ev,
-            ["<model unit=inch,x:y=1>", "<a id=1>", "</a>", "<b >", "</b>", "</model>"]
+            [
+                "<model unit=inch,x:y=1>",
+                "<a id=1>",
+                "</a>",
+                "<b >",
+                "</b>",
+                "</model>"
+            ]
         );
         let mut r = Reader::new("<a p:path=\"/x\" b=\"2\"/>");
         let Some(Event::Start(t)) = r.next_event().unwrap() else {

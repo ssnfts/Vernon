@@ -145,7 +145,7 @@ Verdict is exactly ACCEPT, ADAPT or REJECT. Priority: P0 before anything public,
 | K127 | Pipeline integration test (reads `default_output`, missing fixture) | ADAPT | Folded into K119; assert non-empty reports, not merely "not Nothing". | vernon-cli (tests) | P1 |
 | K128 | Scaffold is "compile-ready" | REJECT | It is not; nothing adopted. | - | - |
 | K129 | `--python-expr` runs arbitrary code | ACCEPT | Valid hazard. Vernon never forwards text to a shell or script: one `Command::arg` per typed argument, reject path params beginning with `-`, treat `.vrn` files as untrusted input. | graph | P1 |
-| K130 | Per-feature verification matrix (reference, test type, numeric criterion) | ADAPT | Same shape as the existing G1..G28 tables. Per-format round-trip bound: PLY double exact; OBJ and XYZ shortest-round-trip text exact; STL float32, error up to abs(x) x 6e-8 (5000 mm: 2.4e-4 mm; 100 m: 0.0039 mm). | io, verify | P1 |
+| K130 | Per-feature verification matrix (reference, test type, numeric criterion) | ADAPT | Same shape as the existing G1..G28 tables. Per-format round-trip bound: PLY double exact; OBJ and XYZ shortest-round-trip text exact; STL float32, error at most half an ulp, bounded by abs(x) x 6e-8 (worst case at 5000 mm: 2.4e-4 mm; at 100 m: 0.0039 mm). | io, verify | P1 |
 | K131 | OCCT used for a non-linear dynamics module; test names `BRepAPI_Import` | REJECT | OCCT is a B-rep kernel, not a solver; STEP reading is `STEPControl_Reader` (per summariser). | - | - |
 | K132 | Lap validation: <= 0.30 s ("0.5%"), Pearson r >= 0.95 | ADAPT | 0.30 s at 0.5% implies a 60 s lap; fix arithmetic. Add slope and RMSE, since r ignores bias. The race-team CFD map is UNVERIFIED. | verify | P3 |
 | K133 | Solar tolerance 0.05 kWh/m2-h = "3%"; HDT "NBA test rig" | ADAPT | 0.05 kWh/m2-h = 50 W/m2; 3% would need a 1.67 kW/m2 reference, above the 1041 W/m2 peak in the spec. Compare W/m2 per hour with relative tolerance on cumulative kWh/m2 and an analytic horizontal-plane case. Drop the unexplained rig. | verify | P2 |
@@ -204,7 +204,7 @@ In Vernon, found while reading (each has a test in section 5):
 8. `vernon_io` PLY reader passes the header-declared element count to `Vec::with_capacity` with no size check (STL is bounds-checked); `io::write` truncates the target via `File::create` before writing (only 3MF is encoded first).
 9. `Geometry::triangles()` fans from vertex 0: correct for convex faces, wrong (flipped or overlapping triangles) for concave n-gons; area and Newell normal are unaffected.
 10. `Geometry` has no volume, closedness or edge-count helper, and no content hash.
-11. `crates/vernon-io/src/lib.rs` declared modules `threemf`, `xml`, `xyz`, `zip` whose files were absent when read (another agent may be mid-edit): confirm the crate builds.
+11. `crates/vernon-io/src/lib.rs` declared modules `threemf`, `xml`, `xyz`, `zip` whose files were absent when first read; they exist now (another agent added them), but a green `cargo test -p vernon-io` has not been confirmed by this review.
 12. `vernon-cli/src/main.rs` is `fn main() {}`.
 13. Workspace `rust-version = "1.80"` is false (eframe 0.32.3: 1.85; kiddo 6.3.0 and nalgebra 0.35.0: 1.89); installed cargo is 1.99.1.
 14. Repo root has no LICENSE, NOTICE, `deny.toml`, `.github/`; `docs/research/PROVENANCE.md` does not exist.
@@ -297,7 +297,7 @@ Legal facts checked by search (not legal advice): Lotus v. Borland, 49 F.3d 807 
 4. Round-trip tolerance table at car scale (coordinates near 5000 mm and 1e5 mm): PLY exact, OBJ/XYZ exact, STL within abs(x) x 6e-8, 3MF per its text precision; one test per format (K130).
 5. proptest properties: OBJ and PLY round trip exactly; `weld_points` is idempotent and keeps surface area within tolerance x perimeter; unit conversion round trip mm to inch to mm within 1e-9 (K101).
 6. Truncated and malformed corpus (binary STL/PLY, zip, XML): every case returns an `Err`, none panics (K07, K101).
-7. Confirm `threemf.rs`, `xml.rs`, `xyz.rs`, `zip.rs` exist and `cargo test -p vernon-io` is green (hazard 11).
+7. Run `cargo test -p vernon-io` and keep it green now that `threemf.rs`, `xml.rs`, `xyz.rs`, `zip.rs` exist (hazard 11); add a test that every `mod` in `lib.rs` has a round-trip case.
 8. STEP spike, time-boxed: write a unit box with truck-stepio, parse it with ruststep, bounding box equals the input within 1e-6 mm; otherwise document the helper-process route (K56).
 
 ### vernon-cli

@@ -1,4 +1,4 @@
-﻿[package]
+[package]
 name = "vernon-nodes-fea"
 description = "Stage 6 FEA: CalculiX decks, anisotropic printed materials at temperature, safety factors"
 version.workspace = true
@@ -11,3 +11,5 @@ vernon-graph.workspace = true
 glam.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+indexmap.workspace = true
+rayon.workspace = true

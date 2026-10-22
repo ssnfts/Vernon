@@ -64,7 +64,8 @@ pub(crate) fn triangulate_ring(points: &[DVec3], verts: &[u32], out: &mut Vec<[u
     let nu = nrm / area2;
     if ring.len() == 4 {
         let (a, b, c, d) = (ring[0], ring[1], ring[2], ring[3]);
-        let score = |t1: [u32; 3], t2: [u32; 3]| agreement(points, t1, nu).min(agreement(points, t2, nu));
+        let score =
+            |t1: [u32; 3], t2: [u32; 3]| agreement(points, t1, nu).min(agreement(points, t2, nu));
         let s02 = score([a, b, c], [a, c, d]);
         let s13 = score([b, c, d], [b, d, a]);
         if s13 > s02 + 1e-12 {
@@ -83,7 +84,10 @@ pub(crate) fn triangulate_ring(points: &[DVec3], verts: &[u32], out: &mut Vec<[u
 /// All turns agree with the normal (collinear vertices allowed).
 fn is_convex(points: &[DVec3], ring: &[u32], nu: DVec3) -> bool {
     let n = ring.len();
-    let scale = ring.iter().map(|&i| points[i as usize].abs().max_element()).fold(0.0, f64::max);
+    let scale = ring
+        .iter()
+        .map(|&i| points[i as usize].abs().max_element())
+        .fold(0.0, f64::max);
     let eps = 1e-12 * scale * scale;
     (0..n).all(|k| {
         let a = points[ring[k] as usize];
@@ -105,9 +109,13 @@ fn ear_clip(points: &[DVec3], ring: &[u32], nu: DVec3, out: &mut Vec<[u32; 3]>) 
             (p.dot(u), p.dot(v))
         })
         .collect();
-    let extent = pts.iter().fold(0.0f64, |m, p| m.max(p.0.abs()).max(p.1.abs()));
+    let extent = pts
+        .iter()
+        .fold(0.0f64, |m, p| m.max(p.0.abs()).max(p.1.abs()));
     let eps = 1e-12 * extent * extent;
-    let cross = |a: (f64, f64), b: (f64, f64), c: (f64, f64)| (b.0 - a.0) * (c.1 - a.1) - (b.1 - a.1) * (c.0 - a.0);
+    let cross = |a: (f64, f64), b: (f64, f64), c: (f64, f64)| {
+        (b.0 - a.0) * (c.1 - a.1) - (b.1 - a.1) * (c.0 - a.0)
+    };
     let mut idx: Vec<usize> = (0..ring.len()).collect();
     while idx.len() > 3 {
         let m = idx.len();
@@ -128,7 +136,9 @@ fn ear_clip(points: &[DVec3], ring: &[u32], nu: DVec3, out: &mut Vec<[u32; 3]>) 
                     return false;
                 }
                 let p = pts[j];
-                if [a, b, c].iter().any(|q| (q.0 - p.0).abs() <= 1e-12 * extent && (q.1 - p.1).abs() <= 1e-12 * extent) {
+                if [a, b, c].iter().any(|q| {
+                    (q.0 - p.0).abs() <= 1e-12 * extent && (q.1 - p.1).abs() <= 1e-12 * extent
+                }) {
                     return false; // coincident with a corner
                 }
                 cross(a, b, p) >= -eps && cross(b, c, p) >= -eps && cross(c, a, p) >= -eps
@@ -178,7 +188,9 @@ mod tests {
 
     fn min_agreement(points: &[DVec3], ring: &[u32], tris: &[[u32; 3]]) -> f64 {
         let n = newell(points, ring).normalize();
-        tris.iter().map(|&t| agreement(points, t, n)).fold(1.0, f64::min)
+        tris.iter()
+            .map(|&t| agreement(points, t, n))
+            .fold(1.0, f64::min)
     }
 
     fn pts2(v: &[(f64, f64)]) -> Vec<DVec3> {
@@ -230,7 +242,16 @@ mod tests {
         assert!(min_agreement(&l, &ring, &out) > 0.999);
 
         let comb = pts2(&[
-            (0., 0.), (1., 0.), (2., 0.), (3., 0.), (3., 3.), (2., 3.), (2., 1.), (1., 1.), (1., 3.), (0., 3.),
+            (0., 0.),
+            (1., 0.),
+            (2., 0.),
+            (3., 0.),
+            (3., 3.),
+            (2., 3.),
+            (2., 1.),
+            (1., 1.),
+            (1., 3.),
+            (0., 3.),
         ]);
         let ring: Vec<u32> = (0..10).collect();
         out.clear();
@@ -245,7 +266,8 @@ mod tests {
     fn ear_clipping_works_off_axis_and_for_clockwise_rings() {
         // The L shape rotated into an oblique plane, and reversed.
         let l = pts2(&[(0., 0.), (4., 0.), (4., 2.), (2., 2.), (2., 4.), (0., 4.)]);
-        let rot = vernon_core::DMat4::from_rotation_x(0.7) * vernon_core::DMat4::from_rotation_y(-0.4);
+        let rot =
+            vernon_core::DMat4::from_rotation_x(0.7) * vernon_core::DMat4::from_rotation_y(-0.4);
         let p: Vec<DVec3> = l.iter().map(|&v| rot.transform_point3(v)).collect();
         for ring in [[0, 1, 2, 3, 4, 5], [5, 4, 3, 2, 1, 0]] {
             let mut out = Vec::new();

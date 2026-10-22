@@ -1,4 +1,4 @@
-﻿//! Vernon viewport renderer.
+//! Vernon viewport renderer.
 //!
 //! An offscreen `wgpu` renderer for `egui` viewports, version-matched to
 //! `eframe` 0.32 / `egui-wgpu` 0.32 / `wgpu` 25. Each on-screen viewport owns

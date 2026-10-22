@@ -161,17 +161,18 @@ fn parse_model(text: &str, file: &str, part: &str) -> IoResult<Model> {
     }
     let mut cur: Option<Cur> = None;
     let mut saw_model = false;
-    while let Some(ev) = rd.next_event().map_err(&err)? {
+    while let Some(ev) = rd.next_event().map_err(err)? {
         match ev {
             Event::Start(t) => match t.name {
                 "model" => {
                     saw_model = true;
                     if let Some(u) = t.attr("unit") {
-                        model.unit_mm = unit_mm(u).ok_or_else(|| err(format!("unknown unit '{u}'")))?;
+                        model.unit_mm =
+                            unit_mm(u).ok_or_else(|| err(format!("unknown unit '{u}'")))?;
                     }
                 }
                 "object" => {
-                    let id = index(&t, "id").map_err(&err)?;
+                    let id = index(&t, "id").map_err(err)?;
                     let buildable = !matches!(t.attr("type"), Some("support" | "other"));
                     cur = Some(Cur {
                         id,
@@ -188,9 +189,9 @@ fn parse_model(text: &str, file: &str, part: &str) -> IoResult<Model> {
                 "vertex" => {
                     if let Some(m) = cur.as_mut().and_then(|c| c.mesh.as_mut()) {
                         let v = DVec3::new(
-                            number(&t, "x").map_err(&err)?,
-                            number(&t, "y").map_err(&err)?,
-                            number(&t, "z").map_err(&err)?,
+                            number(&t, "x").map_err(err)?,
+                            number(&t, "y").map_err(err)?,
+                            number(&t, "z").map_err(err)?,
                         );
                         m.verts.push(v);
                     }
@@ -198,9 +199,9 @@ fn parse_model(text: &str, file: &str, part: &str) -> IoResult<Model> {
                 "triangle" => {
                     if let Some(m) = cur.as_mut().and_then(|c| c.mesh.as_mut()) {
                         let tri = [
-                            index(&t, "v1").map_err(&err)?,
-                            index(&t, "v2").map_err(&err)?,
-                            index(&t, "v3").map_err(&err)?,
+                            index(&t, "v1").map_err(err)?,
+                            index(&t, "v2").map_err(err)?,
+                            index(&t, "v3").map_err(err)?,
                         ];
                         m.tris.push(tri);
                     }
@@ -208,16 +209,16 @@ fn parse_model(text: &str, file: &str, part: &str) -> IoResult<Model> {
                 "component" => {
                     if let Some(c) = cur.as_mut() {
                         c.comps.push(Component {
-                            object: index(&t, "objectid").map_err(&err)?,
+                            object: index(&t, "objectid").map_err(err)?,
                             path: t.attr_local("path").map(str::to_string),
-                            transform: transform_attr(&t).map_err(&err)?,
+                            transform: transform_attr(&t).map_err(err)?,
                         });
                     }
                 }
                 "item" => model.items.push(Item {
-                    object: index(&t, "objectid").map_err(&err)?,
+                    object: index(&t, "objectid").map_err(err)?,
                     path: t.attr_local("path").map(str::to_string),
-                    transform: transform_attr(&t).map_err(&err)?,
+                    transform: transform_attr(&t).map_err(err)?,
                 }),
                 _ => {}
             },
@@ -225,7 +226,12 @@ fn parse_model(text: &str, file: &str, part: &str) -> IoResult<Model> {
                 if let Some(c) = cur.take() {
                     let content = match c.mesh {
                         Some(m) => {
-                            if let Some(bad) = m.tris.iter().flatten().find(|&&i| i as usize >= m.verts.len()) {
+                            if let Some(bad) = m
+                                .tris
+                                .iter()
+                                .flatten()
+                                .find(|&&i| i as usize >= m.verts.len())
+                            {
                                 return Err(err(format!(
                                     "object {} has a triangle with vertex {bad}, but only {} vertices",
                                     c.id,
@@ -266,7 +272,9 @@ fn start_part(zip: &Archive, file: &str) -> IoResult<String> {
             if let Event::Start(t) = ev {
                 if t.name == "Relationship" {
                     let ty = t.attr("Type").unwrap_or("");
-                    if ty.eq_ignore_ascii_case(MODEL_REL) || ty.to_ascii_lowercase().ends_with("/3dmodel") {
+                    if ty.eq_ignore_ascii_case(MODEL_REL)
+                        || ty.to_ascii_lowercase().ends_with("/3dmodel")
+                    {
                         if let Some(target) = t.attr("Target") {
                             let name = normalize(target);
                             if zip.contains(&name) {
@@ -309,6 +317,7 @@ struct Out {
     part: Vec<i64>,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn emit(
     parts: &HashMap<String, Model>,
     out: &mut Out,
@@ -321,7 +330,9 @@ fn emit(
 ) -> IoResult<()> {
     let err = |m: String| parse_err(file, 0, format!("3MF: {m}"));
     if depth > MAX_DEPTH {
-        return Err(err(format!("components nested deeper than {MAX_DEPTH} (or a reference cycle)")));
+        return Err(err(format!(
+            "components nested deeper than {MAX_DEPTH} (or a reference cycle)"
+        )));
     }
     let model = parts
         .get(path)
@@ -332,25 +343,38 @@ fn emit(
         .ok_or_else(|| err(format!("object {id} is not defined in '{path}'")))?;
     match &obj.content {
         Content::Mesh(mesh) => {
-            let m3 = DMat3::from_cols(acc.x_axis.truncate(), acc.y_axis.truncate(), acc.z_axis.truncate());
+            let m3 = DMat3::from_cols(
+                acc.x_axis.truncate(),
+                acc.y_axis.truncate(),
+                acc.z_axis.truncate(),
+            );
             let det = m3.determinant();
             let size = m3.x_axis.length() * m3.y_axis.length() * m3.z_axis.length();
-            if !(det.abs() > 1e-9 * size) {
-                return Err(err(format!("object {id} is placed with a singular transform")));
+            let regular = det.abs() > 1e-9 * size; // false for NaN too
+            if !regular {
+                return Err(err(format!(
+                    "object {id} is placed with a singular transform"
+                )));
             }
             if out.prims.len() + mesh.tris.len() > MAX_TRIANGLES {
-                return Err(err(format!("more than {MAX_TRIANGLES} triangles after flattening")));
+                return Err(err(format!(
+                    "more than {MAX_TRIANGLES} triangles after flattening"
+                )));
             }
             let base = out.points.len() as u32;
-            out.points
-                .extend(mesh.verts.iter().map(|&v| acc.transform_point3(v) * out.unit_mm));
+            out.points.extend(
+                mesh.verts
+                    .iter()
+                    .map(|&v| acc.transform_point3(v) * out.unit_mm),
+            );
             let flip = det < 0.0;
             for &[a, b, c] in &mesh.tris {
                 if a == b || b == c || a == c {
                     continue;
                 }
                 let tri = if flip { [a, c, b] } else { [a, b, c] };
-                out.prims.push(Prim::polygon(tri.iter().map(|&i| base + i).collect()));
+                out.prims
+                    .push(Prim::polygon(tri.iter().map(|&i| base + i).collect()));
                 out.part.push(part);
             }
         }
@@ -358,7 +382,16 @@ fn emit(
             for c in comps {
                 let p = c.path.as_deref().map(key);
                 let p = p.as_deref().unwrap_or(path);
-                emit(parts, out, file, p, c.object, acc * c.transform, depth + 1, part)?;
+                emit(
+                    parts,
+                    out,
+                    file,
+                    p,
+                    c.object,
+                    acc * c.transform,
+                    depth + 1,
+                    part,
+                )?;
             }
         }
     }
@@ -387,7 +420,11 @@ pub(crate) fn read(bytes: &[u8], file: &str) -> IoResult<Geometry> {
             continue;
         }
         if parts.len() >= MAX_PARTS {
-            return Err(parse_err(file, 0, format!("3MF refers to more than {MAX_PARTS} model parts")));
+            return Err(parse_err(
+                file,
+                0,
+                format!("3MF refers to more than {MAX_PARTS} model parts"),
+            ));
         }
         let m = load(&p)?;
         pending.extend(external_paths(&m));
@@ -403,7 +440,11 @@ pub(crate) fn read(bytes: &[u8], file: &str) -> IoResult<Geometry> {
     };
     let mut part = 0i64;
     for item in &root.items {
-        let path = item.path.as_deref().map(key).unwrap_or_else(|| root_key.clone());
+        let path = item
+            .path
+            .as_deref()
+            .map(key)
+            .unwrap_or_else(|| root_key.clone());
         let model = parts
             .get(&path)
             .ok_or_else(|| parse_err(file, 0, format!("3MF model part '{path}' is not loaded")))?;
@@ -417,7 +458,16 @@ pub(crate) fn read(bytes: &[u8], file: &str) -> IoResult<Geometry> {
         if !obj.buildable {
             continue;
         }
-        emit(&parts, &mut out, file, &path, item.object, item.transform, 0, part)?;
+        emit(
+            &parts,
+            &mut out,
+            file,
+            &path,
+            item.object,
+            item.transform,
+            0,
+            part,
+        )?;
         part += 1;
     }
     if out.prims.is_empty() {
@@ -496,7 +546,11 @@ fn signed_volume(points: &[DVec3], tris: &[[u32; 3]]) -> f64 {
     let o = points[tris[0][0] as usize];
     tris.iter()
         .map(|&[a, b, c]| {
-            let (a, b, c) = (points[a as usize] - o, points[b as usize] - o, points[c as usize] - o);
+            let (a, b, c) = (
+                points[a as usize] - o,
+                points[b as usize] - o,
+                points[c as usize] - o,
+            );
             a.dot(b.cross(c))
         })
         .sum::<f64>()
@@ -554,7 +608,10 @@ pub(crate) fn write(geo: &Geometry, opts: &WriteOptions) -> IoResult<Vec<u8>> {
     let mut groups: BTreeMap<i64, Vec<usize>> = BTreeMap::new();
     for (pi, prim) in geo.prims.iter().enumerate() {
         if prim.closed && prim.vertices.len() >= 3 {
-            groups.entry(part_attr.map_or(0, |a| a[pi])).or_default().push(pi);
+            groups
+                .entry(part_attr.map_or(0, |a| a[pi]))
+                .or_default()
+                .push(pi);
         }
     }
     let shells: Vec<(i64, Shell)> = groups
@@ -576,11 +633,19 @@ pub(crate) fn write(geo: &Geometry, opts: &WriteOptions) -> IoResult<Vec<u8>> {
     );
     let _ = writeln!(xml, " <metadata name=\"Title\">Vernon export</metadata>");
     let _ = writeln!(xml, " <metadata name=\"Application\">Vernon</metadata>");
-    let _ = writeln!(xml, " <metadata name=\"CreationDate\">{}</metadata>", timestamp());
+    let _ = writeln!(
+        xml,
+        " <metadata name=\"CreationDate\">{}</metadata>",
+        timestamp()
+    );
     xml.push_str(" <resources>\n");
     for (n, (part, shell)) in shells.iter().enumerate() {
         let name = escape_attr(&format!("part_{part}")).into_owned();
-        let _ = writeln!(xml, "  <object id=\"{}\" type=\"model\" name=\"{name}\">", n + 1);
+        let _ = writeln!(
+            xml,
+            "  <object id=\"{}\" type=\"model\" name=\"{name}\">",
+            n + 1
+        );
         xml.push_str("   <mesh>\n    <vertices>\n");
         for p in &shell.points {
             let q = *p * scale;
@@ -645,12 +710,28 @@ mod tests {
     fn cube_xml(id: u32, size: f64) -> String {
         let s = size;
         let v = [
-            (0., 0., 0.), (s, 0., 0.), (s, s, 0.), (0., s, 0.),
-            (0., 0., s), (s, 0., s), (s, s, s), (0., s, s),
+            (0., 0., 0.),
+            (s, 0., 0.),
+            (s, s, 0.),
+            (0., s, 0.),
+            (0., 0., s),
+            (s, 0., s),
+            (s, s, s),
+            (0., s, s),
         ];
         let t = [
-            (0, 2, 1), (0, 3, 2), (4, 5, 6), (4, 6, 7), (0, 1, 5), (0, 5, 4),
-            (1, 2, 6), (1, 6, 5), (2, 3, 7), (2, 7, 6), (3, 0, 4), (3, 4, 7),
+            (0, 2, 1),
+            (0, 3, 2),
+            (4, 5, 6),
+            (4, 6, 7),
+            (0, 1, 5),
+            (0, 5, 4),
+            (1, 2, 6),
+            (1, 6, 5),
+            (2, 3, 7),
+            (2, 7, 6),
+            (3, 0, 4),
+            (3, 4, 7),
         ];
         let mut x = format!("<object id=\"{id}\" type=\"model\"><mesh><vertices>");
         for (a, b, c) in v {
@@ -686,7 +767,10 @@ mod tests {
         assert_eq!(&bytes[..4], &[0x50, 0x4B, 0x03, 0x04]);
         let zip = Archive::open(&bytes, "t", Limits::default()).unwrap();
         let names: Vec<&str> = zip.names().collect();
-        assert_eq!(names, ["[Content_Types].xml", "_rels/.rels", "3D/3dmodel.model"]);
+        assert_eq!(
+            names,
+            ["[Content_Types].xml", "_rels/.rels", "3D/3dmodel.model"]
+        );
         let xml = String::from_utf8(zip.read("3D/3dmodel.model").unwrap().unwrap()).unwrap();
         assert!(xml.contains("unit=\"millimeter\""));
         assert!(xml.contains("name=\"Application\""));
@@ -723,7 +807,11 @@ mod tests {
         let zip = Archive::open(&bytes, "t", Limits::default()).unwrap();
         let xml = String::from_utf8(zip.read(ROOT_PART).unwrap().unwrap()).unwrap();
         assert!(xml.contains("unit=\"inch\""));
-        assert!(xml.contains("x=\"1\"") || xml.contains("x=\"0.99999"), "{}", &xml[..600]);
+        assert!(
+            xml.contains("x=\"0.5\"") || xml.contains("x=\"0.49999"),
+            "{}",
+            &xml[..600]
+        );
         let b = rd(&bytes).unwrap();
         assert!((b.bounds().size().x - 25.4).abs() < 1e-9);
         // Hand-written 1-inch cube: 25.4 mm edge, 16387.064 mm3.
@@ -735,7 +823,13 @@ mod tests {
 
     #[test]
     fn units_scale_to_millimetres() {
-        for (unit, k) in [("micron", 0.001), ("millimeter", 1.0), ("centimeter", 10.0), ("meter", 1000.0), ("foot", 304.8)] {
+        for (unit, k) in [
+            ("micron", 0.001),
+            ("millimeter", 1.0),
+            ("centimeter", 10.0),
+            ("meter", 1000.0),
+            ("foot", 304.8),
+        ] {
             let src = model(unit, &cube_xml(1, 2.0), "<item objectid=\"1\"/>");
             let b = rd(&package(&src)).unwrap();
             assert!((b.bounds().size().z - 2.0 * k).abs() < 1e-9, "{unit}");
@@ -793,7 +887,11 @@ mod tests {
             "1 0 0 0 1 0 0 0 1 0 0 x",
             "1 0 0 0 1 0 0 0 1 0 0 nan",
         ] {
-            let src = model("millimeter", &cube_xml(1, 1.0), &format!("<item objectid=\"1\" transform=\"{t}\"/>"));
+            let src = model(
+                "millimeter",
+                &cube_xml(1, 1.0),
+                &format!("<item objectid=\"1\" transform=\"{t}\"/>"),
+            );
             assert!(rd(&package(&src)).is_err(), "{t}");
         }
     }
@@ -833,7 +931,11 @@ mod tests {
         assert!(rd(&package(&src)).is_err());
         let src = model("millimeter", &cube_xml(1, 1.0), "<item objectid=\"9\"/>");
         assert!(rd(&package(&src)).is_err());
-        let src = model("millimeter", "<object id=\"1\"><components><component objectid=\"7\"/></components></object>", "<item objectid=\"1\"/>");
+        let src = model(
+            "millimeter",
+            "<object id=\"1\"><components><component objectid=\"7\"/></components></object>",
+            "<item objectid=\"1\"/>",
+        );
         assert!(rd(&package(&src)).is_err());
     }
 
@@ -841,10 +943,20 @@ mod tests {
     fn bad_triangle_indices_and_empty_models_are_errors() {
         let bad = "<object id=\"1\"><mesh><vertices><vertex x=\"0\" y=\"0\" z=\"0\"/></vertices>\
                    <triangles><triangle v1=\"0\" v2=\"1\" v3=\"2\"/></triangles></mesh></object>";
-        assert!(rd(&package(&model("millimeter", bad, "<item objectid=\"1\"/>"))).is_err());
+        assert!(rd(&package(&model(
+            "millimeter",
+            bad,
+            "<item objectid=\"1\"/>"
+        )))
+        .is_err());
         assert!(rd(&package(&model("millimeter", &cube_xml(1, 1.0), ""))).is_err());
         let nan = cube_xml(1, 1.0).replacen("x=\"1\"", "x=\"NaN\"", 1);
-        assert!(rd(&package(&model("millimeter", &nan, "<item objectid=\"1\"/>"))).is_err());
+        assert!(rd(&package(&model(
+            "millimeter",
+            &nan,
+            "<item objectid=\"1\"/>"
+        )))
+        .is_err());
     }
 
     #[test]
@@ -871,7 +983,8 @@ mod tests {
         h.transform(glam::DMat4::from_translation(DVec3::new(30.0, 0.0, 0.0)));
         let n = g.prim_count();
         g.prim_attribs.set("part", AttribArray::Int(vec![7; n]));
-        h.prim_attribs.set("part", AttribArray::Int(vec![3; h.prim_count()]));
+        h.prim_attribs
+            .set("part", AttribArray::Int(vec![3; h.prim_count()]));
         g.merge(&h);
         let bytes = write_bytes(Format::ThreeMf, &g, &WriteOptions::default()).unwrap();
         let zip = Archive::open(&bytes, "t", Limits::default()).unwrap();
@@ -883,9 +996,15 @@ mod tests {
         assert_eq!(b.prim_count(), 24);
         let part = b.prim_attribs.ints("part").unwrap();
         // Part values are renumbered in build order: old 3 -> 0, old 7 -> 1.
-        let small: f64 = (0..24).filter(|&i| part[i] == 0).map(|i| b.prim_area(i)).sum();
+        let small: f64 = (0..24)
+            .filter(|&i| part[i] == 0)
+            .map(|i| b.prim_area(i))
+            .sum();
         assert!((small - 96.0).abs() < 1e-9, "{small}");
-        let big: f64 = (0..24).filter(|&i| part[i] == 1).map(|i| b.prim_area(i)).sum();
+        let big: f64 = (0..24)
+            .filter(|&i| part[i] == 1)
+            .map(|i| b.prim_area(i))
+            .sum();
         assert!((big - 600.0).abs() < 1e-9);
     }
 
@@ -899,7 +1018,11 @@ mod tests {
         // Un-weld: give every quad its own four points.
         let mut soup = Geometry::new();
         for p in &g.prims {
-            let vs: Vec<u32> = p.vertices.iter().map(|&v| soup.add_point(g.points[v as usize])).collect();
+            let vs: Vec<u32> = p
+                .vertices
+                .iter()
+                .map(|&v| soup.add_point(g.points[v as usize]))
+                .collect();
             soup.add_prim(Prim::polygon(vs));
         }
         assert_eq!(soup.point_count(), 24);
@@ -907,7 +1030,10 @@ mod tests {
         let b = rd(&bytes).unwrap();
         assert_eq!(b.point_count(), 8);
         assert_eq!(b.prim_count(), 12);
-        assert!((volume(&b) - 1000.0).abs() < 1e-9, "inside-out input must come out outward");
+        assert!(
+            (volume(&b) - 1000.0).abs() < 1e-9,
+            "inside-out input must come out outward"
+        );
     }
 
     #[test]
@@ -928,9 +1054,13 @@ mod tests {
             format!("<Relationships><Relationship Target=\"3D\\Model.MODEL\" Id=\"r\" Type=\"{MODEL_REL}\"/></Relationships>").as_bytes(),
         )
         .unwrap();
-        z.add("3D/MODEL.model", model("millimeter", &cube_xml(1, 3.0), "<item objectid=\"1\"/>").as_bytes())
+        z.add(
+            "3D/MODEL.model",
+            model("millimeter", &cube_xml(1, 3.0), "<item objectid=\"1\"/>").as_bytes(),
+        )
+        .unwrap();
+        z.add("Metadata/thumbnail.png", &[0x89, 0x50, 0x4E, 0x47])
             .unwrap();
-        z.add("Metadata/thumbnail.png", &[0x89, 0x50, 0x4E, 0x47]).unwrap();
         assert_eq!(rd(&z.finish().unwrap()).unwrap().prim_count(), 12);
     }
 

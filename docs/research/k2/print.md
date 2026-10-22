@@ -8,7 +8,7 @@ Vetted 2026-10-22 against the real Vernon API (vernon-core geometry.rs and repor
 2. Keep k2's ideas, not its code: split by key or connectivity (as `part` writers), plane cut, grid split, dovetail, dowel, bed fit. Several k2 algorithms are wrong as written: the plane split drops the quad (area loss), mixes index spaces, never caps, and k2's dovetail narrows toward the tip and so cannot lock. Its panel bound 2^n is wrong for n >= 4 (true bound: C(n,0)+C(n,1)+C(n,2)+C(n,3)).
 3. Reject everything that pulls in OpenCascade (LGPL-2.1, C++ via cxx and build.rs, `builtin` feature statically builds it), the threemf and obj crates (redundant, licences mis-stated) and nalgebra (not a Vernon dependency, MSRV 1.89 against workspace 1.80).
 4. Gating must go through `Report` metrics with limits (`part_count`, `seam_area_mm2`, `fit_margin_mm >= 0`, `open_edges <= 0`, `unassigned_prims <= 0`). k2 prints text only and silently drops or scales.
-5. Blocking fact outside k2: `vernon-io` does not compile right now. `lib.rs` declares `mod threemf; mod xml; mod xyz; mod zip;` but those four files are absent (cargo check: E0583 x4). The 3MF writer and reader are the prerequisite for all print output. k2 supplied nothing for 3MF, slicer hand-off or G-code flavours (its final reply was empty), so those come from docs/specs/slicing-printing.md only.
+5. Blocking fact outside k2: `vernon-io` does not compile yet. At review time `lib.rs` declared `mod threemf; mod xml; mod xyz; mod zip;` with the four files absent (E0583 x4). They were added during the session (another stage, 2026-10-22 14:09 to 14:14) but the last `cargo check -p vernon-io --offline` still fails: E0432 unresolved `crate::tri` import and E0503 x3 in `zip.rs` (borrow of `uncomp`, `comp`, `local_offset`). A working 3MF writer and reader is the prerequisite for all print output. k2 supplied nothing for 3MF, slicer hand-off or G-code flavours (its final reply was empty), so those come from docs/specs/slicing-printing.md only.
 
 Verdict counts over 61 claims: ACCEPT 3, ADAPT 39, REJECT 19.
 
@@ -97,7 +97,7 @@ In k2's code or claims (from the summaries; k2's raw code was not available):
 
 Vernon-side hazards found while vetting:
 
-11. `vernon-io` does not compile: modules `threemf`, `xml`, `xyz`, `zip` are declared in lib.rs but the files are missing (E0583 x4, checked with cargo check --offline). The `.pts`/XYZ and 3MF paths in lib.rs depend on them.
+11. `vernon-io` does not compile: modules `threemf`, `xml`, `xyz`, `zip` were declared in lib.rs with no files (E0583 x4). The files now exist (written by another stage) but still fail `cargo check --offline` with E0432 (`crate::tri` import not declared as a module in lib.rs) and E0503 x3 in `zip.rs` (mutable borrow passed together with a read of the same variable). The `.pts`/XYZ and 3MF paths in lib.rs depend on them.
 12. Graph cache keys ignore file contents (K44): plane files, 3MF inputs and `geo.file_read` can go stale.
 13. `ParamKind` has no folder picker and no multi-int widget; designs that need them must use `Path`/`Str`/three `Int`.
 14. nodes-print has no dependency on vernon-nodes-geo, where `edge_counts`, `triangulate_polygon`, `compact_points`, `make_tube` and `fuse_points` live (all `pub`). Add a path dependency (Apache-2.0, workspace-internal) rather than copying.
@@ -128,7 +128,7 @@ Each item is a testable change. Prerequisite chain: IO-1 first (the workspace do
 
 ### vernon-io
 
-- IO-1 (P0): add `threemf.rs`, `xml.rs`, `xyz.rs`, `zip.rs` so `cargo check -p vernon-io` passes. Test: the existing `every_format_round_trips_through_files` and `units_convert_on_read_and_write` pass for `3mf`, `xyz`, `pts`.
+- IO-1 (P0): make `cargo check -p vernon-io` pass. The files `threemf.rs`, `xml.rs`, `xyz.rs`, `zip.rs`, `tri.rs` now exist; remaining work is to declare `mod tri;` in lib.rs and fix the three E0503 borrow errors in `zip.rs` (read the value into a local before the `take(&mut ..)` call). Test: the existing `every_format_round_trips_through_files` and `units_convert_on_read_and_write` pass for `3mf`, `xyz`, `pts`.
 - IO-2 (P0): 3MF writer per spec A7: weld 1e-6 mm, CCW outward, triangles only (fan or ear-clip polygons), one `object` per distinct prim `part` value, `unit="millimeter"`, `[Content_Types].xml`, `_rels/.rels` start-part relationship, metadata Title/Application/CreationDate. Test (spec golden 12): 10 mm cube reads back with 8 points, 12 triangles, signed volume 1000 mm3; writing with `FileUnit::Inch` reads back as inches raw and 25.4 mm scaled.
 - IO-3 (P1): 3MF reader: resolve root via `_rels/.rels`, honour `unit`, apply item transforms in row-vector form, flatten components, reject near-singular matrices, mirror (det -1) must not give negative volume (flip winding), set prim `part` = build item index. Tests: +50 mm X transform moves bbox min x to 50; inch cube reads as 25.4 mm edge, 16387.064 mm3.
 - IO-4 (P1): reader limits: decompressed-size cap and entry-count cap, ZIP64 accepted, entry-name normalisation, unknown parts ignored. Test: crafted archive with a declared size far above the cap returns `IoError`, not an allocation.

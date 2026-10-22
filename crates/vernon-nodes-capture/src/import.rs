@@ -3,8 +3,9 @@
 use std::path::Path;
 
 use vernon_core::{Geometry, Metric, Report, Severity};
+use vernon_graph::node::inputs;
 use vernon_graph::{
-    inputs, CookContext, CookResult, Data, DataKind, NodeOp, NodeTypeInfo, ParamSpec, Params, PortSpec,
+    CookContext, CookResult, Data, DataKind, NodeOp, NodeTypeInfo, ParamSpec, Params, PortSpec,
 };
 use vernon_io::{FileUnit, Format, ReadOptions};
 

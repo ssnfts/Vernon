@@ -10,6 +10,13 @@ pub(crate) fn read(bytes: &[u8], file: &str) -> IoResult<Geometry> {
     match detect(bytes) {
         Kind::Binary => read_binary(bytes, file),
         Kind::Ascii => {
+            if !starts_with_solid(bytes) {
+                return Err(parse_err(
+                    file,
+                    0,
+                    "not an STL file: no 'solid' keyword and too short for a binary header",
+                ));
+            }
             let g = read_ascii(bytes, file)?;
             // Binary files whose header happens to start with "solid" but carry
             // trailing bytes: fall back to binary if ASCII found nothing.
@@ -43,21 +50,30 @@ fn detect(bytes: &[u8]) -> Kind {
             return Kind::Binary;
         }
     }
-    let start = bytes
-        .iter()
-        .position(|b| !b.is_ascii_whitespace())
-        .unwrap_or(bytes.len());
-    let head = &bytes[start..bytes.len().min(start + 5)];
-    if head.eq_ignore_ascii_case(b"solid") || bytes.len() < 84 {
+    if starts_with_solid(bytes) || bytes.len() < 84 {
         Kind::Ascii
     } else {
         Kind::Binary
     }
 }
 
+fn starts_with_solid(bytes: &[u8]) -> bool {
+    let start = bytes
+        .iter()
+        .position(|b| !b.is_ascii_whitespace())
+        .unwrap_or(bytes.len());
+    bytes[start..]
+        .get(..5)
+        .is_some_and(|h| h.eq_ignore_ascii_case(b"solid"))
+}
+
 fn read_binary(bytes: &[u8], file: &str) -> IoResult<Geometry> {
     if bytes.len() < 84 {
-        return Err(parse_err(file, 0, "binary STL shorter than its 84-byte header"));
+        return Err(parse_err(
+            file,
+            0,
+            "binary STL shorter than its 84-byte header",
+        ));
     }
     let n = u32::from_le_bytes([bytes[80], bytes[81], bytes[82], bytes[83]]) as usize;
     let need = 84u64 + 50 * n as u64;
@@ -71,7 +87,8 @@ fn read_binary(bytes: &[u8], file: &str) -> IoResult<Geometry> {
             ),
         ));
     }
-    let f = |o: usize| f32::from_le_bytes([bytes[o], bytes[o + 1], bytes[o + 2], bytes[o + 3]]) as f64;
+    let f =
+        |o: usize| f32::from_le_bytes([bytes[o], bytes[o + 1], bytes[o + 2], bytes[o + 3]]) as f64;
     let mut points = Vec::with_capacity(3 * n);
     let mut prims = Vec::with_capacity(n);
     for t in 0..n {
@@ -134,7 +151,7 @@ fn facet_normal(a: DVec3, b: DVec3, c: DVec3) -> DVec3 {
 }
 
 pub(crate) fn write<W: Write>(w: &mut W, geo: &Geometry, scale: f64, ascii: bool) -> IoResult<()> {
-    let tris = geo.triangles();
+    let tris = crate::tri::triangulate(geo);
     if tris.is_empty() {
         return Err(IoError::Other(
             "STL needs closed polygons; the geometry has none".into(),
@@ -192,6 +209,30 @@ mod tests {
             weld: false,
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn concave_quad_is_written_without_flipped_triangles() {
+        // A dart (arrowhead) whose first vertex cannot see the whole polygon:
+        // a plain fan from vertex 0 would flip a triangle.
+        let pts = vec![
+            DVec3::new(0.0, 0.0, 0.0),
+            DVec3::new(4.0, 0.0, 0.0),
+            DVec3::new(1.0, 1.0, 0.0),
+            DVec3::new(0.0, 4.0, 0.0),
+        ];
+        let g = Geometry::from_polygons(pts, vec![vec![1, 2, 3, 0]]);
+        let bytes = write_bytes(Format::Stl, &g, &WriteOptions::default()).unwrap();
+        let back = read_bytes(Format::Stl, &bytes, &ReadOptions::default()).unwrap();
+        assert_eq!(back.prim_count(), 2);
+        let mut area = 0.0;
+        for t in back.triangles() {
+            let [a, b, c] = t.1.map(|i| back.points[i as usize]);
+            let n = (b - a).cross(c - a);
+            assert!(n.z > 0.0, "flipped triangle {t:?}");
+            area += n.z / 2.0;
+        }
+        assert!((area - 4.0).abs() < 1e-9, "{area}");
     }
 
     #[test]
