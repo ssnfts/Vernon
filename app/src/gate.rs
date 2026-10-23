@@ -10,7 +10,7 @@ use vernon_graph::{DataKind, NodeId, Stage};
 
 use crate::state::AppState;
 
-pub use vernon_graph::gate::{margin, metric_state, report_state, GateState};
+pub use vernon_graph::gate::{margin, metric_state, report_state, report_state_expecting, GateState};
 
 /// One report-producing node of a stage.
 #[derive(Debug, Clone)]
@@ -19,6 +19,8 @@ pub struct NodeGate {
     pub report: Option<Arc<Report>>,
     pub error: Option<String>,
     pub state: GateState,
+    /// Metric names the scene declares as expected failures (`expect_fail`).
+    pub expected: Vec<String>,
 }
 
 /// One stage: all of its report nodes (oldest first) and the worst state.
@@ -34,12 +36,12 @@ impl StageGate {
     pub fn failing_metrics(&self) -> Vec<(NodeId, String)> {
         self.nodes
             .iter()
-            .filter_map(|n| n.report.as_ref().map(|r| (n.node, r)))
-            .flat_map(|(id, r)| {
+            .filter_map(|n| n.report.as_ref().map(|r| (n, r)))
+            .flat_map(|(n, r)| {
                 r.metrics
                     .iter()
-                    .filter(|(_, m)| m.passes() == Some(false))
-                    .map(move |(k, _)| (id, k.clone()))
+                    .filter(|(k, m)| m.passes() == Some(false) && !n.expected.contains(k))
+                    .map(move |(k, _)| (n.node, k.clone()))
             })
             .collect()
     }
@@ -63,9 +65,15 @@ pub fn stage_gates(st: &AppState) -> Vec<StageGate> {
                 .map(|node| {
                     let report = st.report(node);
                     let error = st.error_of(node).map(str::to_string);
+                    let expected: Vec<String> = st
+                        .graph
+                        .nodes
+                        .get(&node)
+                        .map(|n| n.expect_fail.keys().cloned().collect())
+                        .unwrap_or_default();
                     let state = match (&report, &error) {
                         (_, Some(_)) => GateState::Error,
-                        (Some(r), _) => report_state(r),
+                        (Some(r), _) => report_state_expecting(r, |m| expected.iter().any(|e| e == m)),
                         _ => GateState::Missing,
                     };
                     NodeGate {
@@ -73,6 +81,7 @@ pub fn stage_gates(st: &AppState) -> Vec<StageGate> {
                         report,
                         error,
                         state,
+                        expected,
                     }
                 })
                 .collect();
@@ -124,6 +133,32 @@ mod tests {
         assert!(print.failing_metrics().iter().all(|(n, _)| *n == fit));
         assert!(!print.failing_metrics().is_empty());
         assert_eq!(overall(&gates), GateState::Fail);
+    }
+
+    #[test]
+    fn expected_failures_do_not_fail_the_stage() {
+        let mut st = AppState::new(build_registry());
+        let part = st.create("geo.box").unwrap();
+        let fit = st.create("print.build_fit").unwrap();
+        st.set_param(part, "size", ParamValue::Vec3(glam::DVec3::splat(600.0)), 0.0);
+        st.cook_all();
+        let gates = stage_gates(&st);
+        let failing = gates.iter().find(|g| g.stage == Stage::Print).unwrap().failing_metrics();
+        assert!(!failing.is_empty());
+        let node = st.graph.nodes.get_mut(&fit).unwrap();
+        for (_, metric) in &failing {
+            node.expect_fail.insert(metric.clone(), "oversized test part".into());
+        }
+        let gates = stage_gates(&st);
+        let print = gates.iter().find(|g| g.stage == Stage::Print).unwrap();
+        assert!(print.failing_metrics().is_empty(), "expected metrics no longer count");
+        // Error notes are never excused by expect_fail (vernon-cli agrees).
+        let has_error_note = print.nodes[0]
+            .report
+            .as_ref()
+            .is_some_and(|r| r.notes.iter().any(|(s, _)| *s == vernon_core::Severity::Error));
+        let want = if has_error_note { GateState::Fail } else { GateState::Pass };
+        assert_eq!(print.state, want);
     }
 
     #[test]

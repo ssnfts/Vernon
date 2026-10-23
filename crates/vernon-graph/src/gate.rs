@@ -53,6 +53,24 @@ pub fn report_state(r: &Report) -> GateState {
     }
 }
 
+/// Like [`report_state`], but a failing metric for which `expected(name)` is
+/// true (listed in the node's `expect_fail`) does not fail the report. Error
+/// notes still do.
+pub fn report_state_expecting(r: &Report, expected: impl Fn(&str) -> bool) -> GateState {
+    let metric_fails = r
+        .metrics
+        .iter()
+        .any(|(name, m)| m.passes() == Some(false) && !expected(name));
+    let error_note = r.notes.iter().any(|(s, _)| *s == vernon_core::Severity::Error);
+    if metric_fails || error_note {
+        GateState::Fail
+    } else if r.metrics.values().any(|m| m.limit.is_some()) {
+        GateState::Pass
+    } else {
+        GateState::NoLimits
+    }
+}
+
 pub fn metric_state(m: &Metric) -> GateState {
     match m.passes() {
         Some(true) => GateState::Pass,
@@ -107,6 +125,18 @@ pub fn gate_rows<'a>(reports: impl IntoIterator<Item = &'a Report>) -> Vec<GateR
 mod tests {
     use super::*;
     use vernon_core::Severity;
+
+    #[test]
+    fn expected_metric_failures_are_excused_but_error_notes_are_not() {
+        let mut r = Report::new("wheels");
+        r.metric("wheels_found", Metric::new(0.0, "count").with_limit(4.0, false));
+        r.metric("area_m2", Metric::new(2.0, "m2").with_limit(1.0, false));
+        assert_eq!(report_state(&r), GateState::Fail);
+        assert_eq!(report_state_expecting(&r, |m| m == "wheels_found"), GateState::Pass);
+        assert_eq!(report_state_expecting(&r, |_| false), GateState::Fail);
+        r.note(Severity::Error, "broken input");
+        assert_eq!(report_state_expecting(&r, |m| m == "wheels_found"), GateState::Fail);
+    }
 
     #[test]
     fn states_order_margins_and_rows() {
