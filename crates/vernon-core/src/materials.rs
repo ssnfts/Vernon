@@ -30,6 +30,70 @@ impl Source {
     }
 }
 
+/// Weathering evidence for one material: the strength it kept and the colour
+/// change it showed after accelerated ultraviolet exposure. The figures come
+/// from a manufacturer's white paper cited in the project note; there is no
+/// published factor that turns test hours into outdoor years for a hot, sunny
+/// climate, so they rank materials and do not predict a service life.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+pub struct UvData {
+    /// Stress at break kept after the exposure, percent of the unexposed value.
+    pub retention_pct: f64,
+    /// Colour change dE after the same exposure, when the source gives a number.
+    pub delta_e: Option<f64>,
+    /// Exposure in hours of fluorescent-UV weathering (a G154-type cycle).
+    pub hours: f64,
+    pub source: Source,
+    pub basis: &'static str,
+}
+
+/// One material with weathering evidence; not every one is a printable material of the table.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+pub struct UvEvidence {
+    pub name: &'static str,
+    pub uv: UvData,
+}
+
+const ASA_UV: UvData = UvData {
+    retention_pct: 97.0,
+    delta_e: None,
+    hours: 1000.0,
+    source: Source::Report,
+    basis: "kept 97.0 % of its stress at break after 1000 h of fluorescent-UV exposure",
+};
+
+/// The three materials the project note quotes UV figures for.
+pub const UV_EVIDENCE: [UvEvidence; 3] = [
+    UvEvidence { name: "ASA", uv: ASA_UV },
+    UvEvidence {
+        name: "Nylon 12CF",
+        uv: UvData {
+            retention_pct: 136.8,
+            delta_e: None,
+            hours: 1000.0,
+            source: Source::Report,
+            basis: "ended at 136.8 % of its stress at break with almost no colour change after 1000 h of fluorescent-UV exposure",
+        },
+    },
+    UvEvidence {
+        name: "PC (unpainted)",
+        uv: UvData {
+            retention_pct: 70.8,
+            delta_e: Some(33.0),
+            hours: 1000.0,
+            source: Source::Report,
+            basis: "fell to 70.8 % of its stress at break with a colour change of about 33 dE after 1000 h of fluorescent-UV exposure",
+        },
+    },
+];
+
+/// Weathering evidence for a material name, ignoring case and `-`/`_`/space; `None` when the note has none.
+pub fn uv_data(name: &str) -> Option<UvData> {
+    let norm = |s: &str| s.chars().filter(|c| c.is_alphanumeric()).collect::<String>().to_lowercase();
+    let want = norm(name);
+    UV_EVIDENCE.iter().find(|e| norm(e.name) == want).map(|e| e.uv)
+}
+
 /// One printable material.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 pub struct PrintMaterial {
@@ -61,6 +125,9 @@ pub struct PrintMaterial {
     /// Water absorption, percent by mass.
     pub water_abs_pct: Option<f64>,
     pub water_source: Source,
+    /// Weathering evidence, when the note quotes some. A material without it
+    /// has no UV figure at all: its protection has to come from a coating.
+    pub uv: Option<UvData>,
 }
 
 impl PrintMaterial {
@@ -101,6 +168,7 @@ pub const PLA: PrintMaterial = PrintMaterial {
     density_source: Source::Assumed,
     water_abs_pct: None,
     water_source: Source::Assumed,
+    uv: None,
 };
 
 pub const PETG: PrintMaterial = PrintMaterial {
@@ -121,6 +189,7 @@ pub const PETG: PrintMaterial = PrintMaterial {
     density_source: Source::Assumed,
     water_abs_pct: None,
     water_source: Source::Assumed,
+    uv: None,
 };
 
 pub const ASA: PrintMaterial = PrintMaterial {
@@ -141,6 +210,7 @@ pub const ASA: PrintMaterial = PrintMaterial {
     density_source: Source::Assumed,
     water_abs_pct: None,
     water_source: Source::Assumed,
+    uv: Some(ASA_UV),
 };
 
 pub const PET_CF: PrintMaterial = PrintMaterial {
@@ -161,6 +231,7 @@ pub const PET_CF: PrintMaterial = PrintMaterial {
     density_source: Source::Assumed,
     water_abs_pct: Some(0.37),
     water_source: Source::Report,
+    uv: None,
 };
 
 pub const PAHT_CF: PrintMaterial = PrintMaterial {
@@ -181,6 +252,7 @@ pub const PAHT_CF: PrintMaterial = PrintMaterial {
     density_source: Source::Assumed,
     water_abs_pct: Some(2.35),
     water_source: Source::Assumed,
+    uv: None,
 };
 
 pub const PPA_CF: PrintMaterial = PrintMaterial {
@@ -201,6 +273,7 @@ pub const PPA_CF: PrintMaterial = PrintMaterial {
     density_source: Source::Assumed,
     water_abs_pct: None,
     water_source: Source::Assumed,
+    uv: None,
 };
 
 /// Every printable material, in menu order.
@@ -232,5 +305,20 @@ mod tests {
         assert!(PET_CF.z_ratio_assumed() && PAHT_CF.z_ratio_assumed());
         assert!(!PPA_CF.z_ratio_assumed());
         assert!(PET_CF.z_ratio_note().contains("assumed"));
+    }
+
+    #[test]
+    fn weathering_evidence_is_the_notes_three_materials() {
+        let asa = uv_data("ASA").unwrap();
+        assert_eq!((asa.retention_pct, asa.delta_e, asa.hours), (97.0, None, 1000.0));
+        assert_eq!(ASA.uv, Some(asa));
+        let pc = uv_data("pc (unpainted)").unwrap();
+        assert_eq!((pc.retention_pct, pc.delta_e), (70.8, Some(33.0)));
+        assert_eq!(uv_data("Nylon-12CF").unwrap().retention_pct, 136.8);
+        // every other printable material has no UV figure: its protection must come from the coating
+        for m in PRINT_MATERIALS.iter().filter(|m| m.id != "asa") {
+            assert!(m.uv.is_none() && uv_data(m.name).is_none(), "{}", m.name);
+        }
+        assert!(UV_EVIDENCE.iter().all(|e| e.uv.source == Source::Report));
     }
 }

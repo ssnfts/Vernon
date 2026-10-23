@@ -55,11 +55,13 @@ fn bodykit_pipeline_cooks_every_node_and_every_stage_reports() {
     assert!(metric("bed_fit", "fail_count") == 0.0);
     assert!(metric("top_speed", "v_max") > 100.0);
 
-    // One air state flows through: the airflow stage's density reaches the
-    // performance nodes, and the structural aero load uses the very same
-    // design dynamic pressure and downforce the performance table reports.
+    // One air state flows through: the airflow stage's density (the hot,
+    // humid 45 degC / 30 % site day, not the 1.225 standard atmosphere)
+    // reaches the performance nodes, and the structural aero load uses the
+    // very same design dynamic pressure and downforce the performance table
+    // reports.
     let rho = metric("air", "rho");
-    assert!((rho - 1.225).abs() < 0.01, "{rho}");
+    assert!((rho - 1.098).abs() < 0.002, "{rho}");
     assert_eq!(metric("aero_loads", "rho"), rho);
     assert_eq!(metric("top_speed", "rho"), rho);
     let q = metric("aero_loads", "design_q");
@@ -115,6 +117,24 @@ fn parse_fills_defaults_and_rejects_unknown_types() {
         &reg
     )
     .is_err());
+}
+
+/// Every parameter carries a tooltip: the numeric limits and gates are the ones a user
+/// has to set, and an empty tooltip hides the unit and what happens on a miss.
+#[test]
+fn every_parameter_has_help_text() {
+    let reg = vernon_cli::registry();
+    let mut missing = Vec::new();
+    for info in reg.types() {
+        for p in &info.params {
+            if p.help.trim().len() < 8 {
+                missing.push(format!("{}.{}", info.id, p.name));
+            }
+        }
+    }
+    assert!(missing.is_empty(), "{} parameters have no help text:
+{}", missing.len(), missing.join("
+"));
 }
 
 #[test]
@@ -188,4 +208,40 @@ fn cli_exit_code_follows_the_gates() {
     assert_eq!(code, Some(0), "{text}");
     assert!(text.contains("[expected] prep / wheels_found") && text.contains("panel only"), "{text}");
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Metric names are snake case (the drag and lift areas keep their CdA and
+/// ClA symbols) and units use the canonical spellings of `vernon_core::units`,
+/// whichever stage wrote the report.
+#[test]
+fn demo_metric_names_and_units_follow_the_conventions() {
+    let reg = vernon_cli::registry();
+    let vrn = repo().join("examples/bodykit_pipeline.vrn");
+    let mut graph = vernon_cli::load_graph(&vrn, &reg).expect("example loads");
+    let work = std::env::temp_dir().join(format!("vernon-cli-names-{}", std::process::id()));
+    graph.work_root = Some(work.clone());
+    let outcomes = vernon_cli::cook_graph(&mut graph, &reg, None).expect("cook runs");
+    let legacy = ["mm2", "mm3", "m2", "m3", "degC", "deg C", "deg", "-", "flag", "bool", "ratio", "W/m2", "kg/m3", "kWh/m2"];
+    let mut bad = Vec::new();
+    let mut seen = 0;
+    for o in &outcomes {
+        for r in o.reports() {
+            for (name, m) in &r.metrics {
+                seen += 1;
+                let symbol = matches!(name.as_str(), "CdA" | "ClA");
+                if !symbol && !name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '.') {
+                    bad.push(format!("{}: metric name '{name}'", o.name));
+                }
+                if legacy.contains(&m.unit.as_str()) {
+                    bad.push(format!("{}: {name} has unit '{}'", o.name, m.unit));
+                }
+                if m.value.is_sign_negative() && m.value == 0.0 {
+                    bad.push(format!("{}: {name} is negative zero", o.name));
+                }
+            }
+        }
+    }
+    let _ = std::fs::remove_dir_all(&work);
+    assert!(seen > 100, "only {seen} metrics");
+    assert!(bad.is_empty(), "{bad:#?}");
 }

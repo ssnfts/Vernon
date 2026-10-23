@@ -1,0 +1,139 @@
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       dictionary;
+    location    "system";
+    object      snappyHexMeshDict;
+}
+
+castellatedMesh true;
+snap            true;
+addLayers       true;
+
+geometry
+{
+    body.stl
+    {
+        type triSurfaceMesh;
+        name body;
+    }
+    nearWake
+    {
+        type searchableBox;
+        min (0.403084646 0 0);
+        max (1.806169292 0.503884632 0.093053528);
+    }
+    farWake
+    {
+        type searchableBox;
+        min (0.403084646 0 0);
+        max (2.709253937 1.003884632 0.114527419);
+    }
+    underbodyBox
+    {
+        type searchableBox;
+        min (0 0 0);
+        max (0.903084646 0.303884632 0.3);
+    }
+}
+
+castellatedMeshControls
+{
+    maxLocalCells 30000000;
+    maxGlobalCells 30000000;
+    minRefinementCells 10;
+    nCellsBetweenLevels 3;
+    maxLoadUnbalance 0.1;
+    features
+    (
+        {
+            file "body.eMesh";
+            level 5;
+        }
+    );
+    refinementSurfaces
+    {
+        body
+        {
+            level (4 5);
+            patchInfo
+            {
+                type wall;
+            }
+        }
+    }
+    resolveFeatureAngle 30;
+    refinementRegions
+    {
+        nearWake
+        {
+            mode inside;
+            levels ((1e15 4));
+        }
+        farWake
+        {
+            mode inside;
+            levels ((1e15 3));
+        }
+        underbodyBox
+        {
+            mode inside;
+            levels ((1e15 6));
+        }
+    }
+    locationInMesh (-2.544869937 0.536687219 1.113143726);
+    allowFreeStandingZoneFaces true;
+}
+
+snapControls
+{
+    nSmoothPatch 3;
+    tolerance 2.0;
+    nSolveIter 50;
+    nRelaxIter 5;
+    nFeatureSnapIter 10;
+    implicitFeatureSnap false;
+    explicitFeatureSnap true;
+    multiRegionFeatureSnap false;
+}
+
+addLayersControls
+{
+    relativeSizes true;
+    expansionRatio 1.2;
+    finalLayerThickness 0.5;
+    minThickness 0.1;
+    layers
+    {
+        "body.*"
+        {
+            nSurfaceLayers 5;
+        }
+    }
+    nGrow 0;
+    featureAngle 130;
+    nRelaxIter 5;
+    nSmoothSurfaceNormals 1;
+    nSmoothNormals 3;
+    nSmoothThickness 10;
+    maxFaceThicknessRatio 0.5;
+    maxThicknessToMedialRatio 0.3;
+    minMedianAxisAngle 90;
+    nBufferCellsNoExtrude 0;
+    nLayerIter 50;
+    nRelaxedIter 20;
+}
+
+meshQualityControls
+{
+    #include "meshQualityDict"
+    relaxed
+    {
+        maxNonOrtho 75;
+    }
+}
+
+writeFlags ();
+
+mergeTolerance 1e-6;

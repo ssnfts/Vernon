@@ -1,4 +1,4 @@
-//! `vernon-cli list [--markdown]` and
+//! `vernon-cli list [--markdown] [--docs]` and
 //! `vernon-cli cook <file.vrn> [--node NAME] [--out mesh.obj] [--work DIR] [--ignore-gates]`.
 
 use std::path::PathBuf;
@@ -7,9 +7,12 @@ use std::process::ExitCode;
 use anyhow::{bail, Context, Result};
 
 const USAGE: &str = "usage:
-  vernon-cli list [--markdown]
+  vernon-cli list [--markdown] [--docs]
   vernon-cli info <node.type> [...]
   vernon-cli cook <file.vrn> [--node NAME] [--out mesh.obj] [--work DIR] [--ignore-gates]
+
+list prints the public tool behaviours each node re-implements only with
+--docs (they are documentation, not part of the user interface).
 
 cook exits with 1 when a node fails and 3 when a report limit fails that
 the scene does not list under the node's expect_fail (--ignore-gates: 0).";
@@ -28,15 +31,18 @@ fn run(args: Vec<String>) -> Result<ExitCode> {
     let reg = vernon_cli::registry();
     match args.first().map(String::as_str) {
         Some("list") => {
-            let md = match args.get(1).map(String::as_str) {
-                None => false,
-                Some("--markdown") => true,
-                Some(other) => bail!("unknown option '{other}'\n{USAGE}"),
-            };
+            let (mut md, mut docs) = (false, false);
+            for a in &args[1..] {
+                match a.as_str() {
+                    "--markdown" => md = true,
+                    "--docs" => docs = true,
+                    other => bail!("unknown option '{other}'\n{USAGE}"),
+                }
+            }
             if md {
                 print!("{}", vernon_cli::list_markdown(&reg));
             } else {
-                print!("{}", vernon_cli::list_text(&reg));
+                print!("{}", vernon_cli::list_text(&reg, docs));
             }
             Ok(ExitCode::SUCCESS)
         }

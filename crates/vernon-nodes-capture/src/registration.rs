@@ -282,7 +282,21 @@ pub fn icp_align(src: &Geometry, tgt: &Geometry, init: DMat4, s: &IcpSettings) -
     let (a, _, sq) = accumulate(&st, &cur, &corrs, s.point_to_plane);
     let rows = if s.point_to_plane { 1.0 } else { 3.0 };
     let rmse = (sq / (corrs.len() as f64 * rows)).sqrt();
-    let (vals, vecs) = sym_eigen(6, &a);
+    // Rotation columns of the Jacobian have units of mm and translation columns
+    // none, so the raw eigenvalue ratio would change with the model's unit.
+    // Scale the rotation columns by the RMS distance of the matched points from
+    // the centroid (a rotation by 1/L rad then moves a point by about 1 mm, like
+    // a 1 mm translation) so the condition number is unit-free.
+    let l_char = (corrs.iter().map(|cr| st.tgt[cr.j as usize].length_squared()).sum::<f64>() / corrs.len() as f64).sqrt();
+    let l_char = if l_char > 1e-9 { l_char } else { 1.0 };
+    let mut a_scaled = a;
+    for r in 0..6 {
+        for k in 0..6 {
+            let d = |i: usize| if i < 3 { 1.0 / l_char } else { 1.0 };
+            a_scaled[r * 6 + k] *= d(r) * d(k);
+        }
+    }
+    let (vals, vecs) = sym_eigen(6, &a_scaled);
     let (mut kmin, mut vmax) = (0, f64::MIN);
     for (k, v) in vals.iter().enumerate() {
         if *v < vals[kmin] {
@@ -359,10 +373,10 @@ fn icp_params() -> Vec<ParamSpec> {
         ParamSpec::float("voxel", "Voxel", 5.0, 0.05, 50.0).unit("mm").help("Spacing of the downsampled clouds used for matching; the finest stage."),
         ParamSpec::float("max_corr", "Correspondence gate", 1.5, 0.5, 20.0).unit("x voxel").help("Largest pair distance as a multiple of the voxel."),
         ParamSpec::float("coarse_factor", "Coarse factor", 10.0, 1.0, 100.0).help("Ratio of the coarsest to the finest voxel; 1 runs a single stage."),
-        ParamSpec::int("max_iter", "Iterations per stage", 30, 1, 1000),
+        ParamSpec::int("max_iter", "Iterations per stage", 30, 1, 1000).help("Most closest-point iterations in each resolution stage. A stage stops earlier once the error settles."),
         ParamSpec::float("overlap", "Overlap", 0.3, 0.05, 1.0).help("Expected share of the source that overlaps the target; worse pairs beyond this share are trimmed."),
         ParamSpec::float("normal_gate", "Normal gate", 45.0, 1.0, 90.0).unit("deg").help("Largest angle between paired normals; 90 disables the test."),
-        ParamSpec::choice("metric", "Error metric", "point_to_plane", &["point_to_plane", "point_to_point"]),
+        ParamSpec::choice("metric", "Error metric", "point_to_plane", &["point_to_plane", "point_to_point"]).help("What the fit minimises: distance along the target normal (point to plane, faster on smooth surfaces) or plain point distance."),
         ParamSpec::float("normal_radius", "Normal radius", 0.0, 0.0, 500.0).unit("mm").help("Normal estimation radius at the finest stage; 0 uses twice the voxel."),
     ]
 }
@@ -520,15 +534,15 @@ impl NodeOp for GlobalAlign {
             .output(PortSpec::new("transform", DataKind::Json))
             .output(PortSpec::new("report", DataKind::Report))
             .param(ParamSpec::choice("method", "Method", "fpfh_ransac", &["fpfh_ransac", "fgr"]).help("Feature-matching strategy of the finished node."))
-            .param(ParamSpec::float("voxel", "Voxel", 5.0, 0.05, 50.0).unit("mm"))
-            .param(ParamSpec::float("normal_r", "Normal radius", 2.0, 0.5, 20.0).unit("x voxel"))
-            .param(ParamSpec::float("fpfh_r", "Feature radius", 5.0, 1.0, 50.0).unit("x voxel"))
-            .param(ParamSpec::float("dist", "Match distance", 1.5, 0.5, 20.0).unit("x voxel"))
-            .param(ParamSpec::int("ransac_n", "Points per sample", 3, 3, 10))
-            .param(ParamSpec::int("iters", "RANSAC iterations", 100_000, 100, 10_000_000))
-            .param(ParamSpec::float("conf", "Confidence", 0.999, 0.5, 0.999_999))
-            .param(ParamSpec::bool("refine", "Refine with ICP", true))
-            .param(ParamSpec::int("seed", "Seed", 0, 0, i64::MAX / 2))
+            .param(ParamSpec::float("voxel", "Voxel", 5.0, 0.05, 50.0).unit("mm").help("Voxel size the clouds are thinned to before feature matching. Larger is faster and coarser."))
+            .param(ParamSpec::float("normal_r", "Normal radius", 2.0, 0.5, 20.0).unit("x voxel").help("Radius of the neighbourhood used to estimate normals, in voxels."))
+            .param(ParamSpec::float("fpfh_r", "Feature radius", 5.0, 1.0, 50.0).unit("x voxel").help("Radius of the neighbourhood used for the shape features, in voxels. Usually larger than the normal radius."))
+            .param(ParamSpec::float("dist", "Match distance", 1.5, 0.5, 20.0).unit("x voxel").help("Largest distance, in voxels, at which a matched pair still counts as an inlier of a pose guess."))
+            .param(ParamSpec::int("ransac_n", "Points per sample", 3, 3, 10).help("Number of point pairs drawn for each pose guess. 3 is the least that fixes a rigid pose."))
+            .param(ParamSpec::int("iters", "RANSAC iterations", 100_000, 100, 10_000_000).help("Maximum number of random pose guesses. The search stops earlier once the confidence is reached."))
+            .param(ParamSpec::float("conf", "Confidence", 0.999, 0.5, 0.999_999).help("Confidence, 0.5 to 1, that the best pose has been found. The search stops early when it is reached."))
+            .param(ParamSpec::bool("refine", "Refine with ICP", true).help("Refine the coarse pose with a point-to-plane closest-point pass afterwards."))
+            .param(ParamSpec::int("seed", "Seed", 0, 0, i64::MAX / 2).help("Random seed. The same seed gives the same result."))
             .help("Finds a starting pose for two scans that begin far apart. The finished node matches local shape features and verifies by RANSAC or fast global registration; for now it aligns principal axes, tries the four axis flips, and optionally refines with ICP.")
             .emulates("global registration by FPFH feature matching with RANSAC or fast global registration")
     }
@@ -695,8 +709,8 @@ fn merge_report(title: &str, parts: &[&Geometry], stats: &MergeStats, out: &Geom
 fn merge_params() -> Vec<ParamSpec> {
     vec![
         ParamSpec::float("dedupe_voxel", "Resample voxel", 1.0, 0.0, 50.0).unit("mm").help("Merged point clouds keep one averaged point per voxel; 0 keeps every point."),
-        ParamSpec::bool("keep_normals", "Keep normals", true),
-        ParamSpec::bool("keep_colors", "Keep colors", true),
+        ParamSpec::bool("keep_normals", "Keep normals", true).help("Carry the point normals of the scans into the merged cloud. Off drops them so they can be re-estimated."),
+        ParamSpec::bool("keep_colors", "Keep colors", true).help("Carry the point colours of the scans into the merged cloud. Off drops them."),
     ]
 }
 
@@ -794,9 +808,9 @@ impl NodeOp for MarkerMerge {
             .output(PortSpec::new("report", DataKind::Report))
             .param(ParamSpec::bool("allow_scale", "Allow scale", false).help("Fit a uniform scale as well as rotation and translation."))
             .param(ParamSpec::bool("ransac", "Robust fit", false).help("Fit on random marker triples and ignore outlier markers."))
-            .param(ParamSpec::float("inlier", "Inlier gate", 1.0, 0.01, 50.0).unit("mm"))
-            .param(ParamSpec::int("iterations", "Iterations", 1000, 1, 1_000_000))
-            .param(ParamSpec::int("min_shared", "Minimum shared markers", 3, 3, 1000))
+            .param(ParamSpec::float("inlier", "Inlier gate", 1.0, 0.01, 50.0).unit("mm").help("Marker pairs farther apart than this after the fit are treated as outliers."))
+            .param(ParamSpec::int("iterations", "Iterations", 1000, 1, 1_000_000).help("Number of random marker subsets tried when outlier rejection is on."))
+            .param(ParamSpec::int("min_shared", "Minimum shared markers", 3, 3, 1000).help("Fewest markers a scan must share with the reference to be placed. 3 is the least that fixes a rigid pose."))
             .param(ParamSpec::float("max_rms", "Marker RMS limit", 1.0, 0.001, 100.0).unit("mm").help("Per-scan marker residual above which the report fails."));
         for p in merge_params() {
             info = info.param(p);
@@ -885,14 +899,14 @@ impl NodeOp for MultiwayAlign {
         info.output(PortSpec::new("geometry", DataKind::Geometry))
             .output(PortSpec::new("transforms", DataKind::Json))
             .output(PortSpec::new("report", DataKind::Report))
-            .param(ParamSpec::float("voxel", "Voxel", 5.0, 0.05, 50.0).unit("mm"))
-            .param(ParamSpec::float("coarse", "Coarse gate", 15.0, 1.0, 100.0).unit("x voxel"))
-            .param(ParamSpec::float("fine", "Fine gate", 1.5, 0.5, 20.0).unit("x voxel"))
-            .param(ParamSpec::float("prune", "Edge prune threshold", 0.25, 0.0, 1.0))
-            .param(ParamSpec::choice("solver", "Solver", "lm", &["lm"]))
+            .param(ParamSpec::float("voxel", "Voxel", 5.0, 0.05, 50.0).unit("mm").help("Voxel size the scans are thinned to before pairwise registration."))
+            .param(ParamSpec::float("coarse", "Coarse gate", 15.0, 1.0, 100.0).unit("x voxel").help("Largest correspondence distance of the first pass, in voxels."))
+            .param(ParamSpec::float("fine", "Fine gate", 1.5, 0.5, 20.0).unit("x voxel").help("Largest correspondence distance of the final pass, in voxels."))
+            .param(ParamSpec::float("prune", "Edge prune threshold", 0.25, 0.0, 1.0).help("Pose-graph edges whose confidence is below this value (0 to 1) are dropped before optimisation. 0 keeps every edge."))
+            .param(ParamSpec::choice("solver", "Solver", "lm", &["lm"]).help("Global optimiser for the pose graph. Levenberg-Marquardt is the only one."))
             .param(ParamSpec::int("reference", "Reference scan", 0, 0, 5).help("Index (from 0) of the scan that stays fixed."))
-            .param(ParamSpec::bool("auto_loops", "Check loop closure", true))
-            .param(ParamSpec::float("dedupe_voxel", "Resample voxel", 1.0, 0.0, 50.0).unit("mm"))
+            .param(ParamSpec::bool("auto_loops", "Check loop closure", true).help("Look for loop closures between scans that are not neighbours so drift is spread around the loop."))
+            .param(ParamSpec::float("dedupe_voxel", "Resample voxel", 1.0, 0.0, 50.0).unit("mm").help("Merged point clouds keep one averaged point per voxel. 0 keeps every point."))
             .help("Places several overlapping scans in one frame. The finished node builds a pose graph from pairwise matches, solves it by Levenberg-Marquardt with robust loop edges and prunes bad edges; for now it aligns each scan to its neighbour and reports how far the chain ends from closing.")
             .emulates("multiway registration with pose-graph optimisation and loop-closure pruning")
     }
@@ -1113,9 +1127,26 @@ mod tests {
         };
         let out = icp_align(&g, &g, DMat4::IDENTITY, &s).unwrap();
         assert!(out.condition > 1e8, "cond {}", out.condition);
-        assert!(out.weak_direction.contains("X") || out.weak_direction.contains("Y") || out.weak_direction.contains("Z"));
+        // a plate in the XY plane cannot constrain sliding in its plane or a twist about its normal
+        let free = ["rotation about Z", "translation along X", "translation along Y"];
+        assert!(free.contains(&out.weak_direction), "weak direction {}", out.weak_direction);
         let rep = transform_report("t", &out);
         assert!(rep.notes.iter().any(|(sev, m)| *sev == Severity::Warning && m.contains("poorly constrained")));
+    }
+
+    #[test]
+    fn condition_number_does_not_depend_on_the_model_unit() {
+        // the same curved patch in millimetres and in metres: rotation columns carry
+        // a length, so an unscaled eigenvalue ratio would differ by about 1e6
+        let base = patch(0.0, 400.0, 10.0, (0.0, 0.0), 0.0, 5);
+        let cond = |k: f64| {
+            let g = Geometry::from_points(base.points.iter().map(|p| *p * k).collect());
+            let s = IcpSettings { voxel: 10.0 * k, coarse_factor: 1.0, ..IcpSettings::default() };
+            icp_align(&g, &g, DMat4::IDENTITY, &s).unwrap().condition
+        };
+        let (c_mm, c_m) = (cond(1.0), cond(0.001));
+        assert!(c_mm.is_finite() && c_mm > 1.0 && c_mm < 1e8, "mm {c_mm}");
+        assert!((c_mm / c_m).ln().abs() < 0.7, "mm {c_mm} vs m {c_m}");
     }
 
     #[test]

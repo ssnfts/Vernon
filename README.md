@@ -23,12 +23,12 @@ catalogue, with what each node emulates, is in [docs/NODES.md](docs/NODES.md)
 | 2 Clean / Align | Decimate, remesh, outliers, smoothing, ICP alignment, watertight wrap, signed deviation with percentile gate | 25 | 1 |
 | 3 Mesh → Surface | Segmentation, primitive and freeform patch fitting, sections, loft, SubD to NURBS, thicken, surface deviation, STEP hand-off | 17 | 6 |
 | 4 Split / Print | Planar and grid splitting, dovetail/dowel/plug keys, bed fit and orientation, 3MF packages, slicer hand-off, G-code checks | 19 | 7 |
-| 5 Airflow (CFD) | Vehicle prep, frontal area, virtual tunnel, refinement plan, OpenFOAM case writing, convergence, force coefficients, Cp maps | 18 | 2 |
+| 5 Airflow (CFD) | Vehicle prep, frontal area, virtual tunnel, refinement plan, OpenFOAM case writing, convergence, force coefficients, Cp maps | 19 | 2 |
 | 6 Structure (FEA) | Printed orthotropic materials with temperature derating, mounts, aero/bump loads, CalculiX decks and results, safety factors | 18 | 2 |
 | 7 Solar / Heat | Sun position, weather files, sky matrix, incident radiation, surface temperature balance vs heat-deflection temperature | 14 | 0 |
 | 7b Flatten | Seam cutting, conformal flattening, strain report, pattern map-back | 5 | 1 |
-| 8 Performance | Aero loads, top speed, point-mass lap model and sweeps, coastdown fit, pressure-tap validation | 17 | 1 |
-| **All** | | **169** | **26** |
+| 8 Performance | Aero loads, top speed, point-mass lap model and sweeps, coastdown fit, pressure-tap validation | 18 | 1 |
+| **All** | | **171** | **26** |
 
 Nodes that drive external open-source programs (COLMAP, OpenFOAM,
 CalculiX, fTetWild, OrcaSlicer) write complete inputs without them and only
@@ -78,4 +78,13 @@ material: suggestions there are adopted only once they land in a spec.
 Vernon is a clean-room project. Read [CLEAN_ROOM.md](CLEAN_ROOM.md) before contributing.
 
 ## Licence
-Apache-2.0. External open-source solvers are run as separate processes under their own licences.
+Apache-2.0: see [LICENSE](LICENSE) and [NOTICE](NOTICE). Third-party crates and
+the user-interface fonts (OFL-1.1, Ubuntu Font Licence 1.0) are listed with
+their licence texts in [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md);
+regenerate it with `scripts/third-party-licenses.ps1` after changing
+dependencies, and ship it with every binary. External open-source solvers
+are run as separate processes under their own licences.
+
+Vernon is not affiliated with, endorsed by or sponsored by any vendor or
+product named in its documentation; those names are trademarks of their
+owners and appear only to describe the behaviour being re-implemented.

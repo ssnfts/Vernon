@@ -3,14 +3,17 @@
 //! The camera orbits a `target` point at `distance`. `yaw` rotates about the
 //! world Z axis and `pitch` tilts above (+) or below (-) the XY plane:
 //!
-//! | yaw   | pitch | looks from | screen right | screen up |
-//! |-------|-------|------------|--------------|-----------|
-//! | 0     | 0     | -Y (Front) | +X           | +Z        |
-//! | 180   | 0     | +Y (Back)  | -X           | +Z        |
-//! | -90   | 0     | -X (Left)  | -Y           | +Z        |
-//! | 90    | 0     | +X (Right) | +Y           | +Z        |
-//! | 0     | 90    | +Z (Top)   | +X           | +Y        |
-//! | 0     | -90   | -Z (Bottom)| +X           | -Y        |
+//! The axis views follow the vehicle axes of the spec (x forward, y left,
+//! z up), the same as the application's own viewport camera:
+//!
+//! | yaw   | pitch | looks from  | screen right | screen up |
+//! |-------|-------|-------------|--------------|-----------|
+//! | 90    | 0     | +X (Front)  | +Y           | +Z        |
+//! | -90   | 0     | -X (Back)   | -Y           | +Z        |
+//! | 180   | 0     | +Y (Left)   | -X           | +Z        |
+//! | 0     | 0     | -Y (Right)  | +X           | +Z        |
+//! | 0     | 90    | +Z (Top)    | +X           | +Y        |
+//! | 0     | -90   | -Z (Bottom) | +X           | -Y        |
 //!
 //! The basis is built from yaw directly, so looking straight down is not a
 //! singularity. Projections use reverse-Z (near = 1, far = 0) for depth
@@ -37,10 +40,10 @@ impl ViewAxis {
         match self {
             ViewAxis::Top => (0.0, FRAC_PI_2),
             ViewAxis::Bottom => (0.0, -FRAC_PI_2),
-            ViewAxis::Front => (0.0, 0.0),
-            ViewAxis::Back => (PI, 0.0),
-            ViewAxis::Left => (-FRAC_PI_2, 0.0),
-            ViewAxis::Right => (FRAC_PI_2, 0.0),
+            ViewAxis::Front => (FRAC_PI_2, 0.0),
+            ViewAxis::Back => (-FRAC_PI_2, 0.0),
+            ViewAxis::Left => (PI, 0.0),
+            ViewAxis::Right => (0.0, 0.0),
         }
     }
 
@@ -87,9 +90,9 @@ impl ViewPreset {
 pub enum GridPlane {
     /// Ground plane (Z = 0). Used by Top/Bottom/Perspective/user views.
     XY,
-    /// Front/Back construction plane (Y = 0).
+    /// Left/Right construction plane (Y = 0).
     XZ,
-    /// Left/Right construction plane (X = 0).
+    /// Front/Back construction plane (X = 0).
     YZ,
 }
 
@@ -104,7 +107,7 @@ pub struct Camera {
     /// Distance from eye to target (mm). In orthographic mode it sets the
     /// zoom: the view is `2 * distance * tan(fov_y / 2)` mm tall.
     pub distance: f32,
-    /// Rotation about world +Z (radians). 0 = looking from -Y (Front).
+    /// Rotation about world +Z (radians). 0 = looking from -Y (Right view).
     pub yaw: f32,
     /// Elevation above the XY plane (radians), clamped to [-pi/2, pi/2].
     pub pitch: f32,
@@ -236,8 +239,8 @@ impl Camera {
     /// Plane the home grid should be drawn in for this view.
     pub fn grid_plane(&self) -> GridPlane {
         match (self.ortho, self.ortho_axis) {
-            (true, Some(ViewAxis::Front | ViewAxis::Back)) => GridPlane::XZ,
-            (true, Some(ViewAxis::Left | ViewAxis::Right)) => GridPlane::YZ,
+            (true, Some(ViewAxis::Front | ViewAxis::Back)) => GridPlane::YZ,
+            (true, Some(ViewAxis::Left | ViewAxis::Right)) => GridPlane::XZ,
             _ => GridPlane::XY,
         }
     }
@@ -402,10 +405,10 @@ mod tests {
         let cases = [
             (ViewPreset::Top, Vec3::NEG_Z, Vec3::X, Vec3::Y),
             (ViewPreset::Bottom, Vec3::Z, Vec3::X, Vec3::NEG_Y),
-            (ViewPreset::Front, Vec3::Y, Vec3::X, Vec3::Z),
-            (ViewPreset::Back, Vec3::NEG_Y, Vec3::NEG_X, Vec3::Z),
-            (ViewPreset::Left, Vec3::X, Vec3::NEG_Y, Vec3::Z),
-            (ViewPreset::Right, Vec3::NEG_X, Vec3::Y, Vec3::Z),
+            (ViewPreset::Front, Vec3::NEG_X, Vec3::Y, Vec3::Z),
+            (ViewPreset::Back, Vec3::X, Vec3::NEG_Y, Vec3::Z),
+            (ViewPreset::Left, Vec3::NEG_Y, Vec3::NEG_X, Vec3::Z),
+            (ViewPreset::Right, Vec3::Y, Vec3::X, Vec3::Z),
         ];
         for (p, fwd, right, up) in cases {
             let c = Camera::preset(p);
@@ -454,9 +457,9 @@ mod tests {
         assert_eq!(Camera::preset(ViewPreset::Top).grid_plane(), GridPlane::XY);
         assert_eq!(
             Camera::preset(ViewPreset::Front).grid_plane(),
-            GridPlane::XZ
+            GridPlane::YZ
         );
-        assert_eq!(Camera::preset(ViewPreset::Left).grid_plane(), GridPlane::YZ);
+        assert_eq!(Camera::preset(ViewPreset::Left).grid_plane(), GridPlane::XZ);
         assert_eq!(
             Camera::preset(ViewPreset::Perspective).grid_plane(),
             GridPlane::XY
@@ -530,11 +533,12 @@ mod tests {
         c.orbit(0.0, 10.0);
         assert!((c.pitch - std::f32::consts::FRAC_PI_2).abs() < 1e-6);
 
-        // Pan in the Front view: dragging right moves the target to -X,
-        // dragging down moves it to +Z (scene follows the cursor).
+        // Pan in the Front view (looking along -X, screen right = +Y):
+        // dragging right moves the target to -Y, dragging down moves it to
+        // +Z (scene follows the cursor).
         let mut f = Camera::preset(ViewPreset::Front);
         f.pan(10.0, 0.0, 500.0);
-        assert!(f.target.x < 0.0 && f.target.y.abs() < 1e-4 && f.target.z.abs() < 1e-4);
+        assert!(f.target.y < 0.0 && f.target.x.abs() < 1e-4 && f.target.z.abs() < 1e-4);
         let mut f = Camera::preset(ViewPreset::Front);
         f.pan(0.0, 10.0, 500.0);
         assert!(f.target.z > 0.0);

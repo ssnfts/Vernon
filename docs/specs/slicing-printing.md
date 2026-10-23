@@ -349,6 +349,48 @@ Inputs are meshes we build ourselves; reference-tool outputs are recorded from a
     flagged; one sloped 80 deg has 0.174 h and is not; the cut-off is slope 72.5 deg (cos = 0.3). The
     threshold is a Vernon tuning knob (node 13).
 
+## 5a. Node map: part splitting, joints and labels
+
+Section 4 listed these nodes under working names; these are the registered ids with the parameters each one has.
+Cuts work on closed triangle meshes, every cut is capped so parts stay closed, and each part carries an integer prim
+attribute `part`. Nodes marked white-box have their final ports and parameters but a placeholder algorithm; they
+cook and say so in a warning.
+
+- `print.plane_cut`: cut a closed mesh by one plane (`origin`, `normal`) or by the planes of the optional `planes`
+  input; `keep` selects both halves or one; `cap` closes the cuts; `eps` is the on-plane tolerance as a fraction of the
+  bounding-box diagonal. Every piece gets a part id and the plane list is output for the joint nodes. Check: a cube cut
+  by its mid-plane gives two parts of equal volume whose sum equals the original.
+- `print.polyline_cut` (white-box): cut along a guide polyline seen along `view_dir` so seams follow body lines.
+- `print.grid_partition`: cut a body into a grid of capped parts that each fit the printer bed. `mode = by_bed`
+  chooses the number of cuts per axis so that every cell fits the bed less `margin`; `by_count` takes
+  `count_x/y/z`; `by_spacing` takes the distance between cuts per axis (0 turns an axis off). `snap` moves each cut
+  towards the thinnest nearby cross-section by at most `slack`.
+- `print.smart_partition` (white-box): search for a split with few parts, small seams and hidden seam lines, weighted
+  by `w_parts`, `w_seam`, `w_visible`, `w_fragile` and `w_unused`, with a beam of `beam_width` candidates.
+- `print.cut_region_select` (white-box): `mode` and `island` choose which islands of a multi-island cut plane are cut
+  and which stay joined.
+- `print.connectivity`: give every connected piece its own part id; `link = edge` joins faces that share an edge,
+  `point` also joins faces that touch at a vertex; vertices closer than `weld_tol` count as shared.
+- `print.by_attribute`: number parts by the value of an integer attribute (`attrib`, on prims or points; for points
+  `point_rule` is majority, all-equal or first).
+- `print.part_extract`: take the part with the given id out of a multi-part mesh.
+- `print.part_label`: give every part a printable label such as P01 (`prefix`, `digits`, `start`), kept in the string
+  prim attribute `label` and output as a JSON list.
+- `print.build_fit`: test every part against the printer volume (`printer` or custom `bed`, less `margin`) in many
+  orientations (`search`), optionally spinning about Z and allowing a uniform scale down to `min_scale`; keep the best
+  orientation that fits and write its pose, scored with the layer height, overhang angle, load direction and
+  material. A part that fits in no orientation is reported with its smallest overshoot.
+- `print.dovetail_joint`: flared keys on one half of each seam and matching grooves on the other; the groove is the key
+  plus `tolerance`, the clearance per side between male feature and socket; `count` keys per seam are spaced by
+  `spacing`, `max_count` caps the joints per seam, and `wall_min` is the smallest wall left between a feature and the
+  edge of the seam.
+- `print.dowel_joint`: matching holes of `radius` and `depth` in both halves of each seam and the loose pins as a second output
+  to print; `gap_z` is the total shortfall of the pin against the two holes and `tolerance` the clearance per side.
+- `print.plug_joint`: round plugs on one half of each seam and matching sockets on the other, same clearance and
+  spacing rules as the other joints; `gap_z` is the extra socket depth so the faces meet before the plug bottoms out.
+- `print.snap_joint` (white-box): snap-fit arms (`arm_length`, `flex_room`, `bulge`) on one half and recesses on the
+  other; until the arm geometry is specified it falls back to a plain plug and says so in a warning.
+
 ## 6. Sources
 
 Read in this pass:

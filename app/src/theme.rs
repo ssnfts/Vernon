@@ -16,7 +16,11 @@ pub const DISABLED: Color32 = Color32::from_rgb(0x8A, 0x8A, 0x8A);
 pub const ACCENT: Color32 = Color32::from_rgb(0xF2, 0xC1, 0x4E);
 pub const PASS: Color32 = Color32::from_rgb(0x57, 0xC2, 0x6B);
 pub const WARN: Color32 = Color32::from_rgb(0xF2, 0xC1, 0x4E);
+/// Fail red for strokes, fills and glyphs only (4.09:1 on [`SURFACE`]).
 pub const FAIL: Color32 = Color32::from_rgb(0xE5, 0x53, 0x4B);
+/// Fail red for text: a lighter tint that reaches 4.5:1 on [`SURFACE`] and
+/// on [`SURFACE_DEEP`]. Use it for every label, never [`FAIL`].
+pub const FAIL_TEXT: Color32 = Color32::from_rgb(0xFF, 0x7B, 0x72);
 pub const AXIS_X: Color32 = Color32::from_rgb(0xE0, 0x5A, 0x50);
 pub const AXIS_Y: Color32 = Color32::from_rgb(0x6C, 0xC0, 0x5A);
 pub const AXIS_Z: Color32 = Color32::from_rgb(0x5A, 0x8C, 0xE6);
@@ -41,7 +45,7 @@ pub fn apply(ctx: &egui::Context) {
         v.code_bg_color = SURFACE_DEEP;
         v.hyperlink_color = ACCENT;
         v.warn_fg_color = WARN;
-        v.error_fg_color = FAIL;
+        v.error_fg_color = FAIL_TEXT;
         v.selection.bg_fill = Color32::from_rgb(0x7A, 0x5E, 0x1C);
         v.selection.stroke = Stroke::new(1.0_f32, TEXT);
         v.window_stroke = Stroke::new(1.0_f32, Color32::from_rgb(0x44, 0x44, 0x44));
@@ -113,16 +117,19 @@ mod tests {
         check(ACCENT, 9.02);
         check(PASS, 6.73);
         check(FAIL, 4.09);
+        check(FAIL_TEXT, 6.00);
         check(DISABLED, 4.38);
     }
 
     #[test]
     fn text_tokens_meet_aa() {
-        for c in [TEXT, TEXT_DIM, ACCENT, PASS] {
+        for c in [TEXT, TEXT_DIM, ACCENT, PASS, FAIL_TEXT] {
             assert!(contrast_ratio(c, SURFACE) >= 4.5);
+            assert!(contrast_ratio(c, SURFACE_DEEP) >= 4.5);
         }
         // Fail red is allowed as a non-text indicator only (>= 3).
         assert!(contrast_ratio(FAIL, SURFACE) >= 3.0);
+        assert!(contrast_ratio(FAIL, SURFACE) < 4.5, "FAIL is the non-text red; text uses FAIL_TEXT");
     }
 
     #[test]

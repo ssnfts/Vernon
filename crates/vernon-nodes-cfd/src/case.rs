@@ -30,17 +30,18 @@ fn setup_info() -> NodeTypeInfo {
         .output(PortSpec::new("report", DataKind::Report))
         .param(ParamSpec::choice("flavour", "OpenFOAM flavour", "from_mesh", &flavour_options()).help("from_mesh takes the flavour the mesh dictionaries were written for"))
         .param(ParamSpec::float("u_ms", "Speed", 30.0, 10.0, 100.0).unit("m/s").help("Overridden by a wired air state"))
-        .param(ParamSpec::float("nu", "Kinematic viscosity", 1.5e-5, 1.4e-5, 1.9e-5).unit("m2/s"))
+        .param(ParamSpec::float("nu", "Kinematic viscosity", 1.5e-5, 1.4e-5, 1.9e-5).unit("m2/s").help("Kinematic viscosity of the air, used for the Reynolds number and the inlet turbulence values."))
         .param(ParamSpec::float("rho_inf", "Density for force post-processing", 1.225, 0.9, 1.3).unit("kg/m3").help("The solver is incompressible; density only scales the reported forces"))
-        .param(ParamSpec::float("turbulence_intensity_pct", "Inlet turbulence intensity", 0.25, 0.05, 1.0).unit("%"))
-        .param(ParamSpec::float("nut_ratio", "Inlet viscosity ratio", 10.0, 1.0, 100.0))
-        .param(ParamSpec::int("n_iter", "Max iterations", 3000, 500, 7000))
-        .param(ParamSpec::int("window", "Averaging window", 1000, 100, 2000).unit("iter"))
-        .param(ParamSpec::float("residual_target", "Residual target", 1e-5, 1e-6, 1e-3))
-        .param(ParamSpec::int("write_interval", "Write interval", 500, 50, 5000).unit("iter"))
-        .param(ParamSpec::int("np", "Processes", 8, 1, 512))
-        .param(ParamSpec::bool("limited_laplacian", "Limited Laplacian (non-orthogonality above 70)", false))
-        .help("Writes the steady two-equation RANS case: initial and boundary fields, transport and turbulence settings, schemes, solver controls, force and force-coefficient monitors, porous and rotating-frame zones.")
+        .param(ParamSpec::float("turbulence_intensity_pct", "Inlet turbulence intensity", 0.25, 0.05, 1.0).unit("%").help("Turbulence intensity of the incoming flow. Sets the inlet turbulent kinetic energy."))
+        .param(ParamSpec::float("nut_ratio", "Inlet viscosity ratio", 10.0, 1.0, 100.0).help("Inlet ratio of turbulent to laminar viscosity. Sets the inlet specific dissipation rate."))
+        .param(ParamSpec::int("n_iter", "Max iterations", 3000, 500, 7000).help("Maximum number of steady iterations before the run stops."))
+        .param(ParamSpec::int("window", "Averaging window", 1000, 100, 2000).unit("iter").help("Number of final iterations the force coefficients are averaged over."))
+        .param(ParamSpec::float("residual_target", "Residual target", 1e-5, 1e-6, 1e-3).help("Residual level at which the run counts as converged and stops."))
+        .param(ParamSpec::int("write_interval", "Write interval", 500, 50, 5000).unit("iter").help("Iterations between result write-outs. Larger saves disk, smaller gives a finer restart point."))
+        .param(ParamSpec::int("np", "Processes", 8, 1, 512).help("Number of processes the case is decomposed over."))
+        .param(ParamSpec::bool("separated_flow", "Separated-flow features", false).help("The kit has a diffuser, a rear wing near stall or tail separation. Steady two-equation RANS misses or smears such separation, so the case is flagged and the force report warns; confirm absolute numbers with a transient detached-eddy run, which this node does not write."))
+        .param(ParamSpec::bool("limited_laplacian", "Limited Laplacian (non-orthogonality above 70)", false).help("Use a limited Laplacian scheme. It is steadier on meshes whose worst non-orthogonality is above 70 degrees but less accurate."))
+        .help("Writes the steady two-equation RANS case (k-omega SST, wall functions): initial and boundary fields, transport and turbulence settings, schemes, solver controls, force and force-coefficient monitors, porous and rotating-frame zones. Flag separated-flow features to have the report and the force coefficients warn that steady RANS is only a trend there.")
         .emulates("CFD GUI front end: steady solver case writer")
         .spec("docs/specs/automotive-cfd.md")
         .external("OpenFOAM")
@@ -149,6 +150,7 @@ fn setup_cook(ctx: &CookContext, ins: &[Option<Data>], p: &Params) -> CookResult
     // keep the manifest current
     let mut m = man.unwrap_or_else(|| json!({}));
     let dx0 = m["dx0_m"].as_f64().filter(|d| *d > 0.0);
+    let separated_flow = p.bool("separated_flow")?;
     let recipe = crate::types::Recipe {
         dx0_m: dx0,
         base_cells: dx0.map(|d| {
@@ -160,6 +162,7 @@ fn setup_cook(ctx: &CookContext, ins: &[Option<Data>], p: &Params) -> CookResult
         wheel_mode: bc.wheel_mode.clone(),
         yaw_deg: domain.yaw_deg,
         turbulence: format!("kOmegaSST I={:.3}% nut/nu={:.1}", spec.i_pct, spec.nut_ratio),
+        separated_flow,
     };
     m["flavour"] = json!(flavour.name());
     m["np"] = json!(np);
@@ -178,6 +181,15 @@ fn setup_cook(ctx: &CookContext, ins: &[Option<Data>], p: &Params) -> CookResult
         .metric("rho_inf", Metric::new(rho, "kg/m3"))
         .metric("aref_m2", Metric::new(spec.aref(), "m2"))
         .metric("porous_zones", Metric::new(zones.iter().filter(|z| z.bbox_m.is_some()).count() as f64, "count"));
+    report.metric("separated_flow_flagged", Metric::new(f64::from(separated_flow), "-"));
+    if separated_flow {
+        report.note(
+            Severity::Warning,
+            "separated-flow features are flagged (diffuser, rear wing near stall or tail separation): this case is steady k-omega SST, which misses or smears such separation; use its deltas as a trend and confirm absolute CdA and ClA with a transient detached-eddy (DDES or SBES) run",
+        );
+    } else {
+        report.note(Severity::Info, "steady k-omega SST with wall functions; if the kit has a diffuser, a rear wing near stall or tail separation, flag separated-flow features");
+    }
     if domain.half_model {
         report.note(Severity::Info, "half model: forces integrate the y >= 0 half and the reference area is half the full-car frontal area");
     }
@@ -199,9 +211,9 @@ fn solve_info() -> NodeTypeInfo {
         .output(PortSpec::new("history", DataKind::Json))
         .output(PortSpec::new("report", DataKind::Report))
         .param(ParamSpec::bool("run", "Run now", false).help("Starts the solver once and switches itself off again, so a re-cook never relaunches hours of CPU. Results the case holds for these exact inputs are always read.").action())
-        .param(ParamSpec::int("np", "Processes", 8, 1, 512))
-        .param(ParamSpec::bool("potential_init", "Initialise with a potential-flow solution", true))
-        .param(ParamSpec::choice("runner", "Runner", "native", &["native", "wsl", "docker"]))
+        .param(ParamSpec::int("np", "Processes", 8, 1, 512).help("Number of processes the run is decomposed over."))
+        .param(ParamSpec::bool("potential_init", "Initialise with a potential-flow solution", true).help("Start from a potential-flow solution instead of uniform flow. It usually speeds up the first iterations."))
+        .param(ParamSpec::choice("runner", "Runner", "native", &["native", "wsl", "docker"]).help("Where the solver programs run: directly on this machine, in a Linux subsystem, or in a container."))
         .param(ParamSpec::string("image", "Container image", "").help("Docker runner only"))
         .param(ParamSpec::path("bin_dir", "Tool directory", &[], false).help("Folder with the OpenFOAM executables; empty searches the PATH"))
         .param(ParamSpec::int("timeout_min", "Time limit", 720, 0, 100_000).unit("min").help("The run (and every process it started) is stopped after this long; 0 = one day"))
@@ -337,6 +349,20 @@ mod tests {
         let k = read(&case, "0/k");
         assert!(k.contains("uniform 0.015;"), "{k}");
         assert!(read(&case, "0/omega").contains("uniform 100;"));
+    }
+
+    #[test]
+    fn separated_flow_flag_warns_and_is_recorded_in_the_recipe() {
+        let (case, r) = setup(&[], &[("separated_flow", ParamValue::Bool(true))], "sepflow-on");
+        assert_eq!(r.metrics["separated_flow_flagged"].value, 1.0);
+        assert!(r.notes.iter().any(|(s, m)| *s == Severity::Warning && m.contains("separated-flow features are flagged")), "{r:?}");
+        let man: serde_json::Value = serde_json::from_str(&read(&case, "vernon_case.json")).unwrap();
+        assert_eq!(man["case_setup"]["recipe"]["separated_flow"], true);
+        let (case, r) = setup(&[], &[], "sepflow-off");
+        assert_eq!(r.metrics["separated_flow_flagged"].value, 0.0);
+        assert!(!r.notes.iter().any(|(_, m)| m.contains("features are flagged")));
+        let man: serde_json::Value = serde_json::from_str(&read(&case, "vernon_case.json")).unwrap();
+        assert_eq!(man["case_setup"]["recipe"]["separated_flow"], false);
     }
 
     #[test]

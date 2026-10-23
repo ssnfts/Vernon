@@ -154,6 +154,10 @@ pub struct WriteOptions {
     pub unit: FileUnit,
     /// Write ASCII instead of binary where the format allows it.
     pub ascii: bool,
+    /// 3MF `CreationDate` as seconds since the Unix epoch. `None` takes
+    /// `SOURCE_DATE_EPOCH` when set and the current time otherwise; a fixed
+    /// value makes the written bytes identical from run to run.
+    pub creation_date: Option<i64>,
 }
 
 impl Default for WriteOptions {
@@ -161,6 +165,7 @@ impl Default for WriteOptions {
         Self {
             unit: FileUnit::Millimetre,
             ascii: false,
+            creation_date: None,
         }
     }
 }
@@ -428,7 +433,7 @@ mod tests {
         let g = Geometry::make_box(DVec3::splat(254.0));
         let opts = WriteOptions {
             unit: FileUnit::Inch,
-            ascii: false,
+            ..Default::default()
         };
         for format in [
             Format::Obj,
@@ -548,7 +553,7 @@ mod tests {
         let g = tetra();
         let wopts = WriteOptions {
             unit: FileUnit::Inch,
-            ascii: false,
+            ..Default::default()
         };
         let ropts = ReadOptions {
             unit: FileUnit::Inch,

@@ -64,7 +64,7 @@ fn info() -> NodeTypeInfo {
         .param(ParamSpec::float("rho", "Site air density", 1.11, 0.5, 1.4).unit("kg/m3").help("Overridden by a wired air state"))
         .param(ParamSpec::float("rho_run", "Density of the run", 1.225, 0.9, 1.3).unit("kg/m3").help("Only for the force scaling factor; a connected result carries its own"))
         .param(ParamSpec::string("speeds_kmh", "Speed table", "100, 150, 200, 250").unit("km/h").help("Comma-separated"))
-        .param(ParamSpec::float("design_kmh", "Design speed", 250.0, 50.0, 400.0).unit("km/h"))
+        .param(ParamSpec::float("design_kmh", "Design speed", 250.0, 50.0, 400.0).unit("km/h").help("Speed the aerodynamic loads are evaluated at. Pressure loads scale with the square of speed."))
         .param(ParamSpec::float("load_factor", "Design load factor", 1.0, 1.0, 5.0).help("Safety factor on the structural design load"))
         .param(ParamSpec::float("panel_area_m2", "Loaded panel area", 0.0, 0.0, 10.0).unit("m2").help("Optional: turns the design downforce into a mean pressure; 0 = skip"))
         .help("Scales the measured CdA and ClA to the site: dynamic pressure, drag, downforce and drag power over a speed table, plus the design-speed load the structural stage applies. Coefficients are density independent; forces scale with density and speed squared.")

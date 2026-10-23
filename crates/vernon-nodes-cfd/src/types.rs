@@ -216,6 +216,10 @@ pub struct Recipe {
     pub yaw_deg: f64,
     /// Turbulence model and inlet turbulence settings.
     pub turbulence: String,
+    /// The part under test has features where steady two-equation RANS is not
+    /// trustworthy (diffuser, rear wing near stall, tail separation). Not a
+    /// recipe mismatch: a baseline and a kit may differ in it.
+    pub separated_flow: bool,
 }
 
 impl Recipe {

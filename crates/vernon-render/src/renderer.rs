@@ -1058,7 +1058,7 @@ mod tests {
         let cam = Camera::preset(crate::ViewPreset::Front);
         let v = ViewDesc::from_camera(&cam, [800, 600]);
         assert!(v.is_ortho());
-        assert_eq!(v.grid_plane, GridPlane::XZ);
+        assert_eq!(v.grid_plane, GridPlane::YZ);
         let p = ViewDesc::from_camera(&Camera::default(), [800, 600]);
         assert!(!p.is_ortho());
         assert_eq!(p.grid_plane, GridPlane::XY);

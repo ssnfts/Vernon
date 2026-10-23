@@ -1,10 +1,14 @@
 //! Display meshes: geometry flattened to f32 triangles with optional
 //! per-triangle colours, display decimation and ray picking.
 
+use std::collections::{HashMap, HashSet};
+
 use glam::{DVec3, Vec3};
 use vernon_core::{AttribArray, Geometry};
 
-/// Above this many triangles the display mesh keeps every n-th triangle.
+/// Above this many triangles the display mesh is simplified by vertex
+/// clustering (a closed surface stays closed; no triangles are dropped at
+/// random, which would punch holes).
 pub const MAX_DISPLAY_TRIS: usize = 200_000;
 /// Above this many points a point cloud is thinned for display.
 pub const MAX_DISPLAY_POINTS: usize = 200_000;
@@ -120,8 +124,7 @@ pub fn build(geo: &Geometry, color_by: ColorBy) -> RenderMesh {
 
     let all = geo.triangles();
     m.source_tris = all.len();
-    let stride = all.len().div_ceil(MAX_DISPLAY_TRIS).max(1);
-    let kept: Vec<(usize, [u32; 3])> = all.into_iter().step_by(stride).collect();
+    let kept = decimate(&geo.points, all, MAX_DISPLAY_TRIS);
 
     for prim in geo.prims.iter().filter(|p| !p.closed) {
         for w in prim.vertices.windows(2) {
@@ -196,6 +199,113 @@ pub fn build(geo: &Geometry, color_by: ColorBy) -> RenderMesh {
     }
     m.tris = kept.into_iter().map(|(_, t)| t).collect();
     m
+}
+
+/// Reduce `tris` (source primitive, point indices) to at most `max` by vertex
+/// clustering: the points are binned in a uniform grid, every point is
+/// replaced by the point nearest its cell's centroid, and triangles that
+/// collapse (two corners in one cell) or repeat are dropped. Neighbouring
+/// triangles keep sharing their edges, so a closed surface stays closed. The
+/// grid is the finest one (up to 2048 cells along the longest side) that
+/// leaves no more than `max` triangles.
+pub fn decimate(points: &[DVec3], mut tris: Vec<(usize, [u32; 3])>, max: usize) -> Vec<(usize, [u32; 3])> {
+    if tris.len() <= max {
+        return tris;
+    }
+    let mut used = vec![false; points.len()];
+    for (_, t) in &tris {
+        for &v in t {
+            if let Some(u) = used.get_mut(v as usize) {
+                *u = true;
+            }
+        }
+    }
+    let ids: Vec<u32> = (0..points.len() as u32).filter(|&i| used[i as usize]).collect();
+    let (mut lo, mut hi) = (DVec3::splat(f64::INFINITY), DVec3::splat(f64::NEG_INFINITY));
+    for &i in &ids {
+        let p = points[i as usize];
+        if p.is_finite() {
+            lo = lo.min(p);
+            hi = hi.max(p);
+        }
+    }
+    if !lo.is_finite() || !hi.is_finite() {
+        tris.truncate(max);
+        return tris;
+    }
+    let size = (hi - lo).max_element().max(1e-12);
+    // Non-finite points sit at the corner rather than poisoning a cell.
+    let at = |i: u32| {
+        let p = points[i as usize];
+        if p.is_finite() { p } else { lo }
+    };
+    // The representative point of every used point on a `res`^3 grid.
+    let reps_for = |res: u64| -> Vec<u32> {
+        let scale = res as f64 / size;
+        let cell = |p: DVec3| -> u64 {
+            let q = |v: f64| ((v * scale).floor().max(0.0) as u64).min(res - 1);
+            let d = p - lo;
+            q(d.x) | q(d.y) << 16 | q(d.z) << 32
+        };
+        let mut sums: HashMap<u64, (DVec3, u32)> = HashMap::new();
+        for &i in &ids {
+            let p = at(i);
+            let e = sums.entry(cell(p)).or_insert((DVec3::ZERO, 0));
+            e.0 += p;
+            e.1 += 1;
+        }
+        let mut best: HashMap<u64, (u32, f64)> = HashMap::new();
+        for &i in &ids {
+            let p = at(i);
+            let c = cell(p);
+            let (sum, n) = sums[&c];
+            let d2 = (p - sum / f64::from(n)).length_squared();
+            let e = best.entry(c).or_insert((i, d2));
+            if d2 < e.1 {
+                *e = (i, d2);
+            }
+        }
+        let mut reps = vec![u32::MAX; points.len()];
+        for &i in &ids {
+            reps[i as usize] = best[&cell(at(i))].0;
+        }
+        reps
+    };
+    // Surviving triangles on the grid `reps`; stops once more than `limit`.
+    let survivors = |reps: &[u32], limit: usize, out: &mut Vec<(usize, [u32; 3])>| -> bool {
+        let mut seen: HashSet<[u32; 3]> = HashSet::new();
+        out.clear();
+        for &(prim, t) in &tris {
+            let r = [reps[t[0] as usize], reps[t[1] as usize], reps[t[2] as usize]];
+            if r[0] == r[1] || r[1] == r[2] || r[0] == r[2] || r.contains(&u32::MAX) {
+                continue;
+            }
+            let mut key = r;
+            key.sort_unstable();
+            if seen.insert(key) {
+                out.push((prim, r));
+                if out.len() > limit {
+                    return false;
+                }
+            }
+        }
+        true
+    };
+    // The finest grid that fits (a single cell always does: no triangles).
+    let (mut fit, mut over) = (1u64, 2049u64);
+    let mut scratch = Vec::new();
+    while over - fit > 1 {
+        let mid = (fit + over) / 2;
+        if survivors(&reps_for(mid), max, &mut scratch) {
+            fit = mid;
+        } else {
+            over = mid;
+        }
+    }
+    let reps = reps_for(fit);
+    let mut out = Vec::new();
+    survivors(&reps, max, &mut out);
+    out
 }
 
 fn min_max(v: &[f64]) -> Option<(f64, f64)> {
@@ -323,6 +433,47 @@ mod tests {
         assert!(m.tris.len() <= MAX_DISPLAY_TRIS);
         assert_eq!(m.source_tris, n as usize);
         assert!(m.is_decimated());
+    }
+
+    #[test]
+    fn decimation_keeps_a_closed_surface_closed() {
+        // A UV sphere of 2 * 300 * 400 - ... > 200k triangles.
+        let (nu, nv) = (400usize, 300usize);
+        let mut pts = Vec::new();
+        for j in 0..=nv {
+            let th = std::f64::consts::PI * j as f64 / nv as f64;
+            for i in 0..nu {
+                let ph = std::f64::consts::TAU * i as f64 / nu as f64;
+                pts.push(DVec3::new(th.sin() * ph.cos(), th.sin() * ph.sin(), th.cos()) * 100.0);
+            }
+        }
+        let id = |i: usize, j: usize| (j * nu + i % nu) as u32;
+        let mut faces = Vec::new();
+        for j in 0..nv {
+            for i in 0..nu {
+                faces.push(vec![id(i, j), id(i + 1, j), id(i + 1, j + 1)]);
+                faces.push(vec![id(i, j), id(i + 1, j + 1), id(i, j + 1)]);
+            }
+        }
+        let g = Geometry::from_polygons(pts, faces);
+        let m = build(&g, ColorBy::Object);
+        assert!(m.source_tris > MAX_DISPLAY_TRIS);
+        assert!(m.is_decimated());
+        // Reasonably dense, not a handful of triangles.
+        assert!(m.tris.len() <= MAX_DISPLAY_TRIS && m.tris.len() > MAX_DISPLAY_TRIS / 8, "{}", m.tris.len());
+        // Every ray at the centre hits: nothing was punched out.
+        let mut hits = 0;
+        let n = 300;
+        for k in 0..n {
+            let a = k as f64 * 2.399963;
+            let z = 1.0 - 2.0 * (k as f64 + 0.5) / n as f64;
+            let r = (1.0 - z * z).sqrt();
+            let dir = DVec3::new(r * a.cos(), r * a.sin(), z);
+            if pick(&m, dir * 500.0, -dir, 0.0).is_some() {
+                hits += 1;
+            }
+        }
+        assert_eq!(hits, n, "rays that slipped through a hole");
     }
 
     #[test]

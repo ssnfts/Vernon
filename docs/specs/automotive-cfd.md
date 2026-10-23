@@ -163,7 +163,9 @@ iterate `p = |ln|e32/e21| + q| / ln r21`, `q = ln((r21^p - s)/(r32^p - s))` unti
 3. Moving ground and rotating-wall wheels default on; turning either off shows a "not representative" badge.
 4. Prism layers sized for the wall treatment (`cfd.mesh_quality` y+ check).
 5. Refinement boxes around the part under test (`cfd.refinement_plan`).
-6. Three mesh levels, accept when last two within 1-2% of Cd (`cfd.mesh_study`).
+6. Three mesh levels, accept when last two within 1-2% of Cd (`cfd.mesh_study`, limit capped at 2 %). `cfd.mesh_levels` scales every cell size of one plan by the refinement ratio (about 1.3, so the cell count grows by 1.3^3 = 2.2 per level) to give the three plans.
+6a. Memory: plan 1 to 2 GB of RAM per million cells (the project note's rule of thumb, 32 to 64 GB for a 24 million-cell mesh); `cfd.mesh_setup` reports it at the cell limit and `cfd.mesh_quality` for the built mesh, against the machine's memory when given.
+6b. Fidelity: steady k-omega SST is what the case writer produces. Diffusers, rear wings near stall and tail separation are separated flows where steady RANS misses or smears the separation and detached-eddy (DDES/SBES) transient runs are recommended; `cfd.case_setup` has a flag for them that makes the case report and `cfd.force_coeffs` warn. No transient case is written yet.
 7. Kit vs baseline on the same recipe and identical background/refinement settings, forces averaged over final iterations (`cfd.compare_ab`).
 
 ### 3.11 Validation geometries and known behaviour
@@ -197,13 +199,14 @@ Ports: Surf = tagged surface set, Mesh, Case = OpenFOAM case dir, Series = time-
 | cfd.solve_steady | Run Steady Solver | Case | fields, Series | iters, np, residual target | wb-first |
 | cfd.force_coeffs | Force Coefficients | Series, ref geometry | Cd, Cl, CdA, ClA, balance +/- sd | window, half_model, CofR | now |
 | cfd.run_convergence | Run Convergence | Series | pass, drift, sd | window, tol=0.2% | now |
-| cfd.mesh_study | Mesh Convergence | 3 x force result | p, phi_ext, GCI, pass | r, accept_pct=2 | now |
+| cfd.mesh_levels | Mesh Study Levels | refinement plan | coarse, medium, fine plans | ratio (default 1.3, at least 1.25), which grid the input is | now |
+| cfd.mesh_study | Mesh Convergence | 3 x force result | p, phi_ext, GCI, pass | r, accept_pct=2 (capped at 2) | now |
 | cfd.surface_pressure | Surface Pressure Map | fields | per-face Cp, shear, y+ | p_inf, colour range | wb-first |
 | cfd.compare_ab | Baseline vs Kit | 2 x force result (recipe-stamped), optional benchmark report | dCdA, dClA, balance shift, verdict; rejects mesh/ground/wheel/yaw/turbulence mismatch | k_sigma=2, mesh_noise_cd=0.005 (or the mesh-study GCI) | now |
 | cfd.aero_loads | Site Aero Loads | CdA, ClA, fields | N, W, design-speed pressure load | rho, v list, load factor | now |
 | cfd.benchmark_check | Benchmark Check | benchmark result | error table, pass | case id, band | wb-first |
 
-**Total proposed nodes: 20.** Sequence: vehicle_prep -> frontal_area / symmetry_check -> tunnel_domain -> ground_wheels / porous_core -> refinement_plan -> mesh_setup -> mesh_build -> mesh_quality -> case_setup -> solve_steady -> force_coeffs + run_convergence -> mesh_study (x3) -> compare_ab -> aero_loads -> FEA / performance stages. `benchmark_check` gates the first kit run.
+**Total proposed nodes: 21 (`cfd.mesh_levels` was added to make the three grids of the study from one plan).** Sequence: vehicle_prep -> frontal_area / symmetry_check -> tunnel_domain -> ground_wheels / porous_core -> refinement_plan -> mesh_setup -> mesh_build -> mesh_quality -> case_setup -> solve_steady -> force_coeffs + run_convergence -> mesh_study (x3) -> compare_ab -> aero_loads -> FEA / performance stages. `benchmark_check` gates the first kit run.
 
 ## 5. Golden test ideas (concrete numbers)
 

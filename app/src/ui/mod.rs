@@ -24,7 +24,7 @@ use crate::study::Study;
 use crate::unsaved::{Choice, Guard, Pending, Step};
 use crate::viewport::gpu::GpuBackend;
 use crate::viewport::painter::PainterBackend;
-use crate::viewport::{ColorBy, Shading, ViewKind, ViewportBackend};
+use crate::viewport::{ColorBy, OrbitMode, Shading, ViewKind, ViewportBackend};
 
 pub use windows::{FileDialog, FileMode};
 
@@ -86,10 +86,24 @@ pub enum Utility {
     Statistics,
     Listener,
     CleanRoom,
+    Units,
+    ExternalTools,
+}
+
+/// Scene Explorer sort order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ExplorerSort {
+    /// Creation order.
+    #[default]
+    Scene,
+    Name,
+    Stage,
+    LastRun,
 }
 
 #[derive(Debug, Default)]
 pub struct Windows {
+    pub typein: bool,
     pub node_editor: bool,
     pub gates: bool,
     pub report: bool,
@@ -133,6 +147,19 @@ pub struct VernonApp {
     last_autosave: f64,
     /// Parameter sweep the time slider drives (Motion tab).
     pub study: Study,
+    /// Status-bar and F12 transform type-in mode.
+    pub typein_mode: crate::typein::Mode,
+    /// Viewport clicks and drags do not change the selection.
+    pub selection_locked: bool,
+    /// Objects hidden by Isolate (Alt+Q), shown again when it ends.
+    pub isolated: Vec<NodeId>,
+    /// Pin Stack: the Modify panel stays on this object.
+    pub pinned: Option<NodeId>,
+    /// Type-to-find text of the modifier list.
+    pub modifier_filter: String,
+    pub explorer_sort: ExplorerSort,
+    /// Utilities > External Tools: path being typed per program.
+    pub tool_paths: std::collections::BTreeMap<String, String>,
 }
 
 /// Seconds between crash-recovery copies of a modified scene.
@@ -201,6 +228,13 @@ impl VernonApp {
             close_now: false,
             last_autosave: 0.0,
             study: Study::default(),
+            typein_mode: crate::typein::Mode::Absolute,
+            selection_locked: false,
+            isolated: Vec::new(),
+            pinned: None,
+            modifier_filter: String::new(),
+            explorer_sort: ExplorerSort::Scene,
+            tool_paths: Default::default(),
         }
     }
 
@@ -387,6 +421,33 @@ impl VernonApp {
         for id in self.st.scene.hidden.clone() {
             self.st.set_hidden(id, false);
         }
+        self.isolated.clear();
+    }
+
+    /// Alt+Q: hide everything but the selection; again to end it.
+    pub fn toggle_isolate(&mut self) {
+        if !self.isolated.is_empty() {
+            let hidden = std::mem::take(&mut self.isolated);
+            self.st.end_isolate(&hidden);
+            self.st.info_text("isolation ended");
+        } else if self.st.selection.is_empty() {
+            self.st.info_text("select the objects to isolate");
+        } else {
+            let keep = self.st.selection.clone();
+            self.isolated = self.st.isolate(&keep);
+            self.st.info_text(format!("isolated: {} object(s) hidden (Alt+Q ends it)", self.isolated.len()));
+        }
+    }
+
+    /// The transform channel the active tool types into, if any.
+    pub fn typein_channel(&self) -> Option<crate::typein::Channel> {
+        use crate::typein::Channel;
+        match self.tool {
+            Tool::Select => None,
+            Tool::Move => Some(Channel::Translate),
+            Tool::Rotate => Some(Channel::Rotate),
+            Tool::Scale => Some(Channel::Scale),
+        }
     }
 
     pub fn do_action(&mut self, a: Action, ctx: &egui::Context) {
@@ -444,6 +505,45 @@ impl VernonApp {
             Action::GoEnd => self.play.set_frame(&self.time, self.time.end, now),
             Action::HideSelected => self.hide_selected(),
             Action::UnhideAll => self.unhide_all(),
+            Action::HideUnselected => {
+                let n = self.st.hide_unselected();
+                self.st.info_text(format!("{n} unselected object(s) hidden"));
+            }
+            Action::Isolate => self.toggle_isolate(),
+            Action::SelectionLock => {
+                self.selection_locked ^= true;
+                let s = if self.selection_locked { "on: viewport clicks keep the selection" } else { "off" };
+                self.st.info_text(format!("selection lock {s}"));
+            }
+            Action::ZoomRegion => {
+                self.vp.zoom_region ^= true;
+                if self.vp.zoom_region {
+                    self.st.info_text("zoom region: drag a rectangle in a viewport");
+                }
+            }
+            Action::TypeIn => self.show.typein ^= true,
+            Action::HomeView => {
+                self.vp.set_view(active, ViewKind::Perspective);
+                self.vp.zoom_extents(&self.st, Some(active), false);
+            }
+            Action::OrbitMode => {
+                self.vp.orbit = match self.vp.orbit {
+                    OrbitMode::Turntable => OrbitMode::Arcball,
+                    OrbitMode::Arcball => OrbitMode::Turntable,
+                };
+                let name = if self.vp.orbit == OrbitMode::Turntable { "turntable (Z stays up)" } else { "trackball" };
+                self.st.info_text(format!("orbit: {name}"));
+            }
+            Action::ZoomIn => self.vp.zoom_step(active, 1.0),
+            Action::ZoomOut => self.vp.zoom_step(active, -1.0),
+            Action::SelectSimilar => {
+                let n = self.st.select_similar();
+                self.st.info_text(format!("{n} object(s) of the same type selected"));
+            }
+            Action::Statistics => {
+                self.tab = PanelTab::Utilities;
+                self.utility = Some(Utility::Statistics);
+            }
         }
     }
 
@@ -474,6 +574,8 @@ impl VernonApp {
         for chord in presses {
             if let Some(a) = hotkeys::lookup(chord) {
                 self.do_action(a, ctx);
+            } else if let Some(what) = hotkeys::reserved(chord) {
+                self.st.info_text(format!("{}: {what} is not available in Vernon yet", hotkeys::chord_text(chord)));
             }
         }
     }
@@ -557,6 +659,7 @@ impl eframe::App for VernonApp {
         viewports::show(self, ctx);
         node_editor::show(self, ctx);
         windows::show(self, ctx);
+        bottom::typein_window(self, ctx);
         // Edits made while drawing start cooking now; keep repainting while
         // a cook runs so its results appear when it ends.
         if self.st.cook_step() {

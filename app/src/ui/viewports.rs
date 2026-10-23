@@ -1,4 +1,4 @@
-//! Quad viewports: tiles, splitters, label menus, orientation gizmo, home
+//! Quad viewports: tiles, splitters, label menus, view cube, home
 //! grid, navigation (MMB pan, Alt+MMB orbit, wheel zoom) and the
 //! Select/Move/Rotate/Scale tools.
 
@@ -9,10 +9,11 @@ use eframe::egui::{
     self, pos2, vec2, Align2, Color32, CursorIcon, FontId, Painter, PointerButton, Pos2, Rect, RichText, Sense,
     Stroke, StrokeKind, Ui, UiBuilder,
 };
-use glam::{DVec2, DVec3, Vec3};
+use glam::{DVec2, DVec3, IVec3, Vec3};
 use vernon_core::{Aabb, Geometry};
 use vernon_graph::{NodeId, ParamValue};
 
+use super::icons::{self, Icon};
 use super::{Tool, VernonApp};
 use crate::state::AppState;
 use crate::theme;
@@ -20,6 +21,7 @@ use crate::viewport::camera::{Camera, OrbitMode, ViewKind};
 use crate::viewport::grid::{self, GridSettings};
 use crate::viewport::layout::QuadLayout;
 use crate::viewport::mesh::{self, ColorBy, RenderMesh};
+use crate::viewport::viewcube;
 use crate::viewport::{DrawItem, Shading, ViewParams};
 
 const DEFAULT_KINDS: [ViewKind; 4] = [ViewKind::Top, ViewKind::Front, ViewKind::Left, ViewKind::Perspective];
@@ -72,6 +74,10 @@ enum Drag {
     Band { tile: usize, from: Pos2 },
     Tool { tile: usize, targets: Vec<(NodeId, DVec3, DVec3, f64)>, total: egui::Vec2 },
     Splitter,
+    /// Orbiting by dragging the view cube.
+    Cube { tile: usize },
+    /// Zoom region rectangle (Ctrl+W).
+    Zoom { tile: usize, from: Pos2 },
 }
 
 pub struct Viewports {
@@ -80,6 +86,10 @@ pub struct Viewports {
     pub grid: GridSettings,
     pub show_grid: bool,
     pub show_gizmo: bool,
+    /// View cube size: 0 Large, 1 Normal, 2 Small, 3 Tiny.
+    pub cube_size: u8,
+    /// The next left drag in a viewport zooms to its rectangle.
+    pub zoom_region: bool,
     pub orbit: OrbitMode,
     /// Cursor position on the construction plane of the hovered tile.
     pub cursor_world: Option<DVec3>,
@@ -98,6 +108,8 @@ impl Default for Viewports {
             grid: GridSettings::default(),
             show_grid: true,
             show_gizmo: true,
+            cube_size: 1,
+            zoom_region: false,
             orbit: OrbitMode::Turntable,
             cursor_world: None,
             grid_readout: 10.0,
@@ -120,11 +132,56 @@ impl Viewports {
         }
     }
 
+    /// Zoom a tile about its centre by wheel `notches` (`[` and `]`).
+    pub fn zoom_step(&mut self, tile: usize, notches: f64) {
+        let t = &mut self.tiles[tile];
+        t.remember();
+        let size = t.size();
+        t.cam.zoom_at(size * 0.5, size, notches);
+    }
+
     pub fn set_view(&mut self, tile: usize, kind: ViewKind) {
         let t = &mut self.tiles[tile];
         t.remember();
         t.kind = kind;
         t.cam.set_view(kind);
+    }
+
+    /// Look at the target from view-cube region `s`: a face gives its named
+    /// orthographic view, an edge or corner an angled view (perspective
+    /// tiles stay perspective).
+    pub fn orient(&mut self, tile: usize, s: IVec3) {
+        self.tiles[tile].remember();
+        self.orient_snapped(tile, s);
+    }
+
+    /// [`orient`](Self::orient) without a view-history entry (the cube drag
+    /// already made one).
+    fn orient_snapped(&mut self, tile: usize, s: IVec3) {
+        let t = &mut self.tiles[tile];
+        match viewcube::face_view(s) {
+            Some(kind) => {
+                t.kind = kind;
+                t.cam.set_view(kind);
+            }
+            None => {
+                t.cam.rot = viewcube::rotation_for(s);
+                if t.kind != ViewKind::Perspective {
+                    t.kind = ViewKind::User;
+                    t.cam.set_view(ViewKind::User);
+                }
+            }
+        }
+    }
+
+    /// Roll arrow: turn the view 90 degrees about the view axis.
+    pub fn roll(&mut self, tile: usize, clockwise: bool) {
+        let t = &mut self.tiles[tile];
+        t.remember();
+        t.cam.rot = viewcube::roll(t.cam.rot, clockwise);
+        if t.kind != ViewKind::Perspective {
+            t.kind = ViewKind::User;
+        }
     }
 
     pub fn view_undo(&mut self, tile: usize) {
@@ -208,8 +265,8 @@ impl Viewports {
 /// The construction plane of a view: normal and the two in-plane axes.
 fn plane_of(kind: ViewKind) -> (DVec3, DVec3, DVec3) {
     match kind {
-        ViewKind::Front | ViewKind::Back => (DVec3::Y, DVec3::X, DVec3::Z),
-        ViewKind::Left | ViewKind::Right => (DVec3::X, DVec3::Y, DVec3::Z),
+        ViewKind::Front | ViewKind::Back => (DVec3::X, DVec3::Y, DVec3::Z),
+        ViewKind::Left | ViewKind::Right => (DVec3::Y, DVec3::X, DVec3::Z),
         _ => (DVec3::Z, DVec3::X, DVec3::Y),
     }
 }
@@ -317,55 +374,119 @@ fn draw_grid(painter: &Painter, rect: Rect, tile: &Tile, gs: &GridSettings) -> f
     spacing
 }
 
-/// Orientation gizmo: world axes seen from the tile camera. Returns the view
-/// to switch to when an axis end or the home mark was clicked.
-fn gizmo(painter: &Painter, rect: Rect, cam: &Camera, click: Option<Pos2>, hover: Option<Pos2>) -> Option<ViewKind> {
-    let c = pos2(rect.right() - 42.0, rect.top() + 44.0);
-    let len = 26.0;
+/// What the pointer is over on the view cube.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum CubeHit {
+    /// One of the 26 regions (face, edge or corner).
+    Region(IVec3),
+    Home,
+    /// Roll arrow; true = clockwise.
+    Roll(bool),
+    /// Face-view triangle towards the neighbouring face (0 up, 1 right,
+    /// 2 down, 3 left).
+    Neighbour(usize),
+}
+
+fn cube_centre(rect: Rect, half: f32) -> Pos2 {
+    pos2(rect.right() - half * 2.0 - 16.0, rect.top() + half * 2.0 + 14.0)
+}
+
+/// Area of the cube that starts an orbit drag.
+fn cube_area(rect: Rect, half: f32) -> Rect {
+    Rect::from_center_size(cube_centre(rect, half), vec2(half * 2.6, half * 2.6))
+}
+
+/// View cube (spec 2.4): the world-aligned cube seen from the tile camera
+/// with face labels, the home mark, and in a face view the roll arrows and
+/// the triangles to the neighbouring faces. Returns what `at` is over; the
+/// hovered part is highlighted. `alpha` dims the cube in inactive tiles.
+fn view_cube(painter: &Painter, rect: Rect, cam: &Camera, half: f32, alpha: f32, at: Option<Pos2>) -> Option<CubeHit> {
+    let c = cube_centre(rect, half);
     let inv = cam.rot.inverse();
-    let axes = [
-        (DVec3::X, theme::AXIS_X, "X", ViewKind::Right, ViewKind::Left),
-        (DVec3::Y, theme::AXIS_Y, "Y", ViewKind::Back, ViewKind::Front),
-        (DVec3::Z, theme::AXIS_Z, "Z", ViewKind::Top, ViewKind::Bottom),
-    ];
-    painter.circle_filled(c, len + 9.0, Color32::from_black_alpha(40));
-    let mut ends: Vec<(f64, Pos2, Color32, Option<&str>, ViewKind)> = Vec::new();
-    for (a, col, name, pos_view, neg_view) in axes {
-        let v = inv * a;
-        let off = vec2(v.x as f32, -v.y as f32) * len;
-        ends.push((v.z, c + off, col, Some(name), pos_view));
-        ends.push((-v.z, c - off, col, None, neg_view));
-    }
-    ends.sort_by(|a, b| a.0.total_cmp(&b.0));
-    let mut picked = None;
-    for (_, p, col, name, view) in &ends {
-        let hot = hover.is_some_and(|h| h.distance(*p) < 8.0);
-        match name {
-            Some(n) => {
-                painter.line_segment([c, *p], Stroke::new(2.0_f32, *col));
-                painter.circle_filled(*p, if hot { 8.0 } else { 6.5 }, *col);
-                painter.text(*p, Align2::CENTER_CENTER, *n, FontId::proportional(10.0), Color32::BLACK);
+    let screen = |w: DVec3| {
+        let v = inv * w;
+        c + vec2(v.x as f32, -v.y as f32) * half
+    };
+    let fade = |col: Color32| col.gamma_multiply(alpha);
+    let face_view = viewcube::facing(cam.rot);
+
+    // What the pointer is over: home, roll arrows, triangles, then the cube.
+    let home = pos2(c.x - half * 1.75, c.y - half * 1.75);
+    let rolls = [(false, c + vec2(half * 0.85, -half * 1.85)), (true, c + vec2(half * 1.85, -half * 0.85))];
+    let tri_dirs = [vec2(0.0, -1.0), vec2(1.0, 0.0), vec2(0.0, 1.0), vec2(-1.0, 0.0)];
+    let tri_at = |k: usize| c + tri_dirs[k] * half * 1.5;
+    let hit = at.and_then(|p| {
+        if p.distance(home) < 8.0 {
+            return Some(CubeHit::Home);
+        }
+        if face_view.is_some() {
+            if let Some((cw, _)) = rolls.iter().find(|(_, q)| p.distance(*q) < 8.0) {
+                return Some(CubeHit::Roll(*cw));
             }
-            None => {
-                painter.circle_stroke(*p, if hot { 5.5 } else { 4.0 }, Stroke::new(1.5_f32, *col));
+            if let Some(k) = (0..4).find(|k| p.distance(tri_at(*k)) < 7.0) {
+                return Some(CubeHit::Neighbour(k));
             }
         }
-        if click.is_some_and(|k| k.distance(*p) < 8.0) {
-            picked = Some(*view);
+        let d = p - c;
+        viewcube::pick(DVec2::new(d.x as f64, d.y as f64), half as f64, cam.rot).map(CubeHit::Region)
+    });
+
+    // Faces, far first.
+    let mut faces: Vec<(f64, IVec3)> = [IVec3::X, IVec3::NEG_X, IVec3::Y, IVec3::NEG_Y, IVec3::Z, IVec3::NEG_Z]
+        .into_iter()
+        .map(|n| ((inv * n.as_dvec3()).z, n))
+        .filter(|(d, _)| *d > 1e-6)
+        .collect();
+    faces.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let base = theme::mix(theme::SURFACE, theme::TEXT, 0.18);
+    let edge = Stroke::new(1.0_f32, fade(theme::TEXT_DIM));
+    for (_, n) in &faces {
+        let nv = n.as_dvec3();
+        let (u, v) = (DVec3::new(nv.y.abs(), nv.z.abs(), nv.x.abs()), DVec3::new(nv.z.abs(), nv.x.abs(), nv.y.abs()));
+        let pts: Vec<Pos2> = [(1.0, 1.0), (1.0, -1.0), (-1.0, -1.0), (-1.0, 1.0)]
+            .into_iter()
+            .map(|(a, b)| screen(nv + u * a + v * b))
+            .collect();
+        let hot = hit == Some(CubeHit::Region(*n));
+        let fill = if hot { theme::mix(base, theme::ACCENT, 0.55) } else { base };
+        painter.add(egui::Shape::convex_polygon(pts, fade(fill), edge));
+        let font = FontId::proportional((half * 0.36).max(7.0));
+        painter.text(screen(nv), Align2::CENTER_CENTER, viewcube::face_label(*n), font, fade(theme::TEXT));
+    }
+    // Edge or corner under the pointer.
+    if let Some(CubeHit::Region(s)) = hit {
+        if viewcube::order(s) > 1 {
+            painter.circle_filled(screen(s.as_dvec3() * 0.92), half * 0.17, fade(theme::ACCENT));
         }
     }
-    // Home mark: a small house outline at the gizmo's upper left.
-    let h = pos2(c.x - len - 6.0, c.y - len - 4.0);
-    let hot = hover.is_some_and(|p| p.distance(h) < 8.0);
-    let col = if hot { theme::ACCENT } else { theme::TEXT_DIM };
-    let st = Stroke::new(1.3_f32, col);
-    painter.line_segment([h + vec2(-6.0, 0.0), h + vec2(0.0, -6.0)], st);
-    painter.line_segment([h + vec2(0.0, -6.0), h + vec2(6.0, 0.0)], st);
-    painter.rect_stroke(Rect::from_min_max(h + vec2(-4.0, 0.0), h + vec2(4.0, 6.0)), 0.0, st, StrokeKind::Middle);
-    if click.is_some_and(|k| k.distance(h) < 8.0) {
-        picked = Some(ViewKind::User); // sentinel: home
+    // World axes from the cube's lower corner.
+    let o = DVec3::new(-1.0, -1.0, -1.0) * 1.08;
+    for (a, col) in [(DVec3::X, theme::AXIS_X), (DVec3::Y, theme::AXIS_Y), (DVec3::Z, theme::AXIS_Z)] {
+        painter.line_segment([screen(o), screen(o + a * 0.9)], Stroke::new(1.5_f32, fade(col)));
     }
-    picked
+    // Home mark.
+    let hot = hit == Some(CubeHit::Home);
+    let st = Stroke::new(1.3_f32, fade(if hot { theme::ACCENT } else { theme::TEXT_DIM }));
+    painter.line_segment([home + vec2(-6.0, 0.0), home + vec2(0.0, -6.0)], st);
+    painter.line_segment([home + vec2(0.0, -6.0), home + vec2(6.0, 0.0)], st);
+    painter.rect_stroke(Rect::from_min_max(home + vec2(-4.0, 0.0), home + vec2(4.0, 6.0)), 0.0, st, StrokeKind::Middle);
+    // Face view: roll arrows and neighbour triangles.
+    if face_view.is_some() {
+        for (cw, q) in rolls {
+            let hot = hit == Some(CubeHit::Roll(cw));
+            let icon = if cw { Icon::RollRight } else { Icon::RollLeft };
+            let col = fade(if hot { theme::ACCENT } else { theme::TEXT_DIM });
+            icons::paint(painter, Rect::from_center_size(q, vec2(14.0, 14.0)), icon, col);
+        }
+        for (k, d) in tri_dirs.into_iter().enumerate() {
+            let t = tri_at(k);
+            let side = vec2(-d.y, d.x) * 5.0;
+            let hot = hit == Some(CubeHit::Neighbour(k));
+            let col = fade(if hot { theme::ACCENT } else { theme::TEXT_DIM });
+            painter.add(egui::Shape::convex_polygon(vec![t + d * 4.0, t - d * 2.0 + side, t - d * 2.0 - side], col, Stroke::NONE));
+        }
+    }
+    hit
 }
 
 pub fn show(app: &mut VernonApp, ctx: &egui::Context) {
@@ -442,7 +563,7 @@ fn label_menus(app: &mut VernonApp, ui: &mut Ui, i: usize, rect: Rect) {
                     app.vp.layout.toggle_maximize();
                 }
                 ui.checkbox(&mut app.vp.show_grid, "Show Grid (G)");
-                ui.checkbox(&mut app.vp.show_gizmo, "Show Orientation Gizmo");
+                ui.checkbox(&mut app.vp.show_gizmo, "Show View Cube");
                 if ui.button("Zoom Extents   Z").clicked() {
                     app.vp.zoom_extents(&app.st, Some(i), true);
                 }
@@ -519,7 +640,7 @@ fn tile_ui(app: &mut VernonApp, ui: &mut Ui, i: usize, rect: Rect, items: &[Draw
         app.vp.cursor_world = app.vp.tiles[i].cam.plane_point(px, size, n, 0.0);
     }
 
-    // Gizmo (handles its own clicks before picking).
+    // View cube (handles its own clicks and drags before picking).
     let click_pos = if resp.clicked_by(PointerButton::Primary) {
         resp.interact_pointer_pos()
     } else {
@@ -527,17 +648,49 @@ fn tile_ui(app: &mut VernonApp, ui: &mut Ui, i: usize, rect: Rect, items: &[Draw
     };
     let mut gizmo_hit = false;
     if app.vp.show_gizmo {
-        if let Some(v) = gizmo(&painter, rect, &app.vp.tiles[i].cam, click_pos, hover) {
+        let half = viewcube::size_px(app.vp.cube_size);
+        let alpha = if active { 1.0 } else { viewcube::INACTIVE_OPACITY };
+        let cam = app.vp.tiles[i].cam;
+        let under = view_cube(&painter, rect, &cam, half, alpha, click_pos.or(hover));
+        if let (Some(_), Some(h)) = (click_pos, under) {
             gizmo_hit = true;
-            if v == ViewKind::User {
-                // Home: back to the default view of this tile, framed.
+            match h {
+                CubeHit::Home => {
+                    // Back to the default view of this tile, framed.
+                    let t = &mut app.vp.tiles[i];
+                    t.remember();
+                    t.kind = DEFAULT_KINDS[i];
+                    t.cam.set_view(t.kind);
+                    app.vp.zoom_extents(&app.st, Some(i), false);
+                }
+                CubeHit::Region(s) => app.vp.orient(i, s),
+                CubeHit::Roll(cw) => app.vp.roll(i, cw),
+                CubeHit::Neighbour(k) => app.vp.orient(i, viewcube::neighbour(cam.rot, k)),
+            }
+        }
+        // Dragging the cube orbits; letting go near a region snaps to it.
+        if resp.drag_started_by(PointerButton::Primary)
+            && resp.interact_pointer_pos().is_some_and(|p| cube_area(rect, half).contains(p))
+        {
+            app.vp.tiles[i].remember();
+            app.vp.drag = Some(Drag::Cube { tile: i });
+        }
+        if matches!(app.vp.drag, Some(Drag::Cube { tile }) if tile == i) {
+            gizmo_hit = true;
+            if resp.dragged_by(PointerButton::Primary) {
+                let d = resp.drag_delta();
                 let t = &mut app.vp.tiles[i];
-                t.remember();
-                t.kind = DEFAULT_KINDS[i];
-                t.cam.set_view(t.kind);
-                app.vp.zoom_extents(&app.st, Some(i), false);
-            } else {
-                app.vp.set_view(i, v);
+                let pivot = t.cam.target;
+                t.cam.orbit_turntable(DVec2::new(d.x as f64, d.y as f64), pivot);
+                if t.kind != ViewKind::Perspective {
+                    t.kind = ViewKind::User;
+                }
+            }
+            if resp.drag_stopped_by(PointerButton::Primary) {
+                app.vp.drag = None;
+                if let Some(s) = viewcube::snap(app.vp.tiles[i].cam.back(), viewcube::SNAP_DEG) {
+                    app.vp.orient_snapped(i, s);
+                }
             }
         }
     }
@@ -559,11 +712,21 @@ fn tile_ui(app: &mut VernonApp, ui: &mut Ui, i: usize, rect: Rect, items: &[Draw
         if ui.button("Hide Selection   Alt+H").clicked() {
             app.hide_selected();
         }
+        if ui.button("Hide Unselected   Alt+I").clicked() {
+            app.st.hide_unselected();
+        }
         if ui.button("Unhide All   Alt+U").clicked() {
             app.unhide_all();
         }
+        let iso = if app.isolated.is_empty() { "Isolate Selection   Alt+Q" } else { "End Isolate   Alt+Q" };
+        if ui.button(iso).clicked() {
+            app.toggle_isolate();
+        }
         if ui.button("Zoom Extents   Z").clicked() {
             app.vp.zoom_extents(&app.st, Some(i), true);
+        }
+        if ui.button("Zoom Region   Ctrl+W").clicked() {
+            app.vp.zoom_region = true;
         }
         ui.separator();
         if ui.add_enabled(!app.st.selection.is_empty(), egui::Button::new("Delete   Del")).clicked() {
@@ -682,14 +845,44 @@ fn tools(
     let (ctrl, alt) = ui.input(|inp| (inp.modifiers.ctrl || inp.modifiers.command, inp.modifiers.alt));
     let to_px = |p: Pos2| DVec2::new((p.x - rect.min.x) as f64, (p.y - rect.min.y) as f64);
 
-    // Click: pick.
-    if resp.clicked_by(PointerButton::Primary) && !gizmo_hit {
+    if gizmo_hit || matches!(app.vp.drag, Some(Drag::Cube { .. })) {
+        return;
+    }
+    // Zoom region (Ctrl+W): the next left drag frames its rectangle.
+    if app.vp.zoom_region {
+        if resp.drag_started_by(PointerButton::Primary) {
+            let from = resp.interact_pointer_pos().unwrap_or(rect.center());
+            app.vp.drag = Some(Drag::Zoom { tile: i, from });
+        }
+        if let (Some(Drag::Zoom { tile, from }), Some(p)) = (&app.vp.drag, resp.interact_pointer_pos()) {
+            if *tile == i {
+                let r = Rect::from_two_pos(*from, p);
+                painter.rect_stroke(r, 0.0, Stroke::new(1.0_f32, theme::ACCENT), StrokeKind::Inside);
+            }
+        }
+        if resp.drag_stopped_by(PointerButton::Primary) {
+            if let (Some(Drag::Zoom { tile, from }), Some(p)) = (app.vp.drag.take(), resp.interact_pointer_pos()) {
+                if tile == i {
+                    let t = &mut app.vp.tiles[i];
+                    t.remember();
+                    t.cam.zoom_region(to_px(from), to_px(p), size);
+                }
+            }
+            app.vp.zoom_region = false;
+        }
+        ui.ctx().set_cursor_icon(CursorIcon::ZoomIn);
+        return;
+    }
+    // Click: pick (locked objects cannot be picked; selection lock keeps
+    // the selection).
+    if resp.clicked_by(PointerButton::Primary) && !app.selection_locked {
         if let Some(p) = resp.interact_pointer_pos() {
             let cam = app.vp.tiles[i].cam;
             let (o, d) = cam.ray(to_px(p), size);
             let tol = 4.0 * cam.world_per_pixel(size.y);
             let hit = items
                 .iter()
+                .filter(|it| !app.st.is_locked(it.id))
                 .filter_map(|it| mesh::pick(&it.mesh, o, d, tol).map(|t| (t, it.id)))
                 .min_by(|a, b| a.0.total_cmp(&b.0))
                 .map(|(_, id)| id);
@@ -707,21 +900,34 @@ fn tools(
     if resp.drag_started_by(PointerButton::Primary) {
         let from = resp.interact_pointer_pos().unwrap_or(rect.center());
         if app.tool == Tool::Select || app.st.selection.is_empty() {
-            app.vp.drag = Some(Drag::Band { tile: i, from });
+            if !app.selection_locked {
+                app.vp.drag = Some(Drag::Band { tile: i, from });
+            }
         } else {
-            app.st.checkpoint();
-            let mut targets = Vec::new();
-            for obj in app.st.selection.clone() {
-                match app.st.ensure_transform(obj) {
-                    Ok(t) => {
-                        let p = &app.st.graph.nodes[&t].params;
-                        let tr = p.vec3("translate").unwrap_or_default();
-                        let ro = p.vec3("rotate").unwrap_or_default();
-                        let sc = p.float("scale").unwrap_or(1.0);
-                        targets.push((t, tr, ro, sc));
+            // One undo entry for the drag, however many transforms it adds.
+            let objects = app.st.selection.clone();
+            let (targets, errors) = app.st.as_one_undo_step(|st| {
+                let mut targets = Vec::new();
+                let mut errors = Vec::new();
+                for obj in objects {
+                    if st.is_locked(obj) {
+                        continue;
                     }
-                    Err(e) => app.st.error_text(e),
+                    match st.ensure_transform(obj) {
+                        Ok(t) => {
+                            let p = &st.graph.nodes[&t].params;
+                            let tr = p.vec3("translate").unwrap_or_default();
+                            let ro = p.vec3("rotate").unwrap_or_default();
+                            let sc = p.float("scale").unwrap_or(1.0);
+                            targets.push((t, tr, ro, sc));
+                        }
+                        Err(e) => errors.push(e),
+                    }
                 }
+                (targets, errors)
+            });
+            for e in errors {
+                app.st.error_text(e);
             }
             app.vp.drag = Some(Drag::Tool {
                 tile: i,
@@ -782,6 +988,7 @@ fn tools(
                     let cam = app.vp.tiles[i].cam;
                     let inside: Vec<NodeId> = items
                         .iter()
+                        .filter(|it| !app.st.is_locked(it.id))
                         .filter(|it| {
                             let c: Vec3 = it.mesh.center();
                             cam.project(c.as_dvec3(), size)
@@ -841,5 +1048,33 @@ mod tests {
         assert_eq!(moved(&st), offset);
         vp.view_redo(3);
         assert_eq!(vp.tiles[3].cam, cam1);
+    }
+
+    #[test]
+    fn view_cube_orients_rolls_and_keeps_history() {
+        let mut vp = Viewports::default();
+        // A face gives the named view; an edge in an orthographic tile a
+        // user view; a corner in the perspective tile stays perspective.
+        vp.orient(0, -IVec3::Y);
+        assert_eq!(vp.tiles[0].kind, ViewKind::Right);
+        vp.orient(0, IVec3::new(1, 0, 1));
+        assert_eq!(vp.tiles[0].kind, ViewKind::User);
+        assert!((vp.tiles[0].cam.back() - DVec3::new(1.0, 0.0, 1.0).normalize()).length() < 1e-12);
+        vp.orient(3, IVec3::ONE);
+        assert_eq!(vp.tiles[3].kind, ViewKind::Perspective);
+        assert!(!vp.tiles[3].cam.ortho);
+        // Four clockwise rolls of a face view come back to it.
+        vp.orient(1, IVec3::NEG_Y);
+        let front = vp.tiles[1].cam.rot;
+        for _ in 0..4 {
+            vp.roll(1, true);
+        }
+        assert!(vp.tiles[1].cam.rot.dot(front).abs() > 1.0 - 1e-9);
+        // Each step is one view-undo entry.
+        vp.view_undo(1);
+        vp.view_undo(1);
+        vp.view_undo(1);
+        vp.view_undo(1);
+        assert!(vp.tiles[1].cam.rot.dot(front).abs() > 1.0 - 1e-9);
     }
 }

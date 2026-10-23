@@ -190,13 +190,13 @@ Tolerances are Vernon pass criteria. "(ref)" = record from a licensed/open copy 
 
 **G4 sky temperature** (EnergyPlus worked example, doc): Tdb 20 degC, Tdp 10 degC, N 0 -> eps_sky 0.8149, IR 341.2 W/m2, Tsky 5.38 degC (depression 14.6 K); tolerance +-0.1 W/m2. Dubai-like: Tdb 45, Tdp 20, N 0 -> IR 488.8 W/m2, Tsky 31.56; with N = 5 -> eps 0.8915, Tsky 35.99.
 
-**G5 sun position** (lat 25.2048, lon 55.2708, tz +4, no DST; `noaa_low` vs `noaa_meeus` agree within the stated spread, SPA to 0.001 deg):
-- 2026-06-21 12:00 local: altitude 85.0 +-0.15 (low 85.07, Meeus 84.96); azimuth untested (within 5 deg of zenith).
-- 2026-12-21 12:00: altitude 41.21 +-0.05; azimuth 174.89 +-0.1.
-- 2026-06-21 07:00: altitude 18.23 +-0.15; azimuth 72.06 +-0.1.
-- 2026-08-01 15:00: altitude 53.54 +-0.15; azimuth 266.77 +-0.5.
-- 2026-03-20 12:00: altitude 63.51 +-0.25; azimuth 164.67 +-0.3.
-- (calc re-run 2026-10-22 with `noaa_low`, 365-day year, azimuth by the A form of 3.2, all five rows and the sunrise/sunset rows reproduced; the Meeus tier differs by up to ~0.1 deg, so the tolerances above are wide enough for both.)
+**G5 sun position** (lat 25.2048, lon 55.2708, tz +4, no DST). The default tier is `noaa_meeus`. The goldens are independent: they come from the Meeus series and the Astronomical Almanac low-precision formulas, which agree with each other to about 0.003 deg. Tolerances are altitude +-0.02 deg and azimuth +-0.05 deg; SPA is held to 0.001 deg:
+- 2026-03-20 12:00 local: altitude 63.89; azimuth 164.84.
+- 2026-08-01 15:00: altitude 53.43; azimuth 266.39.
+- 2026-12-21 12:00: altitude 41.19; azimuth 174.85.
+- 2026-06-21 07:00: altitude 18.13; azimuth 72.03.
+- 2026-06-21 12:00: altitude 84.96; azimuth untested (within 6 deg of zenith).
+- `noaa_low` (the day-of-year Fourier fit) is a self-consistency tier only. Scanned over 2026 and 2028, it is off by up to ~0.5 deg in declination and altitude, worst near the equinoxes, and by up to 0.7 min in the equation of time. Its own outputs (3/20 12:00 gives 63.51 / 164.67; 8/1 15:00 gives 53.54 / 266.77) are kept as regression checks, not goldens. The error is negligible for irradiance, so the tier stays as a fast option. The sunrise/sunset rows below were reproduced with it.
 - Sunrise / noon / sunset (zenith 90.833, +-2 min): 21 Jun 05:29 / 12:20 / 19:11 (day length 13.71 h); 21 Dec 07:00 / 12:17 / 17:34 (10.57 h).
 - SPA reference case [R] (recall; verify with the NREL download before freezing): 2003-10-17 12:30:30 UTC-7, lat 39.742476, lon -105.1786, elevation 1830.14 m, 820 mb, 11 degC, delta-T 67 s, refraction 0.5667 deg -> zenith 50.1116, azimuth 194.3402 (eastward from north); tolerance +-0.001 deg for `spa`. Use whole minutes elsewhere: 30 s shifts hour angle by 0.125 deg.
 - (ref) Blender Sun Position elevation/azimuth for the same Dubai inputs, tolerance +-0.3 deg; Helio same, +-0.3 deg.

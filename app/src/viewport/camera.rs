@@ -62,15 +62,18 @@ impl ViewKind {
         !matches!(self, ViewKind::Perspective)
     }
 
-    /// The axis-aligned direction from the target towards the eye.
+    /// The axis-aligned direction from the target towards the eye, on the
+    /// vehicle axes of the spec (x forward, y left, z up): Front looks at
+    /// the nose from +X, Back at the tail from -X, Left at the left flank
+    /// from +Y and Right at the right flank from -Y.
     pub fn back(self) -> DVec3 {
         match self {
             ViewKind::Top => DVec3::Z,
             ViewKind::Bottom => -DVec3::Z,
-            ViewKind::Front => -DVec3::Y,
-            ViewKind::Back => DVec3::Y,
-            ViewKind::Left => -DVec3::X,
-            ViewKind::Right => DVec3::X,
+            ViewKind::Front => DVec3::X,
+            ViewKind::Back => -DVec3::X,
+            ViewKind::Left => DVec3::Y,
+            ViewKind::Right => -DVec3::Y,
             ViewKind::Perspective | ViewKind::User => DVec3::new(1.0, -1.4, 0.9).normalize(),
         }
     }
@@ -296,6 +299,23 @@ impl Camera {
         self.target = a + (self.target - a) * s;
     }
 
+    /// Zoom region (Ctrl+W): fit the pixel rectangle `a`-`b` to the view,
+    /// centred on its middle. Rectangles under 4 px are ignored.
+    pub fn zoom_region(&mut self, a: DVec2, b: DVec2, size: DVec2) {
+        let d = (b - a).abs();
+        if d.x < 4.0 || d.y < 4.0 {
+            return;
+        }
+        let c = (a + b) * 0.5;
+        self.pan(size * 0.5 - c, size.y);
+        let s = (d.x / size.x.max(1.0)).max(d.y / size.y.max(1.0)).clamp(1e-4, 1.0);
+        if self.ortho {
+            self.half_height = (self.half_height * s).max(MIN_DISTANCE);
+        } else {
+            self.distance = (self.distance * s).max(MIN_DISTANCE);
+        }
+    }
+
     /// Frame a bounding box (spec 3.1). Empty boxes frame a 1000 mm cube.
     pub fn fit(&mut self, bounds: &Aabb, aspect: f64, margin: f64) {
         let (c, r) = if bounds.is_empty() {
@@ -413,8 +433,19 @@ mod tests {
         let top = Camera::new(ViewKind::Top);
         assert!((top.up() - DVec3::Y).length() < 1e-9);
         assert!((top.right() - DVec3::X).length() < 1e-9);
+        // Vehicle axes (x forward, y left): the nose looks at the Front
+        // camera, whose screen right is the car's left (+Y); the Left camera
+        // sees the car's nose on its screen left.
+        assert!((ViewKind::Front.back() - DVec3::X).length() < 1e-9);
+        assert!((ViewKind::Back.back() + DVec3::X).length() < 1e-9);
+        assert!((ViewKind::Left.back() - DVec3::Y).length() < 1e-9);
+        assert!((ViewKind::Right.back() + DVec3::Y).length() < 1e-9);
+        let front = Camera::new(ViewKind::Front);
+        assert!((front.right() - DVec3::Y).length() < 1e-9);
         let left = Camera::new(ViewKind::Left);
-        assert!((left.right() + DVec3::Y).length() < 1e-9);
+        assert!((left.right() + DVec3::X).length() < 1e-9);
+        let right = Camera::new(ViewKind::Right);
+        assert!((right.right() - DVec3::X).length() < 1e-9);
         // Projection centre and ray round trip.
         let cam = Camera::new(ViewKind::Perspective);
         let size = DVec2::new(640.0, 480.0);
@@ -434,5 +465,25 @@ mod tests {
         cam.orbit_turntable(DVec2::new(0.0, 1e5), pivot);
         assert!(cam.back().z < 1.0 && cam.back().z > 0.9999);
         assert!((cam.target - pivot).length() < 1e-9);
+    }
+
+    #[test]
+    fn zoom_region_frames_the_rectangle() {
+        let size = DVec2::new(800.0, 600.0);
+        let mut cam = Camera::new(ViewKind::Top);
+        let (t0, h0) = (cam.target, cam.half_height);
+        // The middle quarter: same centre, half the height.
+        cam.zoom_region(DVec2::new(200.0, 150.0), DVec2::new(600.0, 450.0), size);
+        assert!((cam.target - t0).length() < 1e-9);
+        assert!((cam.half_height - h0 * 0.5).abs() < 1e-9);
+        // An off-centre rectangle: the point under its middle ends up in
+        // the middle of the view.
+        let p = cam.focal_point(DVec2::new(700.0, 100.0), size);
+        cam.zoom_region(DVec2::new(650.0, 50.0), DVec2::new(750.0, 150.0), size);
+        assert!((cam.focal_point(size * 0.5, size) - p).length() < 1e-6);
+        // A click is not a region.
+        let before = cam;
+        cam.zoom_region(DVec2::new(10.0, 10.0), DVec2::new(11.0, 12.0), size);
+        assert_eq!(cam, before);
     }
 }

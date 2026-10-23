@@ -1,24 +1,27 @@
-//! Scene Explorer: one row per object (a node nobody consumes) with a
-//! visibility bulb, selection synced both ways with the viewports, and the
-//! object's stack listed underneath.
+//! Scene Explorer: one row per object (a node nobody consumes) with
+//! visibility and lock toggles, colour, name, gate, stage and last run,
+//! sortable by name, stage or last run; selection synced both ways with the
+//! viewports, and the object's stack listed underneath.
+
+use std::time::SystemTime;
 
 use eframe::egui::{self, vec2, Color32, RichText, Sense};
-use vernon_graph::NodeId;
+use vernon_graph::{NodeId, Stage};
 
 use super::icons::{self, Icon};
-use super::{PanelTab, VernonApp};
+use super::{ExplorerSort, PanelTab, VernonApp};
 use crate::gate::{report_state, GateState};
 use crate::theme;
 
 fn gate_glyph(app: &VernonApp, id: NodeId) -> Option<(GateState, Color32)> {
     if app.st.error_of(id).is_some() {
-        return Some((GateState::Error, theme::FAIL));
+        return Some((GateState::Error, theme::FAIL_TEXT));
     }
     let r = app.st.report(id)?;
     let s = report_state(&r);
     let c = match s {
         GateState::Pass => theme::PASS,
-        GateState::Fail => theme::FAIL,
+        GateState::Fail => theme::FAIL_TEXT,
         _ => theme::TEXT_DIM,
     };
     Some((s, c))
@@ -43,10 +46,22 @@ pub fn show(app: &mut VernonApp, ctx: &egui::Context) {
                     .hint_text("Find by name…")
                     .desired_width(f32::INFINITY),
             );
+            // Column headers: click to sort by that column, again for scene order.
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 6.0;
+                ui.label(RichText::new("Sort").small().color(theme::TEXT_DIM));
+                for (s, label) in [(ExplorerSort::Name, "Name"), (ExplorerSort::Stage, "Stage"), (ExplorerSort::LastRun, "Last run")] {
+                    let on = app.explorer_sort == s;
+                    if ui.selectable_label(on, RichText::new(label).small()).clicked() {
+                        app.explorer_sort = if on { ExplorerSort::Scene } else { s };
+                    }
+                }
+            });
             ui.separator();
             let filter = app.explorer_filter.to_lowercase();
             egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-                let objects = app.st.objects();
+                let mut objects = app.st.objects();
+                sort_objects(app, &mut objects);
                 if objects.is_empty() {
                     ui.label(
                         RichText::new("Empty scene.\nCreate an object from the ribbon or the Create panel.")
@@ -66,6 +81,34 @@ pub fn show(app: &mut VernonApp, ctx: &egui::Context) {
         });
 }
 
+fn stage_rank(app: &VernonApp, id: NodeId) -> usize {
+    app.st
+        .info(id)
+        .and_then(|i| Stage::ALL.iter().position(|s| *s == i.stage))
+        .unwrap_or(usize::MAX)
+}
+
+fn sort_objects(app: &VernonApp, objects: &mut [NodeId]) {
+    let name = |id: &NodeId| app.st.name(*id).to_lowercase();
+    match app.explorer_sort {
+        ExplorerSort::Scene => {}
+        ExplorerSort::Name => objects.sort_by_key(name),
+        ExplorerSort::Stage => objects.sort_by_key(|id| (stage_rank(app, *id), name(id))),
+        // Newest first, never-run objects last.
+        ExplorerSort::LastRun => objects.sort_by_key(|id| std::cmp::Reverse(app.st.last_run.get(id).copied())),
+    }
+}
+
+/// "12 s", "5 min", "3 h" since `t`.
+pub fn ago(t: SystemTime) -> String {
+    let s = t.elapsed().map(|d| d.as_secs()).unwrap_or(0);
+    match s {
+        0..=59 => format!("{s} s"),
+        60..=3599 => format!("{} min", s / 60),
+        _ => format!("{} h", s / 3600),
+    }
+}
+
 fn object_row(app: &mut VernonApp, ui: &mut egui::Ui, obj: NodeId, stack: &[NodeId]) {
     let hidden = app.st.is_hidden(obj);
     let selected = app.st.selection.contains(&obj);
@@ -76,6 +119,15 @@ fn object_row(app: &mut VernonApp, ui: &mut egui::Ui, obj: NodeId, stack: &[Node
             let icon = if hidden { Icon::BulbOff } else { Icon::Bulb };
             if icons::button_sized(ui, icon, false, if hidden { "Show" } else { "Hide" }, 18.0).clicked() {
                 app.st.set_hidden(obj, !hidden);
+            }
+            let locked = app.st.is_locked(obj);
+            let (icon, tip) = if locked {
+                (Icon::Lock, "Locked: cannot be picked or transformed in the viewports. Click to unlock.")
+            } else {
+                (Icon::Unlock, "Lock: stop picking and transforming in the viewports")
+            };
+            if icons::button_sized(ui, icon, locked, tip, 16.0).clicked() {
+                app.st.set_locked(obj, !locked);
             }
             let c = app.st.color_of(obj);
             let (r, _) = ui.allocate_exact_size(vec2(10.0, 10.0), Sense::hover());
@@ -101,14 +153,29 @@ fn object_row(app: &mut VernonApp, ui: &mut egui::Ui, obj: NodeId, stack: &[Node
             if let Some((s, col)) = gate_glyph(app, obj) {
                 ui.label(RichText::new(s.glyph()).color(col)).on_hover_text(s.text());
             }
+            // Stage and last run, right-aligned.
+            let stage = app.st.info(obj).map(|i| i.stage.label()).unwrap_or("?");
+            let run = app.st.last_run.get(&obj).copied();
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let (text, tip) = match run {
+                    Some(t) => (ago(t), "Time since this object last produced a new result"),
+                    None => ("–".to_string(), "Not run yet in this session"),
+                };
+                ui.label(RichText::new(text).small().color(theme::TEXT_DIM)).on_hover_text(tip);
+                ui.add(egui::Label::new(RichText::new(stage).small().color(theme::TEXT_DIM)).truncate())
+                    .on_hover_text(format!("Stage: {stage}"));
+            });
             resp.context_menu(|ui| {
                 if ui.button(if hidden { "Unhide" } else { "Hide" }).clicked() {
                     app.st.set_hidden(obj, !hidden);
                 }
-                if ui.button("Isolate").clicked() {
-                    for o in app.st.objects() {
-                        app.st.set_hidden(o, o != obj);
-                    }
+                if ui.button("Isolate   Alt+Q").clicked() {
+                    app.st.end_isolate(&std::mem::take(&mut app.isolated));
+                    app.isolated = app.st.isolate(&[obj]);
+                }
+                if ui.button(if app.st.is_locked(obj) { "Unlock" } else { "Lock" }).clicked() {
+                    let l = app.st.is_locked(obj);
+                    app.st.set_locked(obj, !l);
                 }
                 if ui.button("Select").clicked() {
                     app.st.select_only(obj);
@@ -126,7 +193,7 @@ fn object_row(app: &mut VernonApp, ui: &mut egui::Ui, obj: NodeId, stack: &[Node
                 if app.st.graph.nodes.get(n).is_some_and(|x| x.bypass) {
                     text = text.color(theme::DISABLED).strikethrough();
                 } else if app.st.error_of(*n).is_some() {
-                    text = text.color(theme::FAIL);
+                    text = text.color(theme::FAIL_TEXT);
                 }
                 let current = app.st.primary() == Some(obj) && app.st.current_entry() == Some(*n);
                 let r = ui.selectable_label(current, text).on_hover_text(stage);

@@ -11,6 +11,7 @@ pub mod grid;
 pub mod layout;
 pub mod mesh;
 pub mod painter;
+pub mod viewcube;
 
 use std::sync::Arc;
 

@@ -12,6 +12,33 @@ use crate::foam::{self, Flavour, SnappySpec, FLAVOURS};
 use crate::types::{domain_in, RefGeom};
 use crate::util::{case_dir, ensure_dir, file_in, json_in, placeholder, write_file, FnNode};
 
+// ------------------------------------------------------------------ memory
+
+/// Memory per million cells for a meshing run and a steady two-equation solve, GB.
+/// The project note gives 1 to 2 GB per million cells as a rule of thumb, which makes
+/// a 32 to 64 GB machine the size for a mesh of about 24 million cells.
+pub const GB_PER_MCELL: (f64, f64) = (1.0, 2.0);
+
+/// Low and high memory estimate in GB for a cell count in millions.
+pub fn ram_estimate_gb(cells_millions: f64) -> (f64, f64) {
+    (GB_PER_MCELL.0 * cells_millions, GB_PER_MCELL.1 * cells_millions)
+}
+
+/// Memory metrics and notes for a cell count in millions; `available_gb` of 0 skips the comparison.
+pub(crate) fn ram_report(r: &mut Report, cells_millions: f64, available_gb: f64, what: &str) {
+    let (lo, hi) = ram_estimate_gb(cells_millions);
+    r.metric("ram_estimate_gb_low", Metric::new(lo, "GB"));
+    r.metric("ram_estimate_gb_high", Metric::new(hi, "GB"));
+    r.note(Severity::Info, format!("{what}: {cells_millions:.1} million cells needs roughly {lo:.0} to {hi:.0} GB of memory (1 to 2 GB per million cells)"));
+    if available_gb > 0.0 {
+        r.metric("ram_available_gb", Metric::new(available_gb, "GB"));
+        if hi > available_gb {
+            let sev = if lo > available_gb { Severity::Error } else { Severity::Warning };
+            r.note(sev, format!("{what}: the high estimate of {hi:.0} GB exceeds the {available_gb:.0} GB available; lower the cell limit or coarsen the plan"));
+        }
+    }
+}
+
 // ------------------------------------------------------------------------ STL
 
 /// ASCII STL of the given primitives, millimetres scaled to metres.
@@ -112,18 +139,19 @@ fn setup_info() -> NodeTypeInfo {
         .output(PortSpec::new("case", DataKind::File))
         .output(PortSpec::new("report", DataKind::Report))
         .param(ParamSpec::choice("flavour", "OpenFOAM flavour", "foundation11", FLAVOURS).help("File names and keywords differ between releases"))
-        .param(ParamSpec::int("n_layers", "Prism layers", 5, 0, 15))
-        .param(ParamSpec::float("expansion_ratio", "Layer expansion ratio", 1.2, 1.1, 1.4))
+        .param(ParamSpec::int("n_layers", "Prism layers", 5, 0, 15).help("Number of prism layers on the vehicle surfaces. 0 turns layers off."))
+        .param(ParamSpec::float("expansion_ratio", "Layer expansion ratio", 1.2, 1.1, 1.4).help("Growth ratio between successive prism layers. Smaller is smoother but needs more layers for the same depth."))
         .param(ParamSpec::choice("layer_mode", "Layer sizing", "relative_final", &["relative_final", "first_layer_yplus"]).help("Final layer relative to the local cell, or first-layer height from the target y+"))
         .param(ParamSpec::float("final_layer_rel", "Final layer thickness", 0.5, 0.3, 1.0).help("Relative to the local cell size"))
         .param(ParamSpec::float("min_thickness_rel", "Minimum layer thickness", 0.1, 0.01, 0.5).help("Relative to the local cell size"))
-        .param(ParamSpec::float("yplus_target", "Target y+ (first-layer mode)", 30.0, 1.0, 300.0))
-        .param(ParamSpec::int("n_cells_between_levels", "Cells between levels", 3, 1, 5))
-        .param(ParamSpec::float("feature_angle", "Resolve feature angle", 30.0, 0.0, 180.0).unit("deg"))
-        .param(ParamSpec::float("max_non_ortho", "Max non-orthogonality", 65.0, 40.0, 75.0).unit("deg"))
-        .param(ParamSpec::float("max_global_cells_m", "Max cells", 30.0, 0.1, 500.0).unit("million"))
-        .param(ParamSpec::int("snap_iterations", "Snap iterations", 50, 10, 200))
-        .param(ParamSpec::int("np", "Processes", 8, 1, 512))
+        .param(ParamSpec::float("yplus_target", "Target y+ (first-layer mode)", 30.0, 1.0, 300.0).help("Target y+ that sets the first layer height when layer sizing is by y+."))
+        .param(ParamSpec::int("n_cells_between_levels", "Cells between levels", 3, 1, 5).help("Buffer cells kept between refinement levels. More gives a smoother size transition and a larger mesh."))
+        .param(ParamSpec::float("feature_angle", "Resolve feature angle", 30.0, 0.0, 180.0).unit("deg").help("Edges sharper than this angle are captured as features of the surface mesh, in degrees."))
+        .param(ParamSpec::float("max_non_ortho", "Max non-orthogonality", 65.0, 40.0, 75.0).unit("deg").help("Largest face non-orthogonality the mesh quality dictionary tolerates, in degrees. The mesher backs the snap off where it would exceed it."))
+        .param(ParamSpec::float("max_global_cells_m", "Max cells", 30.0, 0.1, 500.0).unit("million").help("Upper bound on the total cell count handed to the mesher, in millions. Memory use follows it, see the estimate in the report."))
+        .param(ParamSpec::float("ram_gb", "Available memory", 0.0, 0.0, 4096.0).unit("GB").help("Memory of the machine that will mesh and solve. When the high estimate (2 GB per million cells at the cell limit) exceeds it the report warns; 0 skips the check."))
+        .param(ParamSpec::int("snap_iterations", "Snap iterations", 50, 10, 200).help("Number of snapping iterations. More pulls the mesh closer to the surface and takes longer."))
+        .param(ParamSpec::int("np", "Processes", 8, 1, 512).help("Number of processes the mesh is decomposed over when it is built."))
         .help("Writes the background-mesh, surface-feature, refinement, prism-layer and quality dictionaries plus the vehicle surfaces (metres, one named solid per part) into an OpenFOAM case directory.")
         .emulates("CFD GUI front end: snappy mesh dictionary writer")
         .spec("docs/specs/automotive-cfd.md")
@@ -231,6 +259,7 @@ fn setup_cook(ctx: &CookContext, ins: &[Option<Data>], p: &Params) -> CookResult
     });
     write_file(&case.join("vernon_case.json"), &serde_json::to_string_pretty(&manifest).unwrap_or_default())?;
 
+    ram_report(&mut report, p.float("max_global_cells_m")?, p.float("ram_gb")?, "at the cell limit");
     let n = foam::base_cells(&domain, dx0);
     report
         .metric("base_cells", Metric::new((n[0] * n[1] * n[2]) as f64, "count"))
@@ -253,8 +282,8 @@ fn setup_cook(ctx: &CookContext, ins: &[Option<Data>], p: &Params) -> CookResult
 fn run_params(prefix_default_np: i64) -> Vec<ParamSpec> {
     vec![
         ParamSpec::bool("run", "Run now", false).help("Runs the tools once and switches itself off again, so a re-cook never relaunches hours of CPU.").action(),
-        ParamSpec::int("np", "Processes", prefix_default_np, 1, 512),
-        ParamSpec::choice("runner", "Runner", "native", &["native", "wsl", "docker"]),
+        ParamSpec::int("np", "Processes", prefix_default_np, 1, 512).help("Number of processes the run is decomposed over."),
+        ParamSpec::choice("runner", "Runner", "native", &["native", "wsl", "docker"]).help("Where the solver programs run: directly on this machine, in a Linux subsystem, or in a container."),
         ParamSpec::string("image", "Container image", "").help("Docker runner only"),
         ParamSpec::path("bin_dir", "Tool directory", &[], false).help("Folder with the OpenFOAM executables; empty searches the PATH"),
         ParamSpec::int("timeout_min", "Time limit", 720, 0, 100_000).unit("min").help("The run (and every process it started) is stopped after this long; 0 = one day"),
@@ -443,17 +472,18 @@ fn quality_info() -> NodeTypeInfo {
     NodeTypeInfo::new("cfd.mesh_quality", "Mesh and Wall Check", Stage::Cfd)
         .input(PortSpec::optional("case", DataKind::File))
         .output(PortSpec::new("report", DataKind::Report))
-        .param(ParamSpec::float("non_ortho_warn", "Non-orthogonality warning", 65.0, 40.0, 75.0).unit("deg"))
-        .param(ParamSpec::float("non_ortho_fail", "Non-orthogonality limit", 70.0, 50.0, 85.0).unit("deg"))
-        .param(ParamSpec::float("layer_cov_min_pct", "Min layer coverage", 70.0, 0.0, 100.0).unit("%"))
-        .param(ParamSpec::float("yplus_min", "y+ lower bound", 30.0, 0.0, 300.0))
-        .param(ParamSpec::float("yplus_max", "y+ upper bound", 300.0, 30.0, 1000.0))
-        .param(ParamSpec::float("cells_target_m", "Target cells (0 = skip)", 0.0, 0.0, 500.0).unit("million"))
-        .param(ParamSpec::float("max_non_ortho", "Override: max non-orthogonality (-1 = from log)", -1.0, -1.0, 90.0).unit("deg"))
-        .param(ParamSpec::float("cells", "Override: cell count (-1 = from log)", -1.0, -1.0, 1e9))
-        .param(ParamSpec::float("layer_cov_pct", "Override: layer coverage (-1 = from log)", -1.0, -1.0, 100.0).unit("%"))
-        .param(ParamSpec::float("yplus_mean", "Override: mean y+ (-1 = from log)", -1.0, -1.0, 10_000.0))
-        .param(ParamSpec::float("failed_checks", "Override: failed checks (-1 = from log)", -1.0, -1.0, 100.0))
+        .param(ParamSpec::float("non_ortho_warn", "Non-orthogonality warning", 65.0, 40.0, 75.0).unit("deg").help("Worst non-orthogonality at or above this adds a warning, in degrees. Limit the Laplacian scheme when it fires."))
+        .param(ParamSpec::float("non_ortho_fail", "Non-orthogonality limit", 70.0, 50.0, 85.0).unit("deg").help("Worst non-orthogonality at or above this fails the check, in degrees. Rebuild the mesh with less aggressive snapping or layers."))
+        .param(ParamSpec::float("layer_cov_min_pct", "Min layer coverage", 70.0, 0.0, 100.0).unit("%").help("Smallest acceptable share of wall area covered by prism layers. Below it the report warns that the wall treatment is unreliable."))
+        .param(ParamSpec::float("yplus_min", "y+ lower bound", 30.0, 0.0, 300.0).help("Lower edge of the wall-function y+ band. A mean y+ below it adds a warning."))
+        .param(ParamSpec::float("yplus_max", "y+ upper bound", 300.0, 30.0, 1000.0).help("Upper edge of the wall-function y+ band. A mean y+ above it adds a warning."))
+        .param(ParamSpec::float("cells_target_m", "Target cells (0 = skip)", 0.0, 0.0, 500.0).unit("million").help("Intended cell count in millions. 0 skips the check. A count under half of it warns that the mesh is too coarse; over 120 % is an error."))
+        .param(ParamSpec::float("ram_gb", "Available memory", 0.0, 0.0, 4096.0).unit("GB").help("Memory of the machine that will solve. When the high estimate (2 GB per million cells) for the built cell count exceeds it the report warns, or fails when even the low estimate (1 GB per million) does; 0 skips the check."))
+        .param(ParamSpec::float("max_non_ortho", "Override: max non-orthogonality (-1 = from log)", -1.0, -1.0, 90.0).unit("deg").help("Worst non-orthogonality in degrees entered by hand instead of read from the mesh-check log. -1 uses the log."))
+        .param(ParamSpec::float("cells", "Override: cell count (-1 = from log)", -1.0, -1.0, 1e9).help("Cell count entered by hand instead of read from the mesh-check log. -1 uses the log."))
+        .param(ParamSpec::float("layer_cov_pct", "Override: layer coverage (-1 = from log)", -1.0, -1.0, 100.0).unit("%").help("Prism-layer coverage in percent entered by hand instead of read from the log. -1 uses the log."))
+        .param(ParamSpec::float("yplus_mean", "Override: mean y+ (-1 = from log)", -1.0, -1.0, 10_000.0).help("Mean wall y+ entered by hand instead of read from the log. -1 uses the log."))
+        .param(ParamSpec::float("failed_checks", "Override: failed checks (-1 = from log)", -1.0, -1.0, 100.0).help("Number of failed mesh checks entered by hand instead of read from the log. -1 uses the log."))
         .help("Reads the mesh-check and wall-distance logs of a case and gates the mesh: non-orthogonality (warn/fail), failed checks, prism-layer coverage, mean y+ band and cell budget. Manual values override the logs.")
         .emulates("CFD GUI front end: mesh quality report")
         .spec("docs/specs/automotive-cfd.md")
@@ -492,6 +522,7 @@ fn evaluate_mesh(st: &MeshStats, p: &Params) -> CookResult<Report> {
     }
     if let Some(c) = st.cells {
         r.metric("cells", Metric::new(c, "count"));
+        ram_report(&mut r, c / 1e6, p.float("ram_gb")?, "for the built mesh");
         let target = p.float("cells_target_m")? * 1e6;
         if target > 0.0 {
             r.metric("cell_ratio", Metric::new(c / target, "-").with_limit(1.2, true));
@@ -709,6 +740,38 @@ mod tests {
         // nothing to check fails closed
         let r = quality_cook(&ctx, &[None], &Params::from_specs(&quality_info().params)).unwrap();
         assert!(!r[0].as_report().unwrap().passes());
+    }
+
+    #[test]
+    fn memory_estimate_follows_one_to_two_gb_per_million_cells() {
+        assert_eq!(ram_estimate_gb(24.0), (24.0, 48.0));
+        let ctx = ctx("ram");
+        // the mesh dictionaries estimate memory at the cell limit
+        let mut ps = Params::from_specs(&setup_info().params);
+        ps.set("max_global_cells_m", ParamValue::Float(24.0));
+        let out = setup_cook(&ctx, &[], &ps).unwrap();
+        let r = out[1].as_report().unwrap();
+        assert_eq!(r.metrics["ram_estimate_gb_low"].value, 24.0);
+        assert_eq!(r.metrics["ram_estimate_gb_high"].value, 48.0);
+        assert!(!r.metrics.contains_key("ram_available_gb"), "no machine given, no comparison");
+        // a 32 GB machine can run the low estimate but not the high one: a warning
+        ps.set("ram_gb", ParamValue::Float(32.0));
+        let r = setup_cook(&ctx, &[], &ps).unwrap()[1].as_report().unwrap().clone();
+        assert!(r.notes.iter().any(|(s, t)| *s == Severity::Warning && t.contains("exceeds the 32 GB")), "{r:?}");
+        // 64 GB covers both
+        ps.set("ram_gb", ParamValue::Float(64.0));
+        let r = setup_cook(&ctx, &[], &ps).unwrap()[1].as_report().unwrap().clone();
+        assert!(!r.notes.iter().any(|(_, t)| t.contains("exceeds")), "{r:?}");
+        // the quality check uses the built cell count and fails when even the low estimate does not fit
+        let mut pq = Params::from_specs(&quality_info().params);
+        pq.set("cells", ParamValue::Float(24.0e6));
+        pq.set("max_non_ortho", ParamValue::Float(60.0));
+        pq.set("failed_checks", ParamValue::Float(0.0));
+        pq.set("ram_gb", ParamValue::Float(16.0));
+        let r = quality_cook(&ctx, &[None], &pq).unwrap()[0].as_report().unwrap().clone();
+        assert_eq!(r.metrics["ram_estimate_gb_high"].value, 48.0);
+        assert!(r.notes.iter().any(|(s, t)| *s == Severity::Error && t.contains("exceeds the 16 GB")), "{r:?}");
+        assert!(!r.passes());
     }
 
     #[test]

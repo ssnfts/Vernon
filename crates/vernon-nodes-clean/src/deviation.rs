@@ -174,6 +174,7 @@ fn stats_cook(ctx: &CookContext, inp: &[Option<Data>], p: &Params) -> CookResult
     let pass = frac >= target - 1e-12;
 
     let mut rep = Report::new("Deviation Statistics");
+    rep.note(Severity::Info, vernon_core::stats::CONVENTION);
     rep.metric("valid_points", Metric::new(dev.vals.len() as f64, "points"));
     rep.metric("invalid_points", Metric::new(dev.n_invalid as f64, "points"));
     rep.metric("mean_dev", Metric::new(m.mean, "mm"));

@@ -167,6 +167,16 @@ Reference-tool comparisons need a licensed copy and inputs made by us; the cases
 - Plasticity, Design X and QUICKSURFACE are Windows-first or closed; any parity tests must use inputs we create and outputs we record ourselves (CLEAN_ROOM.md, process step 3).
 - Geometry has no NURBS type yet. Decide between a new `Geometry` surface section and the proposed `Json` patch-set schema before the first fit node is merged.
 
+## 5a. Node map: loft through sections
+
+`surface.loft_sections` skins a surface through a stack of section curves (the loft of section 2). Sections are ordered
+by section id, matched in start point and direction, refitted to a common knot vector (`control_points` per section)
+and interpolated across the stack with a B-spline of degree `degree_v` (Piegl and Tiller, "The NURBS Book", skinning
+chapter). `loop_id` selects which curve loop of the input is lofted. The patches are output as JSON and a preview mesh
+tessellated to `preview_tol_mm`. The report gives the maximum and RMS distance from the surface to every input curve
+against `tol_mm` (the fidelity check of section 5). Check: sections that are circles of equal radius at equal spacing
+give a cylinder whose distance to every circle is below `tol_mm`.
+
 ## 6. Sources
 
 Vendor/product pages (fetched or search-confirmed):

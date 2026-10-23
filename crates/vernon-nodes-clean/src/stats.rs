@@ -73,16 +73,10 @@ pub fn moments(values: &[f64], weights: Option<&[f64]>) -> Moments {
 }
 
 /// Nearest-rank percentile of an ascending sorted slice: the value at
-/// 1-based rank `ceil(q * N)`, `q` in 0..=1. Empty input gives 0.
+/// 1-based rank `ceil(q * N)`, `q` in 0..=1. Empty input gives 0. This is the
+/// shared convention of `vernon_core::stats`, used by every stage.
 pub fn nearest_rank(sorted: &[f64], q: f64) -> f64 {
-    let n = sorted.len();
-    if n == 0 {
-        return 0.0;
-    }
-    // Tiny guard against products such as 0.95 * 1000 landing above 950.
-    let rank = (q * n as f64 - 1e-9).ceil();
-    let idx = (rank.max(1.0) as usize).min(n);
-    sorted[idx - 1]
+    vernon_core::stats::nearest_rank(sorted, q)
 }
 
 /// Weighted nearest-rank percentile: smallest value whose cumulative weight
@@ -365,5 +359,17 @@ mod tests {
         let pairs: Vec<(f64, f64)> = v.iter().map(|&x| (x, 2.0)).collect();
         assert_eq!(weighted_rank(&pairs, 0.95), nearest_rank(&v, 0.95));
         assert_eq!(weighted_rank(&pairs, 0.5), nearest_rank(&v, 0.5));
+    }
+}
+
+#[cfg(test)]
+mod shared_convention_tests {
+    #[test]
+    fn clean_percentile_matches_the_shared_helper() {
+        let v: Vec<f64> = (1..=20).map(f64::from).collect();
+        assert_eq!(super::nearest_rank(&v, 0.95), 19.0);
+        assert_eq!(super::nearest_rank(&v, 0.95), vernon_core::stats::nearest_rank(&v, 0.95));
+        let m = super::moments(&v, None);
+        assert!((m.std - vernon_core::stats::sample_std(&v)).abs() < 1e-12);
     }
 }

@@ -33,6 +33,10 @@ pub struct GridPlan {
 /// or bed in the wrong units (or a non-finite point) and is refused.
 pub const MAX_GRID_PLANES: usize = 256;
 
+/// Most grid cells (parts) one split may plan: the per-axis limit alone
+/// still allows 256^3 cells, each a mesh cut.
+pub const MAX_GRID_CELLS: usize = 10_000;
+
 pub fn grid_plan(
     b: &Aabb,
     mode: GridMode,
@@ -114,6 +118,12 @@ pub fn grid_split(
     if plan.planes.iter().any(|p| p.len() >= MAX_GRID_PLANES) {
         return Err(ctx.fail(format!(
             "the grid needs {MAX_GRID_PLANES} or more cuts along one axis; check the units of the body, bed and spacing"
+        )));
+    }
+    let cells: f64 = plan.counts.iter().map(|&c| c as f64).product();
+    if cells > MAX_GRID_CELLS as f64 {
+        return Err(ctx.fail(format!(
+            "the grid would have {cells} cells (limit {MAX_GRID_CELLS}); use fewer parts or a larger spacing, and check the units of the body and bed"
         )));
     }
     let mut planes: [Vec<f64>; 3] = plan.planes.clone();
@@ -225,7 +235,7 @@ pub fn grid_split(
 }
 
 pub(crate) fn grid_params(info: NodeTypeInfo) -> NodeTypeInfo {
-    info.param(ParamSpec::choice("printer", "Printer preset", "k1_max", &PRINTER_IDS).help("Build volume preset; custom uses the bed size below."))
+    info.param(ParamSpec::choice("printer", "Printer preset", "bed_300", &PRINTER_IDS).help("Build volume preset; custom uses the bed size below."))
         .param(ParamSpec::vec3("bed", "Custom bed size", DVec3::new(256.0, 256.0, 256.0)).unit("mm").help("Used when the preset is custom."))
         .param(ParamSpec::float("margin", "Bed margin", 2.0, 0.0, 20.0).unit("mm").help("Clearance kept free on every side of the bed."))
 }
@@ -687,8 +697,34 @@ mod tests {
     }
 
     #[test]
+    fn outlier_vertices_and_giant_grids_are_refused_quickly() {
+        let t = std::time::Instant::now();
+        for far in [1e9, 1e300] {
+            let mut g = slab();
+            g.points[0] = DVec3::splat(far);
+            let ins = [Some(Data::geometry(g))];
+            assert!(cook(&GridPartition, "gp", &ins, &[]).is_err(), "grid, vertex at {far}");
+            assert!(cook(&SmartPartition, "sp", &ins, &[]).is_err(), "smart, vertex at {far}");
+        }
+        // 50 x 50 x 50 parts is 125 000 cells.
+        let out = cook(
+            &GridPartition,
+            "gp",
+            &[Some(Data::geometry(slab()))],
+            &[
+                ("mode", ParamValue::Str("by_count".into())),
+                ("count_x", ParamValue::Int(50)),
+                ("count_y", ParamValue::Int(50)),
+                ("count_z", ParamValue::Int(50)),
+            ],
+        );
+        assert!(out.is_err());
+        assert!(t.elapsed().as_secs() < 20, "{:?}", t.elapsed());
+    }
+
+    #[test]
     fn grid_large_bed_gives_one_part() {
-        let out = cook(&GridPartition, "gp", &[Some(Data::geometry(slab()))], &[("printer", ParamValue::Str("giga_800".into()))]).unwrap();
+        let out = cook(&GridPartition, "gp", &[Some(Data::geometry(slab()))], &[("printer", ParamValue::Str("bed_800x800x1000".into()))]).unwrap();
         assert_eq!(out[2].as_report().unwrap().metrics["part_count"].value, 1.0);
     }
 

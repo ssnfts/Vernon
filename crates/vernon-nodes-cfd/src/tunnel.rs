@@ -1,10 +1,10 @@
 //! Virtual tunnel nodes: domain sizing, ground and wheel treatment, porous
 //! radiator zones and the refinement plan.
 
-use serde_json::json;
+use serde_json::{json, Value};
 use vernon_core::{DMat4, DVec3, Geometry, Metric, Report, Severity};
 use vernon_graph::node::inputs;
-use vernon_graph::{CookContext, CookResult, Data, DataKind, NodeTypeInfo, ParamSpec, Params, PortSpec, Registry, Stage};
+use vernon_graph::{CookContext, CookError, CookResult, Data, DataKind, NodeTypeInfo, ParamSpec, Params, PortSpec, Registry, Stage};
 
 use crate::air::air_in;
 use crate::types::{domain_in, ref_in, BcSet, Domain, PorousZone, RefGeom, WheelBc};
@@ -54,10 +54,10 @@ fn domain_info() -> NodeTypeInfo {
         .output(PortSpec::new("report", DataKind::Report))
         .output(PortSpec::new("box", DataKind::Geometry))
         .param(ParamSpec::float("blockage_pct", "Blockage", 1.0, 0.5, 2.0).unit("%").help("Frontal area over tunnel cross-section; a numerical tunnel can be far emptier than a physical one"))
-        .param(ParamSpec::float("up_l", "Upstream distance", 3.0, 2.0, 5.0).unit("car lengths"))
-        .param(ParamSpec::float("down_l", "Downstream distance", 6.0, 5.0, 10.0).unit("car lengths"))
-        .param(ParamSpec::float("aspect", "Width to height", 5.0 / 3.0, 1.0, 3.0))
-        .param(ParamSpec::bool("half_model", "Half model (symmetry plane)", true))
+        .param(ParamSpec::float("up_l", "Upstream distance", 3.0, 2.0, 5.0).unit("car lengths").help("Distance from the inlet to the nose, in car lengths."))
+        .param(ParamSpec::float("down_l", "Downstream distance", 6.0, 5.0, 10.0).unit("car lengths").help("Distance from the tail to the outlet, in car lengths."))
+        .param(ParamSpec::float("aspect", "Width to height", 5.0 / 3.0, 1.0, 3.0).help("Width of the domain divided by its height."))
+        .param(ParamSpec::bool("half_model", "Half model (symmetry plane)", true).help("Model half the car and put a symmetry plane on the centre line. Halves the cell count."))
         .param(ParamSpec::float("yaw_deg", "Yaw", 0.0, -10.0, 10.0).unit("deg").help("Non-zero yaw needs the full car"))
         .help("Sizes the virtual wind tunnel around the vehicle from a blockage target, with inlet and outlet distances in car lengths, and names the boundary patches.")
         .emulates("automotive wind-tunnel service: virtual tunnel sizing")
@@ -108,12 +108,12 @@ pub(crate) fn gw_info() -> NodeTypeInfo {
         .output(PortSpec::new("report", DataKind::Report))
         .param(ParamSpec::choice("ground_mode", "Ground", "moving", &["moving", "stationary", "slip"]).help("Moving belt at the free-stream speed is needed for splitters, skirts and diffusers"))
         .param(ParamSpec::choice("wheel_mode", "Wheels", "rotating", &["rotating", "mrf", "static"]).help("Rotating wall velocity, a rotating reference-frame zone, or fixed wheels"))
-        .param(ParamSpec::float("u_ms", "Speed", 30.0, 10.0, 100.0).unit("m/s"))
-        .param(ParamSpec::float("r_dyn_mm", "Rolling radius (0 = from vehicle)", 0.0, 0.0, 600.0).unit("mm"))
-        .param(ParamSpec::vec3("axis", "Wheel axis", DVec3::Y))
-        .param(ParamSpec::float("wheel_width_mm", "Wheel width (rotating-frame zone)", 250.0, 100.0, 500.0).unit("mm"))
-        .param(ParamSpec::bool("belt_start", "Start the moving belt downstream of the inlet", false))
-        .param(ParamSpec::float("belt_start_l", "Belt start from nose", -0.5, -3.0, 0.0).unit("car lengths"))
+        .param(ParamSpec::float("u_ms", "Speed", 30.0, 10.0, 100.0).unit("m/s").help("Speed of the moving belt and of the wheel surfaces. Set it to the free-stream speed."))
+        .param(ParamSpec::float("r_dyn_mm", "Rolling radius (0 = from vehicle)", 0.0, 0.0, 600.0).unit("mm").help("Dynamic rolling radius that sets the wheel spin rate. 0 takes it from the vehicle geometry."))
+        .param(ParamSpec::vec3("axis", "Wheel axis", DVec3::Y).help("Direction of the wheel axis. Y runs across the car."))
+        .param(ParamSpec::float("wheel_width_mm", "Wheel width (rotating-frame zone)", 250.0, 100.0, 500.0).unit("mm").help("Axial width of the rotating zone around each wheel, in millimetres."))
+        .param(ParamSpec::bool("belt_start", "Start the moving belt downstream of the inlet", false).help("Start the moving belt downstream of the inlet. The floor upstream of it stays stationary."))
+        .param(ParamSpec::float("belt_start_l", "Belt start from nose", -0.5, -3.0, 0.0).unit("car lengths").help("Where the moving belt starts, in car lengths from the nose. Negative is upstream of the nose."))
         .help("Boundary treatment for road and wheels: moving ground at the free-stream speed, wheels spinning at the rolling rate. Switching either off marks the run as not representative.")
         .emulates("CFD GUI front end: moving ground and rotating wheel boundary set")
         .spec("docs/specs/automotive-cfd.md")
@@ -206,13 +206,13 @@ fn porous_info() -> NodeTypeInfo {
         .input(PortSpec::optional("air", DataKind::Json))
         .output(PortSpec::new("zones", DataKind::Json))
         .output(PortSpec::new("report", DataKind::Report))
-        .param(ParamSpec::string("name", "Zone name", "radiator"))
+        .param(ParamSpec::string("name", "Zone name", "radiator").help("Name of the porous zone in the case."))
         .param(ParamSpec::float("a", "Linear loss a (dp = a v + b v^2)", 20.0, 0.0, 1e5).unit("Pa s/m").help("Ignored when a pressure-drop curve is wired"))
-        .param(ParamSpec::float("b", "Quadratic loss b", 15.0, 0.0, 1e5).unit("Pa s2/m2"))
-        .param(ParamSpec::float("thickness_m", "Core thickness", 0.05, 0.005, 0.5).unit("m"))
-        .param(ParamSpec::float("mu", "Dynamic viscosity", 1.8e-5, 1e-5, 3e-5).unit("Pa s"))
-        .param(ParamSpec::float("rho", "Density", 1.1, 0.8, 1.4).unit("kg/m3"))
-        .param(ParamSpec::vec3("flow_dir", "Through-flow direction", DVec3::X))
+        .param(ParamSpec::float("b", "Quadratic loss b", 15.0, 0.0, 1e5).unit("Pa s2/m2").help("Quadratic loss coefficient of the core: pressure drop per metre grows with the square of speed."))
+        .param(ParamSpec::float("thickness_m", "Core thickness", 0.05, 0.005, 0.5).unit("m").help("Thickness of the core along the through-flow direction, in metres."))
+        .param(ParamSpec::float("mu", "Dynamic viscosity", 1.8e-5, 1e-5, 3e-5).unit("Pa s").help("Dynamic viscosity of the air used to turn the loss curve into Darcy-Forchheimer coefficients."))
+        .param(ParamSpec::float("rho", "Density", 1.1, 0.8, 1.4).unit("kg/m3").help("Air density used to turn the loss curve into Darcy-Forchheimer coefficients."))
+        .param(ParamSpec::vec3("flow_dir", "Through-flow direction", DVec3::X).help("Direction the air passes through the core. The loss is applied along it."))
         .param(ParamSpec::float("k_lat", "Lateral resistance factor", 1000.0, 1.0, 1e6).help("Forces the air through the core instead of sideways"))
         .help("Radiator core as a Darcy-Forchheimer porous zone built from a pressure-drop curve. Zones accumulate along the chain so several heat exchangers can share one case.")
         .emulates("CFD GUI front end: porous zone from a loss curve")
@@ -299,21 +299,21 @@ pub(crate) fn plan_info() -> NodeTypeInfo {
         .output(PortSpec::new("plan", DataKind::Json))
         .output(PortSpec::new("report", DataKind::Report))
         .param(ParamSpec::float("dx0_m", "Base cell size", 0.32, 0.1, 1.0).unit("m").help("A level-k cell is this size divided by 2^k"))
-        .param(ParamSpec::int("body_min", "Body level (min)", 4, 3, 7))
-        .param(ParamSpec::int("body_max", "Body level (max)", 5, 3, 7))
-        .param(ParamSpec::int("wheel_level", "Wheel level", 5, 3, 7))
-        .param(ParamSpec::int("underbody_level", "Underbody level", 6, 3, 8))
-        .param(ParamSpec::float("underbody_dist_m", "Underbody distance band", 0.1, 0.02, 0.5).unit("m"))
+        .param(ParamSpec::int("body_min", "Body level (min)", 4, 3, 7).help("Refinement level of the body surface at its coarsest. Each level halves the cell size."))
+        .param(ParamSpec::int("body_max", "Body level (max)", 5, 3, 7).help("Refinement level of the body surface at its finest, used on curved and small features."))
+        .param(ParamSpec::int("wheel_level", "Wheel level", 5, 3, 7).help("Refinement level at the wheels."))
+        .param(ParamSpec::int("underbody_level", "Underbody level", 6, 3, 8).help("Refinement level in the band under the floor of the car."))
+        .param(ParamSpec::float("underbody_dist_m", "Underbody distance band", 0.1, 0.02, 0.5).unit("m").help("Thickness of the refined band under the car, in metres."))
         .param(ParamSpec::float("underbody_height_m", "Underbody box height", 0.3, 0.1, 1.0).unit("m").help("Used when the vehicle has no separate underbody surface"))
-        .param(ParamSpec::int("kit_level", "Kit box level (0 = body max + 1)", 0, 0, 8))
-        .param(ParamSpec::float("kit_margin_m", "Kit box margin", 0.15, 0.0, 1.0).unit("m"))
-        .param(ParamSpec::float("near_wake_l", "Near-wake length", 1.0, 0.5, 3.0).unit("car lengths"))
-        .param(ParamSpec::int("near_wake_level", "Near-wake level", 4, 2, 6))
-        .param(ParamSpec::float("far_wake_l", "Far-wake length", 2.0, 1.0, 5.0).unit("car lengths"))
-        .param(ParamSpec::int("far_wake_level", "Far-wake level", 3, 2, 6))
-        .param(ParamSpec::float("u_ms", "Speed", 30.0, 10.0, 100.0).unit("m/s"))
-        .param(ParamSpec::float("nu", "Kinematic viscosity", 1.5e-5, 1.4e-5, 1.9e-5).unit("m2/s"))
-        .param(ParamSpec::float("yplus_target", "Target y+", 30.0, 1.0, 300.0))
+        .param(ParamSpec::int("kit_level", "Kit box level (0 = body max + 1)", 0, 0, 8).help("Refinement level of the box around the body kit. 0 uses one level above the body maximum."))
+        .param(ParamSpec::float("kit_margin_m", "Kit box margin", 0.15, 0.0, 1.0).unit("m").help("Margin added around the body kit for its refinement box, in metres."))
+        .param(ParamSpec::float("near_wake_l", "Near-wake length", 1.0, 0.5, 3.0).unit("car lengths").help("Length of the near-wake refinement region behind the car, in car lengths."))
+        .param(ParamSpec::int("near_wake_level", "Near-wake level", 4, 2, 6).help("Refinement level in the near wake."))
+        .param(ParamSpec::float("far_wake_l", "Far-wake length", 2.0, 1.0, 5.0).unit("car lengths").help("Length of the far-wake refinement region behind the car, in car lengths."))
+        .param(ParamSpec::int("far_wake_level", "Far-wake level", 3, 2, 6).help("Refinement level in the far wake."))
+        .param(ParamSpec::float("u_ms", "Speed", 30.0, 10.0, 100.0).unit("m/s").help("Free-stream speed, used with the viscosity to size the first prism layer for the target y+."))
+        .param(ParamSpec::float("nu", "Kinematic viscosity", 1.5e-5, 1.4e-5, 1.9e-5).unit("m2/s").help("Kinematic viscosity of the air, used to size the first prism layer for the target y+."))
+        .param(ParamSpec::float("yplus_target", "Target y+", 30.0, 1.0, 300.0).help("Target y+ the first prism layer is sized for."))
         .help("Refinement levels for the surfaces, boxes around the part under test, an underbody band and wake boxes, plus the first-layer height needed for a target y+ from a flat-plate friction estimate.")
         .emulates("CFD GUI front end: mesh refinement regions")
         .spec("docs/specs/automotive-cfd.md")
@@ -420,7 +420,67 @@ pub(crate) fn plan_cook(ctx: &CookContext, ins: &[Option<Data>], p: &Params) -> 
     Ok(vec![Data::json(plan), Data::report(r)])
 }
 
+// ------------------------------------------------------------ mesh study levels
+
+pub(crate) fn levels_info() -> NodeTypeInfo {
+    NodeTypeInfo::new("cfd.mesh_levels", "Mesh Study Levels", Stage::Cfd)
+        .input(PortSpec::new("plan", DataKind::Json))
+        .output(PortSpec::new("coarse", DataKind::Json))
+        .output(PortSpec::new("medium", DataKind::Json))
+        .output(PortSpec::new("fine", DataKind::Json))
+        .output(PortSpec::new("report", DataKind::Report))
+        .param(ParamSpec::float("ratio", "Refinement ratio", 1.3, 1.25, 2.0).help("Linear cell-size ratio between neighbouring grids, the same value for both steps. The cell count grows by its cube (2.2 times for 1.3). Enter it as the two refinement ratios of the mesh study."))
+        .param(ParamSpec::choice("base", "Input plan is the", "medium", &["coarse", "medium", "fine"]).help("Which of the three grids the connected plan describes. The other two follow from it by the ratio."))
+        .help("Turns one refinement plan into the coarse, medium and fine plans of a three-grid mesh study: every cell size, background included, scales by the refinement ratio, so the refinement levels, boxes and layer settings stay the same. Feed each plan to its own mesh and solver chain, then the three results to the mesh convergence node.")
+        .emulates("mesh-independence practice: three systematically refined grids with a constant refinement ratio")
+        .spec("docs/specs/automotive-cfd.md")
+        .implemented()
+}
+
+pub(crate) fn levels_cook(ctx: &CookContext, ins: &[Option<Data>], p: &Params) -> CookResult<Vec<Data>> {
+    let plan = json_in(ins, 0)?.ok_or(CookError::MissingInput { index: 0, name: "plan".into() })?;
+    let dx0 = plan.get("dx0_m").and_then(Value::as_f64).filter(|d| d.is_finite() && *d > 0.0).ok_or_else(|| ctx.fail("the plan has no base cell size (dx0_m): connect a refinement plan"))?;
+    let ratio = p.float("ratio")?;
+    // exponent of the ratio for coarse, medium and fine relative to the input plan
+    let steps: [i32; 3] = match p.str("base")? {
+        "coarse" => [0, -1, -2],
+        "fine" => [2, 1, 0],
+        _ => [1, 0, -1],
+    };
+    let names = ["coarse", "medium", "fine"];
+    let mut plans = Vec::new();
+    let mut r = Report::new("Mesh study levels");
+    for (name, k) in names.iter().zip(steps) {
+        let scale = ratio.powi(k);
+        let mut pl = (*plan).clone();
+        let d = dx0 * scale;
+        pl["dx0_m"] = json!(d);
+        if let Some(f) = plan.get("finest_cell_m").and_then(Value::as_f64) {
+            pl["finest_cell_m"] = json!(f * scale);
+        }
+        pl["study_level"] = json!(name);
+        pl["study_ratio"] = json!(ratio);
+        r.metric(format!("dx0_{name}_m"), Metric::new(d, "m"));
+        if let Some(f) = pl["finest_cell_m"].as_f64() {
+            r.metric(format!("finest_cell_{name}_mm"), Metric::new(f * 1e3, "mm"));
+        }
+        plans.push(pl);
+    }
+    r.metric("r21", Metric::new(ratio, "-")).metric("r32", Metric::new(ratio, "-"));
+    r.metric("cell_growth_per_level", Metric::new(ratio.powi(3), "-"));
+    r.note(
+        Severity::Info,
+        format!("each finer grid has about {:.1} times the cells of the one before; check the memory of the fine grid with the mesh quality node before running it", ratio.powi(3)),
+    );
+    if ratio < 1.3 {
+        r.note(Severity::Warning, "a refinement ratio below 1.3 makes the grid-convergence index unreliable: the grids differ too little for the discretisation error to rise above the iteration noise");
+    }
+    let mut it = plans.into_iter();
+    Ok(vec![Data::json(it.next().unwrap_or_default()), Data::json(it.next().unwrap_or_default()), Data::json(it.next().unwrap_or_default()), Data::report(r)])
+}
+
 pub(crate) fn register(reg: &mut Registry) {
+    reg.add(FnNode::new(levels_info, levels_cook));
     reg.add(FnNode::new(domain_info, domain_cook));
     reg.add(FnNode::new(gw_info, gw_cook));
     reg.add(FnNode::new(porous_info, porous_cook));
@@ -447,6 +507,39 @@ mod tests {
         rf.length_m = l;
         rf.tail_x_m = l;
         Data::json(rf.to_json())
+    }
+
+    #[test]
+    fn mesh_levels_scale_every_cell_by_the_ratio() {
+        let plan = run(plan_info, plan_cook, &[Some(ref_json(2.16, 4.6))], &[]);
+        let base = plan[0].as_json().unwrap().clone();
+        let out = run(levels_info, levels_cook, &[Some(Data::json((*base).clone()))], &[("ratio", ParamValue::Float(1.4))]);
+        let dx = |i: usize| out[i].as_json().unwrap()["dx0_m"].as_f64().unwrap();
+        let (dx0, fine0) = (base["dx0_m"].as_f64().unwrap(), base["finest_cell_m"].as_f64().unwrap());
+        // the plan is the medium grid by default
+        assert!((dx(1) - dx0).abs() < 1e-15);
+        assert!((dx(0) - dx0 * 1.4).abs() < 1e-12 && (dx(2) - dx0 / 1.4).abs() < 1e-12);
+        assert!((dx(0) / dx(1) - 1.4).abs() < 1e-12 && (dx(1) / dx(2) - 1.4).abs() < 1e-12);
+        // levels, boxes and layer settings are untouched; the finest cell scales with the rest
+        for (i, plan) in out.iter().take(3).enumerate() {
+            let p = plan.as_json().unwrap();
+            assert_eq!(p["levels"], base["levels"]);
+            assert_eq!(p["boxes"], base["boxes"]);
+            assert!((p["finest_cell_m"].as_f64().unwrap() / dx(i) - fine0 / dx0).abs() < 1e-12);
+        }
+        assert_eq!(out[2].as_json().unwrap()["study_level"], "fine");
+        let r = out[3].as_report().unwrap();
+        assert!((r.metrics["cell_growth_per_level"].value - 1.4f64.powi(3)).abs() < 1e-12);
+        assert_eq!(r.metrics["r21"].value, 1.4);
+        // when the plan is the fine grid the other two coarsen from it
+        let out = run(levels_info, levels_cook, &[Some(Data::json((*base).clone()))], &[("base", ParamValue::Str("fine".into()))]);
+        let dx = |i: usize| out[i].as_json().unwrap()["dx0_m"].as_f64().unwrap();
+        assert!((dx(2) - dx0).abs() < 1e-15 && (dx(0) - dx0 * 1.3 * 1.3).abs() < 1e-12);
+        // no plan, or a plan without a cell size, is an error; a ratio under 1.3 warns
+        assert!(levels_cook(&ctx("levels"), &[None], &Params::from_specs(&levels_info().params)).is_err());
+        assert!(levels_cook(&ctx("levels"), &[Some(Data::json(json!({"levels": {}})))], &Params::from_specs(&levels_info().params)).is_err());
+        let out = run(levels_info, levels_cook, &[Some(Data::json((*base).clone()))], &[("ratio", ParamValue::Float(1.25))]);
+        assert!(out[3].as_report().unwrap().notes.iter().any(|(s, _)| *s == Severity::Warning));
     }
 
     #[test]

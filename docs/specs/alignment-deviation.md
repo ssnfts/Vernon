@@ -250,6 +250,64 @@ reference on the reference side.
     process): identical inputs, compare mean/std of signed mesh distance within 1e-3 mm and ICP final RMS within 5%.
     Differences from octree approximation or random sampling are documented, not hidden.
 
+## 5a. Node map: stored transforms and mirror symmetry
+
+These three `clean` nodes were added after the first draft of section 4 and were not specified there. Behaviour is
+described here from published methods only (Sources, last items).
+
+**`clean.apply_transform`** re-applies a registration that an align node recorded. The second input is the
+`transform.v1` JSON record (rotation, translation, uniform scale). A point maps to `x' = s R x + t`; with `invert`
+on, the inverse `x = R^T (x' - t) / s` is applied. Stored point and face normals are transformed with the inverse
+transpose and renormalised, every other attribute and the topology are untouched. The scale must be finite and
+positive, otherwise the cook fails and names the value. Checks: applying a transform and then its inverse returns the
+input to 1e-9 mm; applying the record an ICP node wrote to that node's own moving cloud reproduces its output.
+
+**`clean.symmetry_detect`** looks for the plane `n . x = d` that maps the point set onto itself, in the spirit of the
+planar-reflective symmetry transform of Podolak et al. and the partial-symmetry formulation of Mitra et al.
+Method:
+
+1. Draw up to `samples` points with a seeded shuffle; the first 5000 of them are the probes; a k-d tree holds the
+   whole sample.
+2. Candidate normals are the three principal axes of the sample and the three coordinate axes (duplicates within
+   0.9999 of parallel are dropped), or the single axis named by `axis_hint`. For each normal the offset is searched:
+   a coarse scan of 41 offsets over plus and minus 15 % of the bounding-box diagonal around the centroid plane, then
+   a finer scan of 21 offsets around the best one.
+3. The score of a plane is the trimmed RMS (best `trim` fraction) of the distance from the mirror image of each probe
+   to its nearest sample point, so a missing half costs little.
+4. The best candidate is refined for up to `refine_iterations` rounds: each probe and its nearest image partner `q`
+   form a pair; the new normal is the dominant eigenvector of the scatter of `p - q`, pairs weighted by
+   `exp(-(d / (1.5 * median d))^2)` so that the orphans of a missing region barely count; the offset is the weighted
+   mean of the pair midpoints on that normal (weights also scale with the squared pair separation so near-plane pairs
+   do not dominate). Iteration stops when the plane moves less than 1e-9.
+
+Outputs: the input with the point attribute `mirror_dist` (mm, distance from the mirror image of every point to the
+nearest point), the plane as `plane.v1` JSON, and a report with `mirror_rms`, `mirror_p50`, `mirror_p95`,
+`symmetric_fraction` (share of points whose image lies within `tolerance`, gated by `min_fraction`), the plane
+normal and origin, and the point count. Warnings: the fraction is below the gate (the object may not be symmetric or the
+data is one-sided); a second candidate is within 20 % of the best RMS (ambiguous). Fewer than 8 points is an error.
+Checks (analytic): a cloud sampled from an ellipsoid with three different semi-axes recovers a coordinate plane to
+0.1 degree and 0.05 mm; deleting one octant leaves the normal within 1 degree; a cloud with no symmetry reports a
+fraction below the gate.
+
+**`clean.mirror_complete`** reflects data across a plane to fill what a scan missed. The plane comes from the optional
+`plane` input, else from `origin` and `normal` (`plane_source = custom`), else it is the bounding-box mid-plane across
+`axis`. For a cloud the elements are points, for a mesh they are faces classified by their centroids. The source side
+is `positive`, `negative`, or for `auto` the side with more elements (an empty source side is an error). In
+`fill_gaps` everything is kept and the mirror image of a source element is added only when no existing point lies
+within `gap_radius` of it (0 means twice the median nearest-neighbour spacing). In `replace_side` the source side is
+kept and the other side is replaced by its mirror image; a warning is given when both sides hold similar amounts
+(the smaller one is discarded). Elements within `weld_distance` of the plane lie on it and are not duplicated. Mirrored
+faces get reversed vertex order and mirrored normals, so a closed outward-wound half yields a closed outward-wound
+whole. The report counts elements on each side and what was added. Checks: a half box mirrored with `replace_side`
+has twice the volume and no open edges; a cloud missing a patch gains points only inside the patch.
+
+Sources for this section:
+
+- Podolak, Shilane, Golovinskiy, Rusinkiewicz, Funkhouser, "A planar-reflective symmetry transform for 3D shapes",
+  ACM TOG 25(3), 2006. https://doi.org/10.1145/1141911.1141923
+- Mitra, Guibas, Pauly, "Partial and approximate symmetry detection for 3D geometry", ACM TOG 25(3), 2006.
+  https://doi.org/10.1145/1141911.1141924
+
 ## 6. Sources
 
 CloudCompare wiki (docs only):

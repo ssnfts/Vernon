@@ -226,9 +226,25 @@ pub fn solve(veh: &Vehicle, rho: f64, track: &Track, o: &LapOptions) -> Result<L
     let kap = |i: usize| tr.kappa[i.min(m - 1)];
     let v_lim: Vec<f64> = (0..n).map(|i| veh.corner_limit(rho, kap(i)).max(MIN_SPEED)).collect();
 
+    // Both passes use Heun's method on v^2 (the trapezoid rule over each
+    // interval, second order in ds): an explicit Euler step that evaluates the
+    // acceleration at the start of the interval is first order and runs about
+    // 0.01 s per lap optimistic at ds = 1 m on the reference stadium. Within
+    // 0.1 % of a cornering limit the longitudinal capacity falls as sqrt(1 - r^2)
+    // and the step is stiff; there the single-point step is kept, which is also
+    // what lets drag sag the speed slightly below the limit on a steady arc.
+    const NEAR_LIMIT: f64 = 1.0 - 1e-3;
     let fwd_step = |v: f64, i: usize, vf_next_lim: f64| -> f64 {
         let (a, _, _) = veh.accel(rho, v, tr.kappa[i]);
-        let v2 = v * v + 2.0 * a * tr.ds[i];
+        let v2_euler = v * v + 2.0 * a * tr.ds[i];
+        let near_limit = v >= v_lim[i] * NEAR_LIMIT;
+        let v2 = if near_limit {
+            v2_euler
+        } else {
+            let v_pred = if v2_euler > 0.0 { v2_euler.sqrt() } else { 0.0 };
+            let (a_end, _, _) = veh.accel(rho, v_pred.max(MIN_SPEED).min(vf_next_lim), tr.kappa[i]);
+            v * v + (a + a_end) * tr.ds[i]
+        };
         let mut vn = if v2 > 0.0 { v2.sqrt() } else { 0.0 };
         if o.hold_limit_speed && a <= 0.0 && v >= v_lim[i] * (1.0 - 1e-12) {
             vn = vn.max(v);
@@ -237,7 +253,13 @@ pub fn solve(veh: &Vehicle, rho: f64, track: &Track, o: &LapOptions) -> Result<L
     };
     let bwd_step = |v_end: f64, j: usize, lim: f64| -> f64 {
         let (a, _) = veh.decel(rho, v_end, tr.kappa[j]);
-        (v_end * v_end + 2.0 * a * tr.ds[j]).sqrt().min(lim)
+        let v2_euler = v_end * v_end + 2.0 * a * tr.ds[j];
+        if v_end >= v_lim[j] * NEAR_LIMIT {
+            return v2_euler.sqrt().min(lim);
+        }
+        let v_pred = v2_euler.sqrt().min(lim);
+        let (a_start, _) = veh.decel(rho, v_pred, tr.kappa[j]);
+        (v_end * v_end + (a + a_start) * tr.ds[j]).sqrt().min(lim)
     };
 
     let mut vf = vec![0.0; n];
@@ -336,8 +358,12 @@ pub fn solve(veh: &Vehicle, rho: f64, track: &Track, o: &LapOptions) -> Result<L
         e_wheel += fd * tr.ds[i];
         e_brake += fb * tr.ds[i];
         // envelope check (tolerance covers the discrete step)
-        let (a_acc, _, _) = veh.accel(rho, vi, tr.kappa[i]);
-        let (a_dec, _) = veh.decel(rho, vn, tr.kappa[i]);
+        // the step is second order: its mean acceleration lies between the envelope at the two ends
+        let (a_acc_0, _, _) = veh.accel(rho, vi, tr.kappa[i]);
+        let (a_acc_1, _, _) = veh.accel(rho, vn, tr.kappa[i]);
+        let (a_dec_0, _) = veh.decel(rho, vi, tr.kappa[i]);
+        let (a_dec_1, _) = veh.decel(rho, vn, tr.kappa[i]);
+        let (a_acc, a_dec) = (a_acc_0.max(a_acc_1), a_dec_0.max(a_dec_1));
         let tol = 1e-6 * (1.0 + a.abs());
         if a > a_acc + tol || -a > a_dec + tol || vi > v_lim[i] * (1.0 + 1e-9) + 1e-9 {
             violations += 1;

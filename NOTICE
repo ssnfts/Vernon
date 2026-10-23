@@ -1,0 +1,20 @@
+Vernon
+Copyright 2026 The Vernon contributors
+
+This product is licensed under the Apache License, Version 2.0; the full
+text is in the LICENSE file.
+
+Binaries built from this source include third-party Rust crates and the
+default user-interface fonts of the egui toolkit (Hack, Ubuntu Light, Noto
+Emoji and an emoji icon font), each under its own licence (MIT, Apache-2.0,
+BSD, Zlib, ISC, Unicode-3.0, BSL-1.0, CC0-1.0, SIL Open Font Licence 1.1,
+Ubuntu Font Licence 1.0). Their names, versions and licence texts are listed
+in THIRD_PARTY_LICENSES.md, which must accompany any binary distribution.
+
+External open-source solvers and tools that Vernon can drive are not
+included; they run as separate processes under their own licences.
+
+Vernon is an independent clean-room project. It is not affiliated with,
+endorsed by or sponsored by any of the vendors or products named in its
+documentation; those names are trademarks of their respective owners and
+appear only to describe the behaviour being re-implemented.

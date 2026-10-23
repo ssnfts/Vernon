@@ -224,7 +224,7 @@ A the cross-section), Q = mdot c_p dT with c_p = 1005 J/(kg K) (dry air near roo
 ## 4. Proposed Vernon nodes (stage `perf`, 17 nodes)
 
 Labels are generic. `emulates` strings may name the reference tool; UI strings may not. **now** = implement with a real algorithm; **wb** = white-box stub first (ports and params correct).
-Contracts (Json): `env.v1` {rho, T_c, p_pa, rh}, `vehicle.v1` (table above), `track.v1`, `lap_result.v1`, `coast_fit.v1`, `cp_table.v1`, `perf_report.v1`.
+Contracts (Json): `env.v1` {rho, t_c, p_pa, rh (fraction), rh_pct, plus the older T_c alias}, the shared air-state schema of `vernon_core::air` that `cfd.air_state` also emits, `vehicle.v1` (table above), `track.v1`, `lap_result.v1`, `coast_fit.v1`, `cp_table.v1`, `perf_report.v1`.
 
 | Id | Label | Inputs | Outputs | Key params (default; range; unit) | Status |
 |---|---|---|---|---|---|
@@ -259,12 +259,12 @@ Graph shape: `air_density -> vehicle -> lap_sim <- track_from_path`, `lap_sim ->
 5. Constant-power launch, no drag, no rolling resistance: traction ends at v = P/(m mu g) = 10.9255 m/s at t = 1.1141 s, s = 6.086 m; 0 -> 100 km/h in 4.1579 s. Pure constant power: v(5 s) = 32.733 m/s, s(5 s) = 109.11 m. Open-track solver at ds = 0.5 m matches within 0.5 percent.
 6. Skidpad. R 15.25 m (circle of 360 nodes), mu 1.5, no aero, no rolling resistance: v = 14.9776 m/s, lap 6.3975 s. Solver must match to 1e-6 relative.
 7. Stadium lap (ref script, ds = 1 m): two 400 m straights, two 180-degree bends of R 40 m (length 1051.33 m), closed; m 1400, 150 kW at the wheels, mu 1.0, crr 0.012 on N, no brake cap, e = 0, trapezoid time. Results: base (rho 1.11, CdA 0.64, ClA 0.5)
-   **35.896 s**, v_max 163.56 km/h, v_min 71.55 km/h. Variants: rho 1.225 35.922; ClA 0 35.992; ClA 1.0 35.801; CdA 0.69 35.923; CdA 0.59 35.870; CdA 0 and ClA 0 35.672; mu 1.2 33.959; mass 1500 36.213;
-   e = 0.05 36.173; brake cap 0.8 g 36.252. Tolerances: +/-0.05 s or 0.15 percent for a different implementation.
+   **35.907 s** (the converged value of a second-order step; a first-order explicit-Euler step reads about 0.01 s low at ds = 1 m, and an independent midpoint-speed solver gives 35.906 s at ds = 0.05 m), v_max 163.56 km/h, v_min 71.55 km/h. Variants: rho 1.225 35.932; ClA 0 36.003; ClA 1.0 35.811; CdA 0.69 35.933; CdA 0.59 35.881; CdA 0 and ClA 0 35.683; mu 1.2 33.967; mass 1500 36.223;
+   e = 0.05 36.183; brake cap 0.8 g 36.262. Tolerances: +/-0.01 s for a second-order implementation; a first-order step must use ds <= 0.1 m or document its bias.
    Speed trace of the base case (node i is s = i m from the start of straight 1; bends are s = 400-526 m and 926-1052 m; the start node is at 71.59 km/h): s = 100 m 120.35 km/h; 200 m 144.23; 300 m 160.77;
    peak 163.56 at s = 320 m, where braking begins; 399 m 73.39 (end of the brake zone, 80 m long); 463 m (apex) 71.55; 550 m 89.20; 600 m 111.81; 800 m 156.93; 900 m 109.60 (braking). Tolerance 0.5 km/h or 0.3 percent.
-8. Discretisation. Same stadium at ds 0.5, 2, 5 m: 35.901, 35.893, 35.876 s. The solver must stay within 0.1 percent of 35.896 for ds <= 5 m.
-9. Density and power together. Same stadium, rho 1.11 with P fixed at 150 kW: 35.896 s; with 150 kW defined at rho_ref 1.225 and scaled by 1.11/1.225 (k = 1, 135.9 kW): 36.375 s, +1.3 percent against 35.922 s at 1.225. The engine loss, not the aero density, is most of the lap-time effect.
+8. Discretisation. Same stadium at ds 0.5, 2, 5 m: 35.907, 35.909, 35.908 s. The solver must stay within 0.03 percent of 35.907 for ds <= 5 m.
+9. Density and power together. Same stadium, rho 1.11 with P fixed at 150 kW: 35.907 s; with 150 kW defined at rho_ref 1.225 and scaled by 1.11/1.225 (k = 1, 135.9 kW): 36.375 s, +1.3 percent against 35.932 s at 1.225. The engine loss, not the aero density, is most of the lap-time effect.
 10. Sensitivity (stadium). dt/d(CdA) = 0.53 s/m2 (0.0053 s per 0.01 m2); dt/d(ClA) = -0.19 s/m2 (0.0019 s per 0.01 m2); break-even d(ClA)/d(CdA) = 2.8. A sweep must be monotonic: time rises with CdA and mass, falls with ClA, mu, power.
 11. Solver invariants (any track): v <= v_lim everywhere; |a_x| within the g-g-v envelope (1e-6); closed-track seam: v[0] = v[n] within 1e-9; lap time unchanged by rotating the start node (1e-6); reverse track on a symmetric circuit gives the same time.
 12. Coastdown closed form (rho 1.11, M 1400, Crr 0.012, CdA 0.64): A = 164.752 N, B = 0.3552 N s2/m2, characteristic speed sqrt(A/B) = 21.537 m/s. 100 -> 60 km/h takes 46.243 s over 1005.77 m; 120 -> 40 km/h 95.324 s over 1944.04 m; deceleration at 100 km/h 0.3134 m/s2. A noise-free 10 Hz log 120 -> 20 km/h (136.3 s) fits to Crr 0.01200 and CdA 0.6400 (1e-4).
@@ -279,7 +279,17 @@ Graph shape: `air_density -> vehicle -> lap_sim <- track_from_path`, `lap_sim ->
 21. Braking row (rho 1.11, m 1400, mu 1.0, CdA 0.64, ClA 0.5, no rolling term): a = mu(g + 0.5 rho ClA v2/m) + 0.5 rho CdA v2/m gives 11.2015 m/s2 (1.1422 g) at 200 km/h and 10.1554 m/s2 (1.0356 g) at 100 km/h, i.e. +14.22 and +3.56 percent over mu g = 9.80665. Adding Crr 0.012 on N at 200 km/h gives 11.3265. Tolerance 1e-6 relative.
 22. Grip envelope at 50 m/s (same car, no rolling term): N/m = 10.3022 m/s2 so a_y,max = 10.3022 (1.0505 g); at a_y = 0.6, 0.8, 1.0 of that, the longitudinal limit is 8.2417, 6.1813, 0.0 m/s2 (ellipse sqrt(1 - r2)). Tolerance 1e-6 relative.
 23. Balance and duct (rho 1.11, c_p 1005): ClA front 0.2 and rear 0.3 m2 gives front balance 40.0 percent at any speed. V 20 m/s, A 0.01 m2, dT 30 K gives mdot 0.2220 kg/s and Q 6693.3 W; V 30 m/s, A 0.02 m2, dT 25 K gives 0.6660 kg/s and 16733.25 W (exact to 1e-9).
-24. Validation-gate round trip: feed tests 4, 10 and 13 into `perf.validation_gate` with claimed dCdA +0.05 m2 (0.64 -> 0.69), a coastdown minimum detectable change of 0.02 m2: the report prints lap value +0.027 s (35.923 - 35.896 on the stadium), top-speed value -6.32 km/h (262.67 -> 256.35), and passes the detectability rule (0.05 > 0.02).
+24. Validation-gate round trip: feed tests 4, 10 and 13 into `perf.validation_gate` with claimed dCdA +0.05 m2 (0.64 -> 0.69), a coastdown minimum detectable change of 0.02 m2: the report prints lap value +0.027 s (35.933 - 35.907 on the stadium), top-speed value -6.32 km/h (262.67 -> 256.35), and passes the detectability rule (0.05 > 0.02).
+
+## 5a. Node map: lap A/B delta
+
+`perf.lap_delta` runs two vehicle set-ups (`vehicle_a`, `vehicle_b`, for example without and with a body kit) round the
+same `track` with the same air density (`env` input or `rho_kgm3`) and options (`time_rule`, `ds_max_m`) and reports
+`t_B - t_A` (negative means B is faster). Lap times use the solver of section 3. The split is the time difference per
+event-table segment (straights and corners), so the segment differences add up to the lap difference. It also
+reports the change in top speed, minimum speed and wheel energy. The stadium case of test 24 gives +0.026 s for a CdA
+change from 0.64 to 0.69 m2. The node compares two model runs: it carries the lap simulator's bias statement (a model of
+the set-up, not a measurement), and the validation gate downstream decides whether the claimed change is detectable.
 
 ## 6. Sources
 

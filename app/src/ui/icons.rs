@@ -30,6 +30,11 @@ pub enum Icon {
     Report,
     Bulb,
     BulbOff,
+    RollLeft,
+    RollRight,
+    Lock,
+    Unlock,
+    Pin,
 }
 
 fn arrow_head(out: &mut Vec<Shape>, tip: Pos2, dir: egui::Vec2, s: f32, stroke: Stroke) {
@@ -207,6 +212,32 @@ pub fn paint(painter: &egui::Painter, rect: Rect, icon: Icon, c: Color32) {
             v.push(Shape::circle_stroke(p(12.0, 10.0), 5.5 * s, st));
             v.push(Shape::line_segment([p(9.5, 18.0), p(14.5, 18.0)], st));
             v.push(Shape::line_segment([p(10.0, 20.5), p(14.0, 20.5)], st));
+        }
+        Icon::RollLeft | Icon::RollRight => {
+            // Screen angles grow clockwise (y down).
+            let pi = std::f32::consts::PI;
+            let (a0, a1) = if icon == Icon::RollRight { (pi * 1.05, pi * 2.15) } else { (pi * 1.95, pi * 0.85) };
+            let pts = arc(p(12.0, 13.0), 7.0 * s, a0, a1);
+            let tip = *pts.last().unwrap_or(&p(12.0, 13.0));
+            let dir = if a1 > a0 { vec2(-a1.sin(), a1.cos()) } else { vec2(a1.sin(), -a1.cos()) };
+            v.push(Shape::line(pts, st));
+            arrow_head(&mut v, tip, dir, 3.5 * s, st);
+        }
+        Icon::Lock | Icon::Unlock => {
+            v.push(Shape::rect_stroke(Rect::from_min_max(p(6.0, 11.0), p(18.0, 20.0)), 1.5, st, egui::StrokeKind::Middle));
+            let pi = std::f32::consts::PI;
+            let (c, a1) = if icon == Icon::Lock { (p(12.0, 11.0), pi * 2.0) } else { (p(15.0, 9.5), pi * 1.75) };
+            let mut pts = arc(c, 4.0 * s, pi, a1);
+            if icon == Icon::Lock {
+                pts.insert(0, p(8.0, 11.0));
+                pts.push(p(16.0, 11.0));
+            }
+            v.push(Shape::line(pts, st));
+        }
+        Icon::Pin => {
+            v.push(Shape::circle_stroke(p(12.0, 8.0), 4.0 * s, st));
+            v.push(Shape::line_segment([p(7.0, 13.0), p(17.0, 13.0)], st));
+            v.push(Shape::line_segment([p(12.0, 13.0), p(12.0, 21.0)], st));
         }
     }
     painter.extend(v);

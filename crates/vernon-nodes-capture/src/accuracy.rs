@@ -194,10 +194,10 @@ impl NodeOp for ScannerProfile {
             )
             .param(a_param())
             .param(b_param())
-            .param(ParamSpec::float("single_frame", "Single-frame accuracy", 0.04, 0.0, 10.0).unit("mm"))
+            .param(ParamSpec::float("single_frame", "Single-frame accuracy", 0.04, 0.0, 10.0).unit("mm").help("Single-frame accuracy of the scanner as published, in millimetres."))
             .param(ParamSpec::float("point_distance", "Point distance", 0.05, 0.0, 50.0).unit("mm").help("Spacing between measured points."))
-            .param(ParamSpec::float("work_dist_min", "Working distance min", 200.0, 0.0, 10000.0).unit("mm"))
-            .param(ParamSpec::float("work_dist_max", "Working distance max", 400.0, 0.0, 10000.0).unit("mm"))
+            .param(ParamSpec::float("work_dist_min", "Working distance min", 200.0, 0.0, 10000.0).unit("mm").help("Nearest working distance at which the published accuracy holds, in millimetres."))
+            .param(ParamSpec::float("work_dist_max", "Working distance max", 400.0, 0.0, 10000.0).unit("mm").help("Farthest working distance at which the published accuracy holds, in millimetres."))
             .param(
                 ParamSpec::choice("surface_finish", "Surface finish", "matte", &["matte", "developer_spray", "gloss_paint"])
                     .help("Recorded on the profile only; glossy paint without a matting spray is usually worse than the lab figures."),
@@ -340,16 +340,16 @@ impl NodeOp for ErrorBudget {
             .input(PortSpec::optional("scale", DataKind::Report))
             .input(PortSpec::optional("registration", DataKind::Report))
             .output(PortSpec::new("report", DataKind::Report))
-            .param(ParamSpec::float("length", "Length", 4500.0, 100.0, 30000.0).unit("mm"))
+            .param(ParamSpec::float("length", "Length", 4500.0, 100.0, 30000.0).unit("mm").help("Length of the part or span the error budget is evaluated over."))
             .param(a_param())
             .param(b_param())
             .param(ParamSpec::float("scale_bar_sigma", "Scale bar sigma", 0.01, 0.0, 100.0).unit("mm").help("Standard uncertainty of one scale bar length. Ignored when a scale report is connected."))
-            .param(ParamSpec::float("scale_bar_len", "Scale bar length", 1000.0, 1.0, 20000.0).unit("mm"))
-            .param(ParamSpec::int("scale_bars", "Independent bars", 1, 1, 100))
+            .param(ParamSpec::float("scale_bar_len", "Scale bar length", 1000.0, 1.0, 20000.0).unit("mm").help("Length of each calibrated scale bar. A longer bar pins the scale down better."))
+            .param(ParamSpec::int("scale_bars", "Independent bars", 1, 1, 100).help("Number of independent scale bars in the scan. More bars lower the scale uncertainty."))
             .param(ParamSpec::float("reg_rms", "Registration RMS", 0.1, 0.0, 100.0).unit("mm").help("Inlier RMS of the multi-scan registration. Ignored when a registration report is connected."))
             .param(ParamSpec::float("k", "Coverage factor", 2.0, 1.0, 5.0).help("Multiplier on the registration RMS."))
             .param(ParamSpec::choice("combine", "Combine", "rss", &["rss", "linear"]).help("Root-sum-square, or a plain sum for a worst-case bound."))
-            .param(ParamSpec::float("gate", "Gate", 1.0, 0.001, 100.0).unit("mm"))
+            .param(ParamSpec::float("gate", "Gate", 1.0, 0.001, 100.0).unit("mm").help("Largest acceptable length error over the span. A predicted error above it fails the report."))
             .help("Adds the scanner's length error, the scale-bar error and the registration error into one budget over the car length and checks it against a gate.")
             .emulates("measurement-uncertainty budget for a large scanned object")
             .implemented()
@@ -465,6 +465,11 @@ pub fn check_lengths(pairs: &mut [PairCheck], limit_of: impl Fn(f64) -> f64) -> 
     stats
 }
 
+/// Most reference markers whose every pairwise length is checked: n markers
+/// make n (n - 1) / 2 pairs, so a point cloud wired to the markers port
+/// would otherwise exhaust memory.
+pub const MAX_REFERENCE_MARKERS: usize = 400;
+
 /// Verify measured marker distances against reference lengths.
 pub struct LengthCheck;
 
@@ -479,6 +484,13 @@ impl LengthCheck {
             bars_from_json(&v).map_err(|m| ctx.fail(format!("reference table: {m}")))?
         } else if let Some(refpts) = inputs::opt_geometry(inputs, 2) {
             let ids = util::point_ids(&refpts);
+            if ids.len() > MAX_REFERENCE_MARKERS {
+                return Err(ctx.fail(format!(
+                    "{} reference markers make {} pairs; at most {MAX_REFERENCE_MARKERS} markers are checked pairwise (connect the markers only, or a reference table of the bars that matter)",
+                    ids.len(),
+                    ids.len() * (ids.len() - 1) / 2
+                )));
+            }
             let mut out = Vec::new();
             for i in 0..ids.len() {
                 for j in (i + 1)..ids.len() {
@@ -531,10 +543,10 @@ impl NodeOp for LengthCheck {
             .output(PortSpec::new("table", DataKind::Json))
             .param(ParamSpec::string("lengths", "Reference lengths", "").help("Rows 'id_a, id_b, length', separated by semicolons or new lines; used when no reference input is connected."))
             .param(ParamSpec::choice("gate_mode", "Gate", "fixed", &["fixed", "profile"]).help("'profile' checks every pair against a + b*L of the scanner profile; 'fixed' uses one gate for all."))
-            .param(ParamSpec::float("gate", "Fixed gate", 1.0, 0.001, 100.0).unit("mm"))
+            .param(ParamSpec::float("gate", "Fixed gate", 1.0, 0.001, 100.0).unit("mm").help("Largest acceptable length error. A measured error above it fails the report."))
             .param(a_param())
             .param(b_param())
-            .param(ParamSpec::int("min_pairs", "Minimum pairs", 3, 1, 1000))
+            .param(ParamSpec::int("min_pairs", "Minimum pairs", 3, 1, 1000).help("Fewest measured pairs the check needs before it reports a result."))
             .help("Compares marker distances measured in the scan with reference lengths. Reports the worst error, the through-origin scale error in ppm and the residual left after removing it, which separates a simple scale error from bending or drift.")
             .emulates("sphere-spacing style length-measurement-error test of a scanner")
             .implemented()
@@ -803,7 +815,7 @@ impl NodeOp for ScanQuality {
             .input(PortSpec::new("geometry", DataKind::Geometry))
             .output(PortSpec::new("report", DataKind::Report))
             .param(ParamSpec::float("radius", "Neighbourhood radius", 0.0, 0.0, 1000.0).unit("mm").help("Radius of the local plane fits; 0 chooses it from the point spacing."))
-            .param(ParamSpec::int("min_neighbors", "Minimum neighbours", 12, 4, 500))
+            .param(ParamSpec::int("min_neighbors", "Minimum neighbours", 12, 4, 500).help("Fewest neighbours a point needs inside the fit radius for the local plane fit that estimates noise and density. Points with fewer are skipped."))
             .param(ParamSpec::float("hole_gap", "Hole gap", 5.0, 0.1, 1000.0).unit("mm").help("Radius used to look for one-sided neighbourhoods (holes and edges)."))
             .param(ParamSpec::int("max_samples", "Maximum samples", 20000, 100, 10_000_000).help("Points examined, evenly strided through the cloud."))
             .help("Measures point spacing, surface density, scanner noise (deviation from locally fitted planes) and the fraction of points on a boundary, plus the bounding box. The boundary fraction is an approximate hole indicator that also counts the outer edge.")
@@ -1077,6 +1089,21 @@ mod tests {
         assert!(op.cook(&ctx(), &[Some(Data::geometry(measured.clone()))], &params_for(&op, &[])).is_err());
         let p = params_for(&op, &[("lengths", PV::Str("M0, M1, 300".into()))]);
         assert!(op.cook(&ctx(), &[Some(Data::geometry(measured))], &p).is_err(), "one pair < min_pairs 3");
+    }
+
+    #[test]
+    fn a_cloud_on_the_reference_port_is_refused_not_paired() {
+        let (measured, _) = marker_line(0.0);
+        let n = MAX_REFERENCE_MARKERS + 1;
+        let mut cloud = Geometry::from_points((0..n).map(|i| DVec3::new(i as f64, 0.0, 0.0)).collect());
+        cloud.point_attribs.set("id", vernon_core::AttribArray::Str((0..n).map(|i| format!("M{i}")).collect()));
+        let op = LengthCheck;
+        let t = std::time::Instant::now();
+        let err = op
+            .cook(&ctx(), &[Some(Data::geometry(measured)), None, Some(Data::geometry(cloud))], &params_for(&op, &[]))
+            .unwrap_err();
+        assert!(err.to_string().contains("reference markers"), "{err}");
+        assert!(t.elapsed().as_secs() < 5);
     }
 
     fn noisy_plane(n_side: usize, spacing: f64, sigma: f64, jitter: f64, seed: u64) -> Vec<DVec3> {

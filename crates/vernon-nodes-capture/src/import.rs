@@ -210,8 +210,8 @@ impl NodeOp for ImportScan {
                 )
                 .param(ParamSpec::bool("unit_check", "Size check", true).help("Warn when the size does not match the chosen unit."))
                 .param(ParamSpec::bool("weld", "Weld STL vertices", true).help("Merge coincident vertices of STL files."))
-                .param(ParamSpec::bool("keep_normals", "Keep normals", true))
-                .param(ParamSpec::bool("keep_colors", "Keep colors", true)),
+                .param(ParamSpec::bool("keep_normals", "Keep normals", true).help("Keep per-vertex normals from the file. Off drops them so they can be re-estimated."))
+                .param(ParamSpec::bool("keep_colors", "Keep colors", true).help("Keep per-vertex colours from the file. Off drops them.")),
         )
         .help("Reads a scanner export into millimetres, runs a vehicle-scale size check and reports point count and bounding box. Geometry is marked metric only when the unit is known.")
         .emulates("handheld-scanner mesh / point-cloud export import with explicit unit handling")
@@ -253,8 +253,8 @@ impl NodeOp for ImportPhoneScan {
                     ParamSpec::choice("capture_mode", "Capture mode", "photogrammetry", &["photogrammetry", "lidar"])
                         .help("Photogrammetry needs scale correction; depth-sensor capture is too coarse for fitment."),
                 )
-                .param(ParamSpec::bool("weld", "Weld STL vertices", true))
-                .param(ParamSpec::bool("keep_colors", "Keep colors", true)),
+                .param(ParamSpec::bool("weld", "Weld STL vertices", true).help("Merge coincident vertices after reading. Mesh files that store every triangle separately need this to be watertight."))
+                .param(ParamSpec::bool("keep_colors", "Keep colors", true).help("Keep per-vertex colours from the file. Off drops them.")),
         )
         .help("Reads a mock-up grade mesh or cloud from a phone or photogrammetry export. The scale is treated as unknown (non-metric) until a scale node has run.")
         .emulates("phone photogrammetry / depth-sensor app export import with rescale-after-import workflow")
@@ -361,7 +361,7 @@ impl NodeOp for MarkerTable {
         geo_report(
             base("capture.marker_table", "Marker Table")
                 .param(ParamSpec::path("path", "Table file", &["csv", "txt"], false).help("Rows of id, x, y, z and optional sigma."))
-                .param(ParamSpec::choice("unit", "Coordinate unit", "mm", &["mm", "cm", "m", "in"]))
+                .param(ParamSpec::choice("unit", "Coordinate unit", "mm", &["mm", "cm", "m", "in"]).help("Unit of the coordinates in the file. They are converted to millimetres on import."))
                 .param(
                     ParamSpec::choice("duplicates", "Duplicate ids", "error", &["error", "keep_first", "keep_last"])
                         .help("What to do when a marker id appears twice."),

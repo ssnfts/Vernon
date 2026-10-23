@@ -18,7 +18,7 @@ Source tags (section 6): [F] fetched this session, [S] seen only in search resul
 | DMA study of printed PLA/PETG/ASA/ABS (Struz et al., Polymers 2024) | temperature dependence of stiffness for the derating tables | PMC article [F] |
 
 Out of scope for v1: contact and bolt pre-load (ccx supports `*CONTACT PAIR`, `*PRE-TENSION SECTION`, doc), buckling (`*BUCKLE`), vibration (`*FREQUENCY`), creep, fatigue, warpage, print-process simulation, nonlinear material. Each is listed in section 4 only as a future node. Large-deflection (`NLGEOM`) is off: a printed part at SF 3 stays linear (V), and the manual itself advises running the linear model first (doc).
-Unit system (V, matches the manual's own examples, doc): **mm, N, tonne, s, MPa (= N/mm2)**. Density in tonne/mm3 (the manual's steel example is 7.8E-9, doc; PLA 1.24 g/cm3 = 1.24E-9). Gravity 9810 mm/s2. Pressure: 1 Pa = 1E-6 MPa. Temperature degC in the UI and in the deck (the deck only needs consistency with the temperature column of the material cards). The solver is unitless, so the writer converts and a unit-consistency test (G1) guards it.
+Unit system (V, matches the manual's own examples, doc): **mm, N, tonne, s, MPa (= N/mm2)**. Density in tonne/mm3 (the manual's steel example is 7.8E-9, doc; PLA 1.24 g/cm3 = 1.24E-9). Gravity 9806.65 mm/s2 (standard gravity, the same constant the performance stage uses). Pressure: 1 Pa = 1E-6 MPa. Temperature degC in the UI and in the deck (the deck only needs consistency with the temperature column of the material cards). The solver is unitless, so the writer converts and a unit-consistency test (G1) guards it.
 
 ## 2. Feature catalogue (observable behaviour)
 
@@ -176,7 +176,7 @@ Total proposed: 18 nodes. Recommended order: material_fdm, layer_axes, load_aero
 
 Tolerances are Vernon pass criteria. "(ref)" = record from a licensed or open copy of the reference tool on a user-made input before freezing.
 
-**G1 units and aero numbers** (rho 1.11, report values): v = 200 km/h = 55.556 m/s -> q = 1712.96 Pa = 1.71296E-3 MPa; ClA 0.5 m2 -> 856.5 N (report: ~856 N); v = 250 km/h -> q = 2676.50 Pa, 1338.3 N (report: ~1340 N); ratio 1.5625 = (250/200)^2 exact to 1E-12. Density 1.24 g/cm3 -> 1.24E-9 tonne/mm3. A one-element model with `GRAV` 9810 under its own weight must give a total weight force rho V g (`EMAS`/`EVOL`) within 1E-9 relative.
+**G1 units and aero numbers** (rho 1.11, report values): v = 200 km/h = 55.556 m/s -> q = 1712.96 Pa = 1.71296E-3 MPa; ClA 0.5 m2 -> 856.5 N (report: ~856 N); v = 250 km/h -> q = 2676.50 Pa, 1338.3 N (report: ~1340 N); ratio 1.5625 = (250/200)^2 exact to 1E-12. Density 1.24 g/cm3 -> 1.24E-9 tonne/mm3. A one-element model with `GRAV` 9806.65 under its own weight must give a total weight force rho V g (`EMAS`/`EVOL`) within 1E-9 relative.
 
 **G2 material constants**: isotropic E 3000 MPa, nu 0.35 -> lambda 2592.593, mu 1111.111, D1111 = 4814.815. Transversely isotropic case E1 = E2 = 2500, E3 = 2000, nu12 0.35, nu13 = nu23 0.30, G12 = 925.926, G13 = G23 = 800 -> nu21 0.35, nu31 = nu32 0.24, Delta 0.6831; D1111 = D2222 = 3396.282, D1122 = 1544.430, D1133 = D2233 = 1185.771, D3333 = 2569.170, D1212 = 925.926, D1313 = D2323 = 800.000 (closed form and 6x6 inversion agree to 1E-9). Deck line must read `2500.,2500.,2000.,.35,.30,.30,925.926,800.,` then `800.,23.`. A reciprocity-violating input (nu13 0.9) must be rejected by the stability gate.
 
@@ -199,6 +199,23 @@ Tolerances are Vernon pass criteria. "(ref)" = record from a licensed or open co
 **G11 frd parser**: a synthetic frd with a fused pair of values `-1.23456E+00-2.34567E+00` in one row parses to (-1.23456, -2.34567); short and long node id formats both read; a truncated file without `9999` raises "incomplete result".
 
 **G12 end-to-end** (report chain, ClA 0.5, rho 1.11): printed wing mount in PPA-CF with SF target 3: at 200 km/h the load is 856.5 N, at 250 km/h 1338 N; the pass/fail verdict flips at the speed where the FE SF reaches 3 and must scale as 1/v^2 (SF(250) = 0.64 SF(200)). (ref) FreeCAD FEM + ccx on the same geometry and loads, tolerance +-5 % on deflection and +-10 % on averaged mount stress.
+
+## 5a. Node map: material table and oven creep plan
+
+- `fea.material_table`: the printed-material database shared with the print and solar stages
+  (`vernon_core::materials`). Per filament family it holds the heat deflection temperature at 0.45 MPa (as printed,
+  annealed where the project note gives one, and the vendor datasheet figure where that differs), the stacking
+  direction (Z) strength over the in-plane strength, the in-plane allowable, density and water absorption, each with a
+  source tag (`report`, `vendor datasheet`, `assumed`). Absolute moduli and strengths are placeholders until
+  coupons are tested, and the node says so. Check: the Z ratios of PETG (0.46), ASA (0.29) and PLA (0.55) come out
+  unchanged.
+- `fea.creep_plan`: a test plan, not a prediction. For sustained-load coupons in an oven it lists three temperatures
+  (`t1_c`, `t2_c`, `t3_c`, each below the heat deflection temperature), the load as `stress_fraction` of the
+  room-temperature allowable on a coupon of `coupon_w_mm` by `coupon_t_mm`, the hold time `hold_h`, the reading
+  times, and the margin from each test temperature to the heat deflection temperature. Measured strains entered as
+  `measured_1_pct` to `measured_3_pct` are compared with `allowed_strain_pct` and a suggested creep factor in (0, 1]
+  for the temperature-derating node is returned. Check: with all measured strains at zero the plan is output without a
+  factor.
 
 ## 6. Sources (every URL consulted or cited)
 

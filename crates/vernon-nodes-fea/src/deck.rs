@@ -146,7 +146,7 @@ pub fn unit_gate(mesh: &Geometry, card: &MaterialCard, load: &LoadSet) -> (Vec<S
     }
     if let Some(g) = load.gravity {
         if g.accel_mm_s2 > 0.0 && g.accel_mm_s2 < 100.0 {
-            err.push(format!("acceleration {} mm/s2 looks like m/s2; the deck needs mm/s2 (9810 for 1 g)", g.accel_mm_s2));
+            err.push(format!("acceleration {} mm/s2 looks like m/s2; the deck needs mm/s2 (9806.65 for 1 g)", g.accel_mm_s2));
         }
     }
     if !(1.0..=2000.0).contains(&card.xt) {

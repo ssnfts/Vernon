@@ -8,22 +8,14 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 /// Standard gravity, m/s2.
-pub const G: f64 = 9.80665;
-/// Specific gas constant of dry air, J/(kg K).
-pub const R_DRY: f64 = 287.058;
-/// Specific gas constant of water vapour, J/(kg K).
-pub const R_VAPOUR: f64 = 461.495;
-
-/// Saturation vapour pressure by the Tetens form, Pa.
-pub fn sat_pressure_pa(theta_c: f64) -> f64 {
-    610.78 * (17.27 * theta_c / (theta_c + 237.3)).exp()
-}
+pub const G: f64 = vernon_core::units::STANDARD_GRAVITY_M_S2;
+/// Gas constants and the saturation pressure live in `vernon_core::air`, shared
+/// with the airflow stage so both stages compute the same density.
+pub use vernon_core::air::{sat_pressure_pa, R_DRY, R_VAPOUR};
 
 /// Moist-air density from temperature (C), pressure (Pa), relative humidity (0..1).
 pub fn air_density(theta_c: f64, p_pa: f64, rh: f64, r_dry: f64) -> f64 {
-    let t = theta_c + 273.15;
-    let pv = (rh.clamp(0.0, 1.0) * sat_pressure_pa(theta_c)).min(p_pa);
-    (p_pa - pv) / (r_dry * t) + pv / (R_VAPOUR * t)
+    vernon_core::air::moist_air_density(theta_c, p_pa, rh, r_dry)
 }
 
 /// Dynamic pressure, Pa.
@@ -78,40 +70,37 @@ pub struct Env {
 
 impl Env {
     pub fn from_state(t_c: f64, p_pa: f64, rh: f64, r_dry: f64) -> Self {
-        Self { rho: air_density(t_c, p_pa, rh, r_dry), t_c, p_pa, rh }
+        Self::from_core(vernon_core::air::AirState::from_state(t_c, p_pa, rh, r_dry))
     }
 
     /// An environment known only by its density.
     pub fn from_rho(rho: f64) -> Self {
-        Self { rho, t_c: f64::NAN, p_pa: f64::NAN, rh: f64::NAN }
+        Self::from_core(vernon_core::air::AirState::from_rho(rho))
     }
 
+    fn from_core(a: vernon_core::air::AirState) -> Self {
+        Self { rho: a.rho, t_c: a.t_c, p_pa: a.p_pa, rh: a.rh }
+    }
+
+    /// The shared air-state fields (`vernon_core::air`) plus `kind` and the
+    /// older `T_c` spelling of the temperature.
     pub fn to_json(&self) -> Value {
-        json!({"kind": "env.v1", "rho": self.rho, "T_c": self.t_c, "p_pa": self.p_pa, "rh": self.rh})
+        let a = vernon_core::air::AirState { rho: self.rho, t_c: self.t_c, p_pa: self.p_pa, rh: self.rh };
+        let mut m = serde_json::Map::new();
+        m.insert("kind".into(), json!("env.v1"));
+        for (k, v) in a.fields() {
+            m.insert(k.into(), json!(v));
+        }
+        m.insert("T_c".into(), json!(self.t_c));
+        Value::Object(m)
     }
 
     /// Reads `env.v1` and also the airflow stage's air state (`t_c`,
     /// `rh_pct` in percent), so either can feed the performance nodes.
     pub fn from_json(v: &Value) -> Result<Self, String> {
-        let get = |k: &str| v.get(k).and_then(Value::as_f64);
-        let t_c = get("T_c").or_else(|| get("t_c"));
-        let rh = get("rh").or_else(|| get("rh_pct").map(|p| p / 100.0));
-        let rho = match get("rho") {
-            Some(r) => r,
-            None => match (t_c, get("p_pa")) {
-                (Some(t), Some(p)) => air_density(t, p, rh.unwrap_or(0.0), R_DRY),
-                _ => return Err("env: needs rho, or T_c and p_pa".into()),
-            },
-        };
-        if !(rho.is_finite() && rho > 0.0) {
-            return Err(format!("env: density {rho} is not a positive number"));
-        }
-        Ok(Self {
-            rho,
-            t_c: t_c.unwrap_or(f64::NAN),
-            p_pa: get("p_pa").unwrap_or(f64::NAN),
-            rh: rh.unwrap_or(f64::NAN),
-        })
+        vernon_core::air::AirState::from_lookup(|k| v.get(k).and_then(Value::as_f64))
+            .map(Self::from_core)
+            .map_err(|e| e.replacen("air state", "env", 1))
     }
 }
 

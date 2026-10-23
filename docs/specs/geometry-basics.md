@@ -133,3 +133,44 @@ split/print and CFD stages gate on (watertight, size, volume, area).
 - Car panel defaults: height at the centre 40 mm, at the +Y edge mid-length 60 mm, along the -Y edge 0 mm.
 - Mirror of a half panel with a seam: point count `2 * n - seam`, bounding box doubled across the mirror axis.
 - Scale (-1, 1, 1) with `fix_winding` keeps volume positive and equal to the original.
+
+## 10. Noise (`geo.noise`)
+
+Seeded Gaussian displacement of the points, used to turn a known reference surface into a synthetic scan for the
+alignment and deviation stages.
+
+- Each point moves by an independent draw `sigma * g` with `g` a standard normal (Box-Muller on a SplitMix64 stream;
+  see Sources). The same seed and input give the same output on every platform.
+- `direction = normal` moves the point along its unit normal, like scanner range noise. If the input has faces but no
+  point `N`, normals are computed first; a point with no usable normal (zero length, or a cloud with no `N`) falls back
+  to an isotropic draw in X, Y and Z. `direction = isotropic` draws three independent components.
+- `sigma` is in millimetres, zero or positive; zero returns the points unchanged; a negative or non-finite value is a
+  cook error. Topology, groups and all other attributes are untouched and `N` is not recomputed.
+- Checks: 20000 coincident points with sigma 0.1 mm give a per-axis sample standard deviation within 5 % of 0.1 in
+  isotropic mode; on a flat plate in normal mode every displacement is parallel to the plate normal; two cooks with
+  the same seed are bit-identical and different seeds differ.
+
+## 11. Sources
+
+Behaviour is common mesh-processing knowledge; these are the references used for definitions and formulas. DOIs and
+URLs are given as published and were not re-fetched when the list was written.
+
+- Polygon normal by Newell's method: Sutherland, Sproull, Schumacker, "A characterization of ten hidden-surface
+  algorithms", ACM Computing Surveys 6(1), 1974. https://doi.org/10.1145/356625.356626 ; practical write-up:
+  https://www.khronos.org/opengl/wiki/Calculating_a_Surface_Normal
+- Angle-weighted vertex normals: Thuermer, Wuethrich, "Computing vertex normals from polygonal facets", Journal of
+  Graphics Tools 3(1), 1998. https://doi.org/10.1080/10867651.1998.10487487
+- Enclosed volume of a closed triangle mesh as a sum of signed tetrahedra (divergence theorem): Zhang, Chen,
+  "Efficient feature extraction for 2D/3D objects in mesh representation", ICIP 2001.
+  https://doi.org/10.1109/ICIP.2001.958278
+- Edge counting, closed and manifold surface tests, Euler characteristic V - E + F:
+  https://en.wikipedia.org/wiki/Euler_characteristic ; Botsch, Kobbelt, Pauly, Alliez, Levy, "Polygon Mesh
+  Processing", CRC Press, 2010, ISBN 978-1-56881-426-1 (also the source for midpoint subdivision of triangles).
+- File formats: Wavefront OBJ https://paulbourke.net/dataformats/obj/ ; Stanford PLY
+  https://paulbourke.net/dataformats/ply/ ; STL (ASCII and binary)
+  https://www.loc.gov/preservation/digital/formats/fdd/fdd000504.shtml
+- Gaussian samples: Box, Muller, "A note on the generation of random normal deviates", Annals of Mathematical
+  Statistics 29(2), 1958. https://doi.org/10.1214/aoms/1177706645 ; generator: Steele, Lea, Flood, "Fast splittable
+  pseudorandom number generators", OOPSLA 2014. https://doi.org/10.1145/2660193.2660195
+- Primitive parameterisations (grid, UV sphere, tube, box): standard textbook constructions; no vendor documentation was
+  copied. The tools named at the top of this file are for orientation only.

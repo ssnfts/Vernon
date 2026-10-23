@@ -298,7 +298,7 @@ fn vehicle_info() -> NodeTypeInfo {
         .param(ParamSpec::float("final_drive", "Final drive", d.final_drive, 0.5, 15.0).help("Final-drive ratio"))
         .param(ParamSpec::float("wheel_radius_m", "Wheel radius", d.wheel_radius_m, 0.1, 0.6).unit("m").help("Loaded wheel radius"))
         .param(ParamSpec::float("driveline_eff", "Driveline efficiency", d.driveline_eff, 0.3, 1.0).help("Engine-to-wheel efficiency"))
-        .param(ParamSpec::float("f_drive_max_n", "Drive-force cap", d.f_drive_max_n, 0.0, 1.0e5).unit("N").help("0 = off"))
+        .param(ParamSpec::float("f_drive_max_n", "Drive-force cap", d.f_drive_max_n, 0.0, 1.0e5).unit("N").help("Largest force the driveline can put at the wheels, in newtons. 0 turns the cap off."))
         .param(ParamSpec::float("cda_m2", "CdA", d.cda_m2, 0.05, 3.0).unit("m2").help("Drag area; overridden by a connected aero result"))
         .param(ParamSpec::float("cla_m2", "ClA (downforce +)", d.cla_m2, -1.0, 6.0).unit("m2").help("Downforce area, positive = downforce; overridden by a connected aero result"))
         .param(ParamSpec::float("cda_offset_m2", "CdA calibration offset", d.cda_offset_m2, -0.5, 0.5).unit("m2").help("Additive correction from a road test; the simulated aero numbers are never rewritten"))

@@ -210,7 +210,7 @@ impl Default for SkyOpts {
             spread: 4,
             conserve: true,
             offset_h: -0.5,
-            alg: SunAlg::Low,
+            alg: SunAlg::default(),
             hoy_start: 0,
             hoy_end: usize::MAX,
             model: "isotropic".into(),
@@ -330,7 +330,7 @@ impl NodeOp for SkyMatrixNode {
             .output(PortSpec::new("patches", DataKind::Geometry))
             .output(PortSpec::new("report", DataKind::Report))
             .param(ParamSpec::choice("density_mf", "Patch density", "1", &["1", "2", "4"]).help("Subdivision factor: 145, 577 or 2305 sky patches."))
-            .param(ParamSpec::float("ground_reflectance", "Ground reflectance", 0.2, 0.0, 1.0))
+            .param(ParamSpec::float("ground_reflectance", "Ground reflectance", 0.2, 0.0, 1.0).help("Reflectance of the ground, 0 to 1. It sets the radiation reflected onto the surface from below."))
             .param(
                 ParamSpec::choice("sky_model", "Sky model", "isotropic", &["isotropic", "perez"])
                     .help("Radiance distribution over the sky dome."),
@@ -338,7 +338,7 @@ impl NodeOp for SkyMatrixNode {
             .param(ParamSpec::float("north_angle_deg", "North angle", 0.0, -360.0, 360.0).unit("deg").help("Counter-clockwise angle from north to +Y of the model."))
             .param(ParamSpec::int("sun_spread", "Sun spread", 4, 1, 8).help("Number of nearest patches the sun beam is spread over."))
             .param(ParamSpec::bool("conserve_horizontal", "Conserve horizontal", true).help("Rescale the spread beam so its horizontal component is exact."))
-            .param(ParamSpec::choice("algorithm", "Sun algorithm", "noaa_low", &["noaa_low", "noaa_meeus"]))
+            .param(ParamSpec::choice("algorithm", "Sun algorithm", "noaa_meeus", &["noaa_low", "noaa_meeus"]).help("noaa_meeus is accurate to about 0.01 deg; noaa_low is a faster fit, off by up to about 0.5 deg near the equinoxes."))
             .param(ParamSpec::float("sun_time_offset_h", "Sun time offset", -0.5, -1.0, 1.0).unit("h").help("Offset from the end of each weather hour at which the sun is evaluated."))
             .param(ParamSpec::int("hoy_start", "First hour of year", 0, 0, 8783).help("Zero-based hour of year."))
             .param(ParamSpec::int("hoy_end", "Last hour of year", 8783, 0, 8783).help("Zero-based hour of year, inclusive."))

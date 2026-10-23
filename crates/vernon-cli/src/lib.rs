@@ -80,21 +80,23 @@ pub fn cook_graph(
             .ok_or_else(|| anyhow!("no node named '{name}'"))?],
         None => graph.nodes.keys().copied().collect(),
     };
-    let mut out = Vec::with_capacity(ids.len());
-    for id in ids {
-        let node = &graph.nodes[&id];
-        let (name, type_id) = (node.name.clone(), node.type_id.clone());
-        let stage = reg.info(&type_id).map(|i| i.stage);
-        let result = graph.cook(reg, id).map_err(|e| e.to_string());
-        out.push(NodeOutcome {
-            id,
-            name,
-            type_id,
-            stage,
-            result,
-        });
-    }
-    Ok(out)
+    // One pass: every upstream node is worked out once, however many
+    // nodes downstream of it are cooked.
+    let results = graph.cook_many(reg, &ids, None, &mut |_| {});
+    Ok(results
+        .into_iter()
+        .map(|(id, result)| {
+            let node = &graph.nodes[&id];
+            let type_id = node.type_id.clone();
+            NodeOutcome {
+                id,
+                name: node.name.clone(),
+                stage: reg.info(&type_id).map(|i| i.stage),
+                type_id,
+                result: result.map_err(|e| e.to_string()),
+            }
+        })
+        .collect())
 }
 
 /// Pick the geometry to export: the named node, else the display node,
@@ -150,12 +152,7 @@ pub fn format_report(report: &Report) -> String {
 }
 
 fn fmt_num(v: f64) -> String {
-    if v != 0.0 && (v.abs() >= 1e6 || v.abs() < 1e-3) {
-        format!("{v:.4e}")
-    } else {
-        let t = format!("{v:.4}");
-        t.trim_end_matches('0').trim_end_matches('.').to_string()
-    }
+    vernon_core::units::fmt_value(v)
 }
 
 /// One-line description of a data value.
@@ -322,8 +319,10 @@ fn by_stage(reg: &Registry) -> Vec<(Stage, Vec<&NodeTypeInfo>)> {
         .collect()
 }
 
-/// Plain-text catalogue for `vernon-cli list`.
-pub fn list_text(reg: &Registry) -> String {
+/// Plain-text catalogue for `vernon-cli list`. The `emulates` lines name the
+/// public tool behaviours a node re-implements; they are documentation, so
+/// they are printed only with `docs` (`--docs`).
+pub fn list_text(reg: &Registry, docs: bool) -> String {
     let mut s = String::new();
     for (stage, infos) in by_stage(reg) {
         let _ = writeln!(s, "{} ({} nodes)", stage.label(), infos.len());
@@ -335,8 +334,10 @@ pub fn list_text(reg: &Registry) -> String {
                 .map(|t| format!("  [runs {t}]"))
                 .unwrap_or_default();
             let _ = writeln!(s, "  {:<32} {}{flag}{ext}", i.id, i.label);
-            for e in &i.emulates {
-                let _ = writeln!(s, "      emulates: {e}");
+            if docs {
+                for e in &i.emulates {
+                    let _ = writeln!(s, "      emulates: {e}");
+                }
             }
         }
     }
@@ -478,6 +479,32 @@ mod work_root_tests {
 }
 
 #[cfg(test)]
+mod pass_tests {
+    use super::*;
+
+    #[test]
+    fn cooking_every_node_works_each_one_out_once() {
+        // A ladder of merges, both inputs fed by the previous rung: the
+        // number of source paths doubles per rung.
+        let reg = registry();
+        let mut g = Graph::new();
+        let mut prev = g.add_node(&reg, "geo.box").unwrap();
+        for _ in 0..12 {
+            let m = g.add_node(&reg, "geo.merge").unwrap();
+            g.connect(prev, 0, m, 0).unwrap();
+            g.connect(prev, 0, m, 1).unwrap();
+            prev = m;
+        }
+        let outcomes = cook_graph(&mut g, &reg, None).unwrap();
+        assert_eq!(outcomes.len(), 13);
+        assert!(outcomes.iter().all(|o| o.result.is_ok()), "{}", format_outcomes(&outcomes));
+        assert_eq!(g.last_visits(), 13);
+        cook_graph(&mut g, &reg, None).unwrap();
+        assert_eq!(g.last_visits(), 13, "cached cooks still visit each node once");
+    }
+}
+
+#[cfg(test)]
 mod gate_tests {
     use super::*;
     use vernon_core::Metric;
@@ -514,7 +541,28 @@ mod gate_tests {
             text.contains("[expected] b / wheels = 0 count (limit >= 4, margin -4 count): a panel has no wheels"),
             "{text}"
         );
-        assert!(text.contains("[FAIL] c / area = 2.5 m2 (limit <= 2, margin -0.5 m2)"), "{text}");
+        assert!(text.contains("[FAIL] c / area = 2.5 m² (limit <= 2, margin -0.5 m²)"), "{text}");
         assert!(text.contains("[FAIL] c / prep: error: broken"), "{text}");
+    }
+}
+
+#[cfg(test)]
+mod format_tests {
+    use super::*;
+    use vernon_core::Metric;
+
+    #[test]
+    fn units_are_canonical_and_negative_zero_prints_as_zero() {
+        let mut r = Report::new("t");
+        r.metric("fail_area_pct", Metric::new(-0.0, "%"));
+        r.metric("surface_temp", Metric::new(-0.0, "deg C"));
+        r.metric("area", Metric::new(3.0, "mm2"));
+        r.metric("flag", Metric::new(1.0, "flag"));
+        let text = format_report(&r);
+        assert!(text.contains("fail_area_pct = 0 %"), "{text}");
+        assert!(text.contains("surface_temp = 0 °C"), "{text}");
+        assert!(text.contains("area = 3 mm²"), "{text}");
+        assert!(!text.contains("-0"), "{text}");
+        assert!(text.contains("flag = 1 \n"), "{text:?}");
     }
 }

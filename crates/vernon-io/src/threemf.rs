@@ -492,17 +492,20 @@ fn num(s: &mut String, v: f64) {
     }
 }
 
-/// UTC time as an ISO 8601 string. Honours `SOURCE_DATE_EPOCH` for
-/// reproducible output.
-fn timestamp() -> String {
-    let secs = std::env::var("SOURCE_DATE_EPOCH")
-        .ok()
-        .and_then(|s| s.trim().parse::<i64>().ok())
-        .unwrap_or_else(|| {
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_or(0, |d| d.as_secs() as i64)
-        });
+/// UTC time as an ISO 8601 string: `fixed` seconds when given, else
+/// `SOURCE_DATE_EPOCH`, else the current time. A fixed date makes the
+/// written package reproducible.
+fn timestamp(fixed: Option<i64>) -> String {
+    let secs = fixed.unwrap_or_else(|| {
+        std::env::var("SOURCE_DATE_EPOCH")
+            .ok()
+            .and_then(|s| s.trim().parse::<i64>().ok())
+            .unwrap_or_else(|| {
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |d| d.as_secs() as i64)
+            })
+    });
     let days = secs.div_euclid(86_400);
     let rem = secs.rem_euclid(86_400);
     // Civil date from days since 1970-01-01 (proleptic Gregorian).
@@ -636,7 +639,7 @@ pub(crate) fn write(geo: &Geometry, opts: &WriteOptions) -> IoResult<Vec<u8>> {
     let _ = writeln!(
         xml,
         " <metadata name=\"CreationDate\">{}</metadata>",
-        timestamp()
+        timestamp(opts.creation_date)
     );
     xml.push_str(" <resources>\n");
     for (n, (part, shell)) in shells.iter().enumerate() {
@@ -801,7 +804,7 @@ mod tests {
         let g = Geometry::make_box(DVec3::splat(25.4));
         let opts = WriteOptions {
             unit: FileUnit::Inch,
-            ascii: false,
+            ..Default::default()
         };
         let bytes = write_bytes(Format::ThreeMf, &g, &opts).unwrap();
         let zip = Archive::open(&bytes, "t", Limits::default()).unwrap();
@@ -1066,9 +1069,25 @@ mod tests {
 
     #[test]
     fn timestamps_follow_source_date_epoch_format() {
-        let t = timestamp();
+        let t = timestamp(None);
         assert_eq!(t.len(), 20);
         assert!(t.ends_with('Z') && t.as_bytes()[10] == b'T');
+        assert_eq!(timestamp(Some(0)), "1970-01-01T00:00:00Z");
+        assert_eq!(timestamp(Some(86_400 + 3_661)), "1970-01-02T01:01:01Z");
+    }
+
+    #[test]
+    fn a_fixed_creation_date_makes_packages_reproducible() {
+        let g = Geometry::make_box(DVec3::splat(10.0));
+        let opts = WriteOptions { creation_date: Some(0), ..Default::default() };
+        let a = write_bytes(Format::ThreeMf, &g, &opts).unwrap();
+        // The wall clock moves on between the two writes.
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        let b = write_bytes(Format::ThreeMf, &g, &opts).unwrap();
+        assert_eq!(a, b);
+        let zip = Archive::open(&a, "t", Limits::default()).unwrap();
+        let xml = String::from_utf8(zip.read(ROOT_PART).unwrap().unwrap()).unwrap();
+        assert!(xml.contains(">1970-01-01T00:00:00Z<"), "{xml}");
     }
 
     #[test]

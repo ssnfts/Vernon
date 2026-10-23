@@ -1,5 +1,6 @@
-//! Time slider, track bar and the status bar (listener, prompt, selection
-//! count, cursor X/Y/Z, grid size, playback and navigation buttons).
+//! Time slider, track bar, the status bar (listener, prompt, selection
+//! count, X/Y/Z cursor readout or transform type-in, grid size, playback and
+//! navigation buttons) and the F12 Transform Type-In dialog.
 
 use eframe::egui::{self, pos2, vec2, Align2, Color32, FontId, Key, Rect, RichText, Sense, Stroke, StrokeKind};
 
@@ -8,6 +9,7 @@ use super::VernonApp;
 use crate::hotkeys::Action;
 use crate::study::SampleState;
 use crate::theme;
+use crate::typein::{readout, Channel, Mode};
 use crate::viewport::grid;
 
 fn frame_x(app: &VernonApp, rect: Rect, f: i64) -> f32 {
@@ -130,6 +132,96 @@ pub fn track_bar(app: &mut VernonApp, ctx: &egui::Context) {
         });
 }
 
+/// X, Y and Z fields: editable transform values (spec 3.11) when a
+/// transform tool is active and something is selected, else the cursor
+/// readout (greyed when the pointer is outside the viewports).
+fn typein_fields(app: &mut VernonApp, ui: &mut egui::Ui, mode: Mode) {
+    let axes = [("X", theme::AXIS_X), ("Y", theme::AXIS_Y), ("Z", theme::AXIS_Z)];
+    match (app.typein_channel(), app.st.primary_xform()) {
+        (Some(ch), Some(x)) => {
+            let vals = readout(ch, &x, mode);
+            let speed = match ch {
+                Channel::Translate => (app.vp.grid_readout * 0.1).max(0.01),
+                Channel::Rotate => 0.5,
+                Channel::Scale => 0.5,
+            };
+            for (axis, (name, c)) in axes.into_iter().enumerate() {
+                ui.label(RichText::new(name).strong().color(c));
+                let mut v = vals[axis];
+                let r = ui
+                    .add(
+                        egui::DragValue::new(&mut v)
+                            .speed(speed)
+                            .max_decimals(3)
+                            .update_while_editing(false)
+                            .min_decimals(if ch == Channel::Translate { 2 } else { 1 }),
+                    )
+                    .on_hover_text(format!("{name} {} ({}); Enter applies", ch_label(ch), ch.unit()));
+                if r.changed() && v != vals[axis] {
+                    if let Err(e) = app.st.type_in(ch, mode, axis, v, app.now) {
+                        app.st.error_text(e);
+                    }
+                }
+            }
+        }
+        _ => {
+            let enabled = app.vp.cursor_world.is_some();
+            let p = app.vp.cursor_world.unwrap_or_default();
+            let col = if enabled { theme::TEXT } else { theme::DISABLED };
+            for (axis, (name, c)) in axes.into_iter().enumerate() {
+                ui.label(RichText::new(name).strong().color(c));
+                ui.label(RichText::new(format!("{:>9.2}", p[axis])).monospace().color(col))
+                    .on_hover_text("Cursor position. Pick Move, Rotate or Scale with an object selected to type a transform.");
+            }
+        }
+    }
+}
+
+fn ch_label(ch: Channel) -> &'static str {
+    match ch {
+        Channel::Translate => "position",
+        Channel::Rotate => "rotation",
+        Channel::Scale => "scale",
+    }
+}
+
+/// F12 Transform Type-In: the Absolute and Offset fields side by side.
+pub fn typein_window(app: &mut VernonApp, ctx: &egui::Context) {
+    if !app.show.typein {
+        return;
+    }
+    let mut open = true;
+    let title = match app.typein_channel() {
+        Some(ch) => format!("{} Transform Type-In", match ch {
+            Channel::Translate => "Move",
+            Channel::Rotate => "Rotate",
+            Channel::Scale => "Scale",
+        }),
+        None => "Transform Type-In".to_string(),
+    };
+    egui::Window::new(title)
+        .id(egui::Id::new("typein_window"))
+        .open(&mut open)
+        .resizable(false)
+        .collapsible(false)
+        .show(ctx, |ui| {
+            let Some(ch) = app.typein_channel() else {
+                ui.label(RichText::new("Pick Move, Rotate or Scale (W, E, R).").color(theme::TEXT_DIM));
+                return;
+            };
+            if app.st.primary_xform().is_none() {
+                ui.label(RichText::new("Nothing selected.").color(theme::TEXT_DIM));
+            }
+            for (mode, label) in [(Mode::Absolute, "Absolute"), (Mode::Offset, "Offset")] {
+                ui.label(RichText::new(format!("{label} ({})", ch.unit())).small().color(theme::TEXT_DIM));
+                ui.horizontal(|ui| typein_fields(app, ui, mode));
+            }
+        });
+    if !open {
+        app.show.typein = false;
+    }
+}
+
 pub fn status_bar(app: &mut VernonApp, ctx: &egui::Context) {
     egui::TopBottomPanel::bottom("status_bar")
         .exact_height(50.0)
@@ -156,7 +248,7 @@ pub fn status_bar(app: &mut VernonApp, ctx: &egui::Context) {
                         }
                     }
                     let (text, col) = match app.st.log.last() {
-                        Some(l) if l.error => (l.text.as_str(), theme::FAIL),
+                        Some(l) if l.error => (l.text.as_str(), theme::FAIL_TEXT),
                         Some(l) => (l.text.as_str(), theme::TEXT_DIM),
                         None => ("", theme::TEXT_DIM),
                     };
@@ -201,17 +293,21 @@ pub fn status_bar(app: &mut VernonApp, ctx: &egui::Context) {
                     }
                 });
                 ui.separator();
-                // Cursor coordinates and grid.
+                // Coordinates: the transform type-in with a transform tool
+                // and a selection (Absolute / Offset toggle), else the
+                // cursor on the construction plane.
                 ui.vertical(|ui| {
-                    ui.set_width(250.0);
-                    let enabled = app.vp.cursor_world.is_some();
-                    let p = app.vp.cursor_world.unwrap_or_default();
-                    let col = if enabled { theme::TEXT } else { theme::DISABLED };
+                    ui.set_width(280.0);
                     ui.horizontal(|ui| {
-                        for (axis, v, c) in [("X", p.x, theme::AXIS_X), ("Y", p.y, theme::AXIS_Y), ("Z", p.z, theme::AXIS_Z)] {
-                            ui.label(RichText::new(axis).strong().color(c));
-                            ui.label(RichText::new(format!("{v:>9.2}")).monospace().color(col));
+                        ui.spacing_mut().item_spacing.x = 3.0;
+                        let offset = app.typein_mode == Mode::Offset;
+                        let tip = "Type-in mode. Absolute (off): typed values replace the transform. \
+                                   Offset (on): typed values are added and the fields return to 0. F12 opens the dialog.";
+                        if ui.selectable_label(offset, if offset { "Off" } else { "Abs" }).on_hover_text(tip).clicked() {
+                            app.typein_mode = if offset { Mode::Absolute } else { Mode::Offset };
                         }
+                        let mode = app.typein_mode;
+                        typein_fields(app, ui, mode);
                     });
                     ui.label(
                         RichText::new(format!("Grid = {}", grid::format_spacing(app.vp.grid_readout)))

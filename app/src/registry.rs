@@ -19,19 +19,10 @@ pub fn build_registry() -> Registry {
 /// The body-kit example graph, shipped as `Pipeline > Load Demo Pipeline`.
 pub const DEMO_PIPELINE: &str = include_str!("../../examples/bodykit_pipeline.vrn");
 
-/// Vendor names that must never reach a user-visible string (CLEAN_ROOM.md).
+/// The shared vendor-name guard (CLEAN_ROOM.md): the one list lives in
+/// `vernon_core::clean_room`.
 #[cfg(test)]
-pub const PROTECTED_NAMES: &[&str] = &[
-    "Rhino", "Fusion", "Autodesk", "3ds Max", "3dsMax", "QUICKSURFACE", "Quicksurface", "Geomagic", "ZEISS", "Zeiss",
-    "AirShaper", "SimScale", "Ansys", "OptimumLap", "Plasticity", "Polycam", "Ladybug", "CloudCompare", "Houdini",
-    "SideFX", "ViewCube", "Slate", "MAXScript",
-];
-
-/// Returns the first protected name found in `text`, if any.
-#[cfg(test)]
-pub fn find_protected(text: &str) -> Option<&'static str> {
-    PROTECTED_NAMES.iter().copied().find(|n| text.contains(n))
-}
+pub use vernon_core::clean_room::find_protected;
 
 #[cfg(test)]
 mod tests {
@@ -56,15 +47,8 @@ mod tests {
     fn no_vendor_names_in_user_visible_node_strings() {
         let reg = build_registry();
         for info in reg.types() {
-            let mut texts = vec![info.label.clone(), info.help.clone(), info.stage.label().to_string()];
-            for p in &info.params {
-                texts.push(p.label.clone());
-                texts.push(p.help.clone());
-                texts.extend(p.unit.clone());
-            }
-            for port in info.inputs.iter().chain(&info.outputs) {
-                texts.push(port.name.clone());
-            }
+            let mut texts = info.visible_strings();
+            texts.push(info.stage.label().to_string());
             for t in texts {
                 assert_eq!(find_protected(&t), None, "{}: '{t}'", info.id);
             }

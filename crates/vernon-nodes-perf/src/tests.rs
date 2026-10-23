@@ -434,7 +434,9 @@ fn golden_stadium_base_case() {
     let tr = stadium(1.0);
     close(tr.length(), 1051.33, 0.01, "length");
     let res = lapsim::solve(&ref_car(), RHO, &tr, &LapOptions::default()).unwrap();
-    close(res.lap_time_s, 35.896, 0.05, "base lap");
+    // converged value of the second-order solver (35.9067 at ds <= 0.5 m); an independent
+    // midpoint-speed forward/backward solver gives 35.906 at ds = 0.05 m
+    close(res.lap_time_s, 35.907, 0.005, "base lap");
     close(res.v_max() * 3.6, 163.56, 0.5, "v_max");
     close(res.v_min() * 3.6, 71.55, 0.5, "v_min");
     // speed trace: node i is s = i m from the start of straight 1
@@ -455,42 +457,43 @@ fn golden_stadium_variants() {
     let tr = stadium(1.0);
     let base = ref_car();
     let cases: Vec<(&str, Vehicle, f64, f64)> = vec![
-        ("rho 1.225", base.clone(), 1.225, 35.922),
-        ("ClA 0", Vehicle { cla_m2: 0.0, ..base.clone() }, RHO, 35.992),
-        ("ClA 1", Vehicle { cla_m2: 1.0, ..base.clone() }, RHO, 35.801),
-        ("CdA 0.69", Vehicle { cda_m2: 0.69, ..base.clone() }, RHO, 35.923),
-        ("CdA 0.59", Vehicle { cda_m2: 0.59, ..base.clone() }, RHO, 35.870),
-        ("no aero", Vehicle { cda_m2: 0.0, cla_m2: 0.0, ..base.clone() }, RHO, 35.672),
-        ("mu 1.2", Vehicle { mu_x: 1.2, mu_y: 1.2, ..base.clone() }, RHO, 33.959),
-        ("mass 1500", Vehicle { mass_kg: 1500.0, ..base.clone() }, RHO, 36.213),
-        ("rot inertia 0.05", Vehicle { rot_inertia_frac: 0.05, ..base.clone() }, RHO, 36.173),
-        ("brake cap 0.8 g", Vehicle { brake_max_g: 0.8, ..base.clone() }, RHO, 36.252),
+        ("rho 1.225", base.clone(), 1.225, 35.932),
+        ("ClA 0", Vehicle { cla_m2: 0.0, ..base.clone() }, RHO, 36.003),
+        ("ClA 1", Vehicle { cla_m2: 1.0, ..base.clone() }, RHO, 35.811),
+        ("CdA 0.69", Vehicle { cda_m2: 0.69, ..base.clone() }, RHO, 35.933),
+        ("CdA 0.59", Vehicle { cda_m2: 0.59, ..base.clone() }, RHO, 35.881),
+        ("no aero", Vehicle { cda_m2: 0.0, cla_m2: 0.0, ..base.clone() }, RHO, 35.683),
+        ("mu 1.2", Vehicle { mu_x: 1.2, mu_y: 1.2, ..base.clone() }, RHO, 33.967),
+        ("mass 1500", Vehicle { mass_kg: 1500.0, ..base.clone() }, RHO, 36.223),
+        ("rot inertia 0.05", Vehicle { rot_inertia_frac: 0.05, ..base.clone() }, RHO, 36.183),
+        ("brake cap 0.8 g", Vehicle { brake_max_g: 0.8, ..base.clone() }, RHO, 36.262),
     ];
     for (name, veh, rho, want) in cases {
         let got = lap(&veh, rho, &tr);
-        assert!((got - want).abs() <= 0.05_f64.max(0.0015 * want), "{name}: {got} vs {want}");
+        // converged values of the second-order solver, ds <= 0.5 m
+        assert!((got - want).abs() <= 0.01, "{name}: {got} vs {want}");
     }
 }
 
 #[test]
 fn golden_stadium_discretisation() {
-    for (ds, want) in [(0.5, 35.901), (2.0, 35.893), (5.0, 35.876)] {
+    for (ds, want) in [(0.5, 35.907), (2.0, 35.909), (5.0, 35.908)] {
         let tr = stadium(ds);
         let o = LapOptions { ds_max_m: 5.0, ..LapOptions::default() };
         let t = lapsim::lap_time(&ref_car(), RHO, &tr, &o).unwrap();
-        assert!(rel(t, 35.896) < 0.001, "ds {ds}: {t}");
-        assert!((t - want).abs() < 0.03, "ds {ds}: {t} vs {want}");
+        assert!(rel(t, 35.907) < 0.0003, "ds {ds}: {t}");
+        assert!((t - want).abs() < 0.01, "ds {ds}: {t} vs {want}");
     }
     // a coarse track is subdivided to the largest step
     let coarse = Track::from_segments(&parse_segment_text("S400, L180deg@40, S400, L180deg@40").unwrap(), true, 20.0).unwrap();
     let t = lapsim::lap_time(&ref_car(), RHO, &coarse, &LapOptions { ds_max_m: 1.0, ..LapOptions::default() }).unwrap();
-    assert!(rel(t, 35.896) < 0.002, "{t}");
+    assert!(rel(t, 35.907) < 0.0005, "{t}");
 }
 
 #[test]
 fn golden_density_and_power() {
     let tr = stadium(1.0);
-    close(lap(&ref_car(), RHO, &tr), 35.896, 0.05, "fixed power at 1.11");
+    close(lap(&ref_car(), RHO, &tr), 35.907, 0.01, "fixed power at 1.11");
     let na = Vehicle { power_density_exponent: 1.0, rho_ref: 1.225, ..ref_car() };
     let t = lap(&na, RHO, &tr);
     close(t, 36.375, 0.06, "power scaled with density");
@@ -788,7 +791,7 @@ fn lap_sim_node_end_to_end() {
     let trk = cook("perf.track_from_segments", vec![None], &[]).unwrap();
     let out = cook("perf.lap_sim", vec![Some(veh[0].clone()), Some(trk[0].clone()), Some(env)], &[]).unwrap();
     let rep = out[2].as_report().unwrap();
-    close(rep.metrics["lap_time"].value, 35.896, 0.05, "node lap time");
+    close(rep.metrics["lap_time"].value, 35.907, 0.01, "node lap time");
     assert!(rep.passes());
     assert_eq!(rep.metrics["envelope_violations"].value, 0.0);
     let lap_json = out[0].as_json().unwrap();
@@ -820,7 +823,7 @@ fn lap_delta_matches_the_individual_laps() {
     )
     .unwrap();
     let rep = out[1].as_report().unwrap();
-    close(rep.metrics["delta_lap_time"].value, 35.923 - 35.896, 0.01, "delta");
+    close(rep.metrics["delta_lap_time"].value, 35.933 - 35.907, 0.01, "delta");
     close(rep.metrics["delta_cda"].value, 0.05, 1e-12, "delta CdA");
     let rows = out[0].as_json().unwrap()["rows"].as_array().unwrap().clone();
     let total: f64 = rows.iter().map(|r| r[6].as_f64().unwrap()).sum();
@@ -1321,3 +1324,36 @@ fn bad_inputs_are_clean_errors() {
     assert_eq!(SweepParam::parse("mu").unwrap().name(), "mu");
 }
 
+
+#[test]
+fn coast_log_humidity_in_percent_is_converted() {
+    let mk = |rh: f64| {
+        let mut cols: std::collections::HashMap<String, Vec<f64>> = std::collections::HashMap::new();
+        cols.insert("t".into(), vec![0.0, 1.0, 2.0]);
+        cols.insert("v_ms".into(), vec![30.0, 29.0, 28.0]);
+        cols.insert("temp_c".into(), vec![30.0; 3]);
+        cols.insert("p_pa".into(), vec![101_325.0; 3]);
+        cols.insert("rh".into(), vec![rh; 3]);
+        cols
+    };
+    let pct = coast::runs_from_columns(&mk(40.0)).unwrap();
+    let frac = coast::runs_from_columns(&mk(0.4)).unwrap();
+    assert!((pct[0].rh - 0.4).abs() < 1e-12, "{}", pct[0].rh);
+    assert!((frac[0].rh - 0.4).abs() < 1e-12);
+    assert!(coast::runs_from_columns(&mk(140.0)).is_err());
+    // 30 C, 40 % RH: 1.157 kg/m3, not the 1.146 of a clamped 100 % RH
+    let rho = physics::air_density(30.0, 101_325.0, pct[0].rh, physics::R_DRY);
+    assert!((rho - 1.157).abs() < 0.001, "{rho}");
+}
+
+#[test]
+fn env_reads_the_airflow_air_state() {
+    // cfd.air_state hands over t_c and rh_pct; env.v1 writes the shared keys plus T_c
+    let e = Env::from_json(&json!({"t_c": 45.0, "p_pa": 101_325.0, "rh_pct": 30.0, "rho": 1.0976})).unwrap();
+    assert!((e.t_c - 45.0).abs() < 1e-12 && (e.rh - 0.30).abs() < 1e-12);
+    let j = Env::from_state(45.0, 101_325.0, 0.30, physics::R_DRY).to_json();
+    assert_eq!(j["T_c"].as_f64(), Some(45.0));
+    assert_eq!(j["t_c"].as_f64(), Some(45.0));
+    assert!((j["rh_pct"].as_f64().unwrap() - 30.0).abs() < 1e-9);
+    assert_eq!(Env::from_json(&j).unwrap(), Env::from_state(45.0, 101_325.0, 0.30, physics::R_DRY));
+}

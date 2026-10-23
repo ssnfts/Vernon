@@ -384,30 +384,44 @@ fn dubai() -> Site {
 
 #[test]
 fn sun_position_matches_the_dubai_goldens() {
-    let cases = [
+    // Independent goldens: the Meeus series and the Astronomical Almanac
+    // low-precision formulas agree on these to about 0.003 deg (values rounded
+    // to 0.01 deg). The default tier must reproduce them tightly.
+    let independent = [
+        (2026, 3, 20, 12.0, 63.89, Some(164.84)),
+        (2026, 8, 1, 15.0, 53.43, Some(266.39)),
+        (2026, 12, 21, 12.0, 41.19, Some(174.85)),
+        (2026, 6, 21, 7.0, 18.13, Some(72.03)),
+        (2026, 6, 21, 12.0, 84.96, None),
+    ];
+    assert_eq!(SunAlg::default(), SunAlg::Meeus);
+    for (y, mo, d, h, alt, az) in independent {
+        let sp = sun_position_alg(SunAlg::default(), dubai(), y, mo, d, h);
+        assert!((sp.altitude_deg - alt).abs() <= 0.02, "{mo}-{d} {h}: alt {}", sp.altitude_deg);
+        if let Some(a) = az {
+            assert!((sp.azimuth_deg - a).abs() <= 0.05, "{mo}-{d} {h}: az {}", sp.azimuth_deg);
+        }
+        // the day-of-year entry point uses the same default series
+        let by_doy = sun_position(dubai(), y, day_of_year(y, mo, d), h);
+        assert!((by_doy.altitude_deg - sp.altitude_deg).abs() < 1e-9);
+    }
+    // Low tier: self-consistency goldens only (its own earlier output). It is
+    // off the independent values by up to about 0.5 deg near the equinoxes.
+    let low_self = [
         (2026, 6, 21, 12.0, 85.0, 0.15, None),
         (2026, 12, 21, 12.0, 41.21, 0.05, Some((174.89, 0.1))),
         (2026, 6, 21, 7.0, 18.23, 0.15, Some((72.06, 0.1))),
-        (2026, 8, 1, 15.0, 53.54, 0.15, Some((266.77, 0.5))),
-        (2026, 3, 20, 12.0, 63.51, 0.25, Some((164.67, 0.3))),
+        (2026, 8, 1, 15.0, 53.54, 0.15, Some((266.77, 0.1))),
+        (2026, 3, 20, 12.0, 63.51, 0.05, Some((164.67, 0.1))),
     ];
-    for (y, mo, d, h, alt, talt, az) in cases {
-        for alg in [SunAlg::Low, SunAlg::Meeus] {
-            let sp = sun_position_alg(alg, dubai(), y, mo, d, h);
-            assert!(
-                (sp.altitude_deg - alt).abs()
-                    <= talt + if alg == SunAlg::Meeus { 0.15 } else { 0.0 },
-                "{alg:?} {mo}-{d} {h}: alt {}",
-                sp.altitude_deg
-            );
-            if let Some((a, ta)) = az {
-                assert!(
-                    (sp.azimuth_deg - a).abs() <= ta + if alg == SunAlg::Meeus { 0.3 } else { 0.0 },
-                    "{alg:?} {mo}-{d} {h}: az {}",
-                    sp.azimuth_deg
-                );
-            }
+    for (y, mo, d, h, alt, talt, az) in low_self {
+        let sp = sun_position_alg(SunAlg::Low, dubai(), y, mo, d, h);
+        assert!((sp.altitude_deg - alt).abs() <= talt, "low {mo}-{d} {h}: alt {}", sp.altitude_deg);
+        if let Some((a, ta)) = az {
+            assert!((sp.azimuth_deg - a).abs() <= ta, "low {mo}-{d} {h}: az {}", sp.azimuth_deg);
         }
+        let m = sun_position_alg(SunAlg::Meeus, dubai(), y, mo, d, h);
+        assert!((sp.altitude_deg - m.altitude_deg).abs() < 0.5);
     }
     // Azimuth is finite at the equinox and near the zenith.
     let sp = sun_position_alg(
@@ -476,12 +490,13 @@ fn sun_position_node_reports_the_day() {
     )
     .unwrap();
     let r = rep(&out[1]);
-    assert!((m(&r, "altitude") - 41.21).abs() < 0.05);
-    assert!((m(&r, "azimuth") - 174.89).abs() < 0.1);
+    // default series (Meeus): independent goldens
+    assert!((m(&r, "altitude") - 41.19).abs() < 0.02);
+    assert!((m(&r, "azimuth") - 174.85).abs() < 0.05);
     assert!((m(&r, "day_length") - 10.57).abs() < 0.05);
     let t = SunTable::from_json(out[0].as_json().unwrap()).unwrap();
     assert_eq!(t.samples.len(), 1);
-    assert!((t.samples[0].vec[2] - (41.21f64).to_radians().sin()).abs() < 1e-3);
+    assert!((t.samples[0].vec[2] - (41.19f64).to_radians().sin()).abs() < 1e-3);
     // The spa option falls back with a placeholder warning.
     let out = cook("solar.sun_position", &[], &[("algorithm", s("spa"))]).unwrap();
     assert!(rep(&out[1])
@@ -1175,14 +1190,12 @@ fn balance_reproduces_the_report_table() {
                 "alpha {alpha} V {v} Ta45 rounds to {}",
                 ints[k].0
             );
-            if !(alpha == 0.30 && *v == 0.0) {
-                assert_eq!(
-                    c.round() as i32,
-                    ints[k].1,
-                    "alpha {alpha} V {v} Ta50 rounds to {}",
-                    ints[k].1
-                );
-            }
+            assert_eq!(
+                c.round() as i32,
+                ints[k].1,
+                "alpha {alpha} V {v} Ta50 rounds to {}",
+                ints[k].1
+            );
         }
     }
     // the default constants matter: Tsky = Ta - 15 and hc = 5.7 + 3.8 V (not Ta - 6 / 10.45 - v + 10 sqrt v)
@@ -1257,6 +1270,77 @@ fn verdict(temp: f64, material: &str, annealed: bool, warn: f64) -> (i64, Report
         geo(&out[0]).prim_attribs.ints("hdt_verdict").unwrap()[0],
         rep(&out[1]),
     )
+}
+
+#[test]
+fn hdt_report_shows_the_treatment_and_the_weathering_panel() {
+    // PAHT-CF: the limit depends on the treatment, and the report says which one was used
+    let (_, r) = verdict(104.7, "PAHT-CF", false, 0.0);
+    assert_eq!(m(&r, "annealed"), 0.0);
+    assert_eq!(m(&r, "hdt_as_printed_c"), 84.8);
+    assert_eq!(m(&r, "hdt_annealed_c"), 190.7);
+    assert_eq!(m(&r, "hdt_datasheet_c"), 194.0);
+    assert_eq!(m(&r, "treatment_matters"), 1.0);
+    let warn = |r: &Report, text: &str| r.notes.iter().any(|(sev, t)| *sev == vernon_core::Severity::Warning && t.contains(text));
+    assert!(warn(&r, "as-printed value 84.8 degC") && warn(&r, "depends on the treatment"), "{r:?}");
+    let (_, ra) = verdict(104.7, "PAHT-CF", true, 0.0);
+    assert_eq!(m(&ra, "annealed"), 1.0);
+    assert!(warn(&ra, "annealed value 190.7 degC"), "{ra:?}");
+    // a material with a single figure has no treatment to state
+    let (_, rp) = verdict(61.3, "PETG", false, 0.0);
+    assert!(!rp.metrics.contains_key("treatment_matters"));
+    // the weathering-panel reminder appears only above 70 degC
+    let j2527 = |r: &Report| r.notes.iter().any(|(_, t)| t.contains("J2527"));
+    assert!(j2527(&r) && !j2527(&rp));
+}
+
+#[test]
+fn uv_verdict_needs_a_coat_or_published_figures() {
+    let mut g = quad(DVec3::ZERO, DVec3::Z, 100.0, 100.0);
+    g.prim_attribs.set("irr_kwh_m2", AttribArray::Float(vec![2000.0]));
+    let uv = |material: &str, coated: bool| {
+        let out = cook(
+            "solar.uv_dose_proxy",
+            &[gd(g.clone())],
+            &[("material", s(material)), ("coated", b(coated))],
+        )
+        .unwrap();
+        rep(&out[1])
+    };
+    // the dose itself is unchanged: 4.5 % of 2000 kWh/m2
+    assert!((m(&uv("ASA", false), "max_uv_kwh_m2") - 90.0).abs() < 1e-9);
+    // ASA kept 97 % of its strength: it can stand uncoated
+    let r = uv("ASA", false);
+    assert!(r.passes());
+    assert_eq!(m(&r, "uv_retention_pct"), 97.0);
+    assert_eq!(m(&r, "uv_protection_ok"), 1.0);
+    // unpainted PC kept 70.8 % with a colour change of 33: fails; coated it passes
+    let r = uv("PC (unpainted)", false);
+    assert!(!r.passes());
+    assert_eq!((m(&r, "uv_retention_pct"), m(&r, "uv_delta_e")), (70.8, 33.0));
+    let r = uv("PC (unpainted)", true);
+    assert!(r.passes() && m(&r, "coated") == 1.0);
+    assert!(r.notes.iter().any(|(_, t)| t.contains("HALS")));
+    // a printable material with no UV figures cannot pass bare, only coated
+    for mat in ["PETG", "PAHT-CF", "PET-CF"] {
+        let r = uv(mat, false);
+        assert!(!r.passes() && !r.metrics.contains_key("uv_retention_pct"), "{mat}");
+        assert!(r.notes.iter().any(|(sev, t)| *sev == vernon_core::Severity::Error && t.contains("coating")), "{mat}");
+        assert!(uv(mat, true).passes(), "{mat}");
+    }
+    // the gate is a parameter: demanding 99 % fails ASA
+    let out = cook(
+        "solar.uv_dose_proxy",
+        &[gd(g.clone())],
+        &[("material", s("ASA")), ("min_retention_pct", f(99.0))],
+    )
+    .unwrap();
+    assert!(!rep(&out[1]).passes());
+    // the material table carries the figures for ASA only
+    let rows = builtin_materials();
+    let asa = rows.iter().find(|r| r.name == "ASA").unwrap();
+    assert_eq!(asa.uv_retention_pct, Some(97.0));
+    assert!(rows.iter().filter(|r| r.name != "ASA").all(|r| r.uv_retention_pct.is_none()));
 }
 
 #[test]
@@ -1571,6 +1655,41 @@ fn spherical_cap_flatten_is_conformal() {
     let r = rep(&out[2]);
     assert_eq!(m(&r, "flipped_tris"), 0.0);
     assert!(m(&r, "area_change_pct").abs() < 1e-8);
+    // The conformal map of a cap is a stereographic projection (length scale
+    // 1/cos^2(t/2) at polar angle t). Build that ideal pattern on the same mesh,
+    // rescale it to keep the area, and measure its strain the same way: the
+    // node's least-squares conformal map must agree within a percentage point.
+    {
+        use vernon_core::DVec2;
+        let mesh = geo(&out[0]);
+        let ideal: Vec<DVec2> = mesh
+            .points
+            .iter()
+            .map(|p| {
+                let t = (p.truncate().length()).atan2(p.z);
+                let ph = p.y.atan2(p.x);
+                DVec2::from_angle(ph) * (2.0 * (t / 2.0).tan() * 100.0)
+            })
+            .collect();
+        let (a3, a2) = mesh.triangles().iter().fold((0.0, 0.0), |(a3, a2), (_, t)| {
+            let p = [0, 1, 2].map(|k| mesh.points[t[k] as usize]);
+            let u = [0, 1, 2].map(|k| ideal[t[k] as usize]);
+            (a3 + (p[1] - p[0]).cross(p[2] - p[0]).length() * 0.5, a2 + 0.5 * (u[1] - u[0]).perp_dot(u[2] - u[0]))
+        });
+        let k = (a3 / a2).sqrt();
+        let ideal: Vec<DVec2> = ideal.iter().map(|u| *u * k).collect();
+        let want = crate::strain::compute_strain(&mesh, &ideal, &crate::strain::StrainOpts::default());
+        let want = want.stats;
+        assert!(want.area_change_pct.abs() < 1e-8 && want.flipped == 0);
+        // smooth theory for the rim: 1 / cos(t0 / 2) - 1 = 6.4 % for a 40 degree cap
+        assert!((want.max_length_change_pct - 6.4).abs() < 1.5, "{}", want.max_length_change_pct);
+        assert!(
+            (m(&r, "max_length_change_pct") - want.max_length_change_pct).abs() < 1.0,
+            "node {} vs stereographic {}",
+            m(&r, "max_length_change_pct"),
+            want.max_length_change_pct
+        );
+    }
     assert!(
         m(&r, "max_length_change_pct") > 0.1,
         "a sphere cannot flatten without strain"
@@ -1869,6 +1988,38 @@ fn map_back_is_exact_on_vertices_and_follows_the_surface() {
     out_line.add_prim(Prim::polyline(vec![j0, j1]));
     let back = cook("flatten.map_back", &[gd(pat), gd(mesh), gd(out_line)], &[]).unwrap();
     assert!(m(&rep(&back[1]), "outside_length_mm") > 100.0);
+}
+
+#[test]
+fn stretch_aware_ply_mode_reports_fibre_angle_and_weave_shear() {
+    let g = cap(100.0, 30.0, 6, 24);
+    // off by default: no ply attributes, no shear metric
+    let out = cook("flatten.stretch_aware", &[gd(g.clone())], &[]).unwrap();
+    assert!(geo(&out[1]).prim_attribs.floats("shear_deg").is_err());
+    assert!(!rep(&out[2]).metrics.contains_key("max_shear_deg"));
+    // a woven ply with its warp along X on a spherical cap shears (a sphere is not developable)
+    let set = [("fibre_dir", ParamValue::Vec3(DVec3::X))];
+    let out = cook("flatten.stretch_aware", &[gd(g.clone())], &set).unwrap();
+    let (mesh, pat, r) = (geo(&out[0]), geo(&out[1]), rep(&out[2]));
+    let shear = pat.prim_attribs.floats("shear_deg").unwrap();
+    let fibre = pat.prim_attribs.floats("fibre_deg").unwrap();
+    assert_eq!(shear.len(), pat.prims.len());
+    assert_eq!(mesh.prim_attribs.floats("fibre_deg").unwrap().len(), mesh.prims.len());
+    assert!(m(&r, "max_shear_deg") > 0.5 && m(&r, "max_shear_deg") < 40.0, "{}", m(&r, "max_shear_deg"));
+    assert!((m(&r, "max_shear_deg") - shear.iter().cloned().fold(0.0, f64::max)).abs() < 1e-12);
+    assert!(m(&r, "mean_shear_deg") <= m(&r, "max_shear_deg"));
+    assert!(fibre.iter().all(|a| a.is_finite() && a.abs() <= 180.0 + 1e-9));
+    assert!(r.passes());
+    // a tight limit fails the report and warns about wrinkling
+    let tight = [("fibre_dir", ParamValue::Vec3(DVec3::X)), ("shear_limit_deg", f(1.0))];
+    let out = cook("flatten.stretch_aware", &[gd(g)], &tight).unwrap();
+    let r = rep(&out[2]);
+    assert!(!r.passes());
+    assert!(r.notes.iter().any(|(sev, t)| *sev == vernon_core::Severity::Warning && t.contains("wrinkles")));
+    // a tube unrolls without shear whichever way the warp runs
+    let t = tube(100.0, 200.0, 64, 4);
+    let out = cook("flatten.stretch_aware", &[gd(t)], &[("fibre_dir", ParamValue::Vec3(DVec3::Z))]).unwrap();
+    assert!(m(&rep(&out[2]), "max_shear_deg") < 1.0, "{}", m(&rep(&out[2]), "max_shear_deg"));
 }
 
 #[test]

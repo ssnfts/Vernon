@@ -57,8 +57,19 @@ pub fn prepare(geo: &Geometry) -> (Geometry, PackageStats) {
     (mesh::merge_all(&parts), stats)
 }
 
-/// Write a package. With `strict`, open or non-manifold shells are refused.
+/// Creation date written into reproducible packages: the Unix epoch, the
+/// usual "no date" value, so equal inputs give equal bytes.
+pub const REPRODUCIBLE_DATE: i64 = 0;
+
+/// Write a package with a fixed creation date (identical bytes on every
+/// cook). With `strict`, open or non-manifold shells are refused.
 pub fn write_package(geo: &Geometry, path: &Path, unit: FileUnit, strict: bool) -> Result<PackageStats, String> {
+    write_package_dated(geo, path, unit, strict, Some(REPRODUCIBLE_DATE))
+}
+
+/// [`write_package`] with an explicit creation date in Unix seconds; `None`
+/// stamps the current time (or `SOURCE_DATE_EPOCH`).
+pub fn write_package_dated(geo: &Geometry, path: &Path, unit: FileUnit, strict: bool, creation_date: Option<i64>) -> Result<PackageStats, String> {
     let (clean, mut stats) = prepare(geo);
     if stats.parts == 0 {
         return Err("there are no closed faces to write".into());
@@ -69,7 +80,7 @@ pub fn write_package(geo: &Geometry, path: &Path, unit: FileUnit, strict: bool) 
             stats.open_edges, stats.non_manifold_edges
         ));
     }
-    vernon_io::write(path, &clean, &WriteOptions { unit, ascii: false }).map_err(|e| e.to_string())?;
+    vernon_io::write(path, &clean, &WriteOptions { unit, ascii: false, creation_date }).map_err(|e| e.to_string())?;
     stats.bytes = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
     let back = vernon_io::read(path, &ReadOptions::default()).map_err(|e| format!("the written package does not read back: {e}"))?;
     let v_back = mesh::signed_volume(&back);
@@ -87,6 +98,17 @@ mod tests {
         let d = std::env::temp_dir().join(format!("vernon-print-pkg-{name}-{}", std::process::id()));
         std::fs::create_dir_all(&d).unwrap();
         d
+    }
+
+    #[test]
+    fn packages_are_byte_identical_across_writes() {
+        let g = tri_box(DVec3::ZERO, DVec3::splat(10.0));
+        let d = dir("repro");
+        let (a, b) = (d.join("a.3mf"), d.join("b.3mf"));
+        write_package(&g, &a, FileUnit::Millimetre, true).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        write_package(&g, &b, FileUnit::Millimetre, true).unwrap();
+        assert_eq!(std::fs::read(&a).unwrap(), std::fs::read(&b).unwrap());
     }
 
     #[test]

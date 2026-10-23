@@ -12,7 +12,7 @@ use vernon_graph::{
 };
 
 use crate::lscm::{align_uv, arap, compact, lscm, plane_fit, ArapOpts, Compact};
-use crate::strain::{angle_defect_sum, compute_strain, StrainOpts, StrainResult};
+use crate::strain::{angle_defect_sum, compute_strain, ply_fields, StrainOpts, StrainResult};
 use crate::topo::{analyze, auto_cut, cut_along, seam_from_polylines, TopoInfo};
 use crate::util::*;
 
@@ -303,10 +303,10 @@ impl NodeOp for ConformalMapNode {
             .param(ParamSpec::bool("align_to_axes", "Align to axes", true).help("Rotate the pattern so its long axis lies along X and move it to the origin."))
             .param(ParamSpec::choice("outside", "Outside", "up", &["up", "down"]).help("Which face of the sheet shows in the pattern; down mirrors it."))
             .param(ParamSpec::bool("normalize_uv", "Normalise UV", false).help("Write the uv attribute scaled to a unit square. The pattern geometry stays in millimetres."))
-            .param(ParamSpec::float("deadband_percent", "Strain dead-band", 0.01, 0.0, 10.0).unit("%"))
+            .param(ParamSpec::float("deadband_percent", "Strain dead-band", 0.01, 0.0, 10.0).unit("%").help("Strains below this, in percent, do not count as stretched or compressed in the report."))
             .param(ParamSpec::float("max_strain_pct", "Strain limit", 5.0, 0.0, 100.0).unit("%").help("Pass limit on the worst length change in the report."))
             .param(ParamSpec::float("solver_tolerance", "Solver tolerance", 1.0e-10, 1.0e-14, 1.0e-3).help("Relative residual of the conjugate-gradient solve."))
-            .param(ParamSpec::int("max_iterations", "Max solver iterations", 20000, 10, 1_000_000))
+            .param(ParamSpec::int("max_iterations", "Max solver iterations", 20000, 10, 1_000_000).help("Most solver iterations. Reaching it without converging gives a warning."))
             .help("Flattens a panel to 2-D. The conformal method keeps angles and rescales to the 3-D area. Writes the uv attribute in millimetres, the flat pattern, and a report of the worst length change.")
             .emulates("Least-squares conformal map (Levy et al. 2002) as initial flattening of a stretch-aware squish")
             .spec(FLATTEN_SPEC)
@@ -456,13 +456,15 @@ impl NodeOp for StretchAwareNode {
             .param(ParamSpec::float("int_compress", "Interior compress factor", 1.0, 0.01, 1000.0).help("Higher means less compression of interior edges."))
             .param(ParamSpec::choice("material", "Material", "rigid", &["rigid", "floppy"]).help("Stiff sheet or pliable fabric."))
             .param(ParamSpec::bool("preserve_boundary", "Preserve boundary", false).help("Weight boundary edges heavily so their lengths change little."))
-            .param(ParamSpec::choice("outside", "Outside", "up", &["up", "down"]))
-            .param(ParamSpec::bool("auto_seam", "Automatic seams", true))
+            .param(ParamSpec::choice("outside", "Outside", "up", &["up", "down"]).help("Which side of the sheet faces outward. It sets the sign convention for stretch and compression."))
+            .param(ParamSpec::bool("auto_seam", "Automatic seams", true).help("Cut seams automatically when the surface cannot flatten as one piece."))
             .param(seam_param())
-            .param(ParamSpec::int("max_iterations", "Max iterations", 200, 1, 5000))
+            .param(ParamSpec::int("max_iterations", "Max iterations", 200, 1, 5000).help("Most relaxation iterations. Reaching it before the strain stops improving gives a warning."))
             .param(ParamSpec::float("tolerance", "Energy tolerance", 1.0e-6, 1.0e-12, 1.0e-1).help("Stop when the relative energy change falls below this."))
-            .param(ParamSpec::float("max_strain_pct", "Strain limit", 10.0, 0.0, 100.0).unit("%"))
-            .param(ParamSpec::float("deadband_percent", "Strain dead-band", 0.01, 0.0, 10.0).unit("%"))
+            .param(ParamSpec::float("max_strain_pct", "Strain limit", 10.0, 0.0, 100.0).unit("%").help("Largest acceptable length change, in percent. A pattern above it fails the report."))
+            .param(ParamSpec::float("deadband_percent", "Strain dead-band", 0.01, 0.0, 10.0).unit("%").help("Strains below this, in percent, do not count as stretched or compressed in the report."))
+            .param(ParamSpec::vec3("fibre_dir", "Ply fibre direction", DVec3::ZERO).help("Composite ply mode: warp direction of a woven ply on the 3-D surface, projected onto each face. The pattern then gets the attributes fibre_deg (warp angle in the flat pattern) and shear_deg (how far the weave's right angle has closed), and the report the worst shear. Zero = off."))
+            .param(ParamSpec::float("shear_limit_deg", "Weave shear limit", 40.0, 1.0, 89.0).unit("deg").help("Ply mode: shear beyond which a woven cloth wrinkles instead of draping (its locking angle). Cloth dependent; 40 degrees is a typical assumption to replace with the datasheet value. A worse shear fails the report."))
             .help("Flattens a doubly curved panel by minimising edge-length change from a conformal start, with optional bias towards stretching or compressing. Reports stretch and compression statistics and the worst length change.")
             .emulates("Stretch-aware surface flattening (squish) from published as-rigid-as-possible methods")
             .spec(FLATTEN_SPEC)
@@ -539,6 +541,32 @@ impl NodeOp for StretchAwareNode {
         let mut pat = pattern_of(&geo, &uv);
         set_uv(&mut pat, &uv, 1.0);
         write_strain(&mut pat, &geo, &res, p.float("max_strain_pct")?, "signed");
+        let fibre = p.vec3("fibre_dir")?;
+        if fibre.length_squared() > 0.0 {
+            let pf = ply_fields(&geo, &uv, fibre);
+            let limit = p.float("shear_limit_deg")?;
+            for g_out in [&mut out3, &mut pat] {
+                g_out.prim_attribs.set("fibre_deg", AttribArray::Float(pf.fibre_deg.clone()));
+                g_out.prim_attribs.set("shear_deg", AttribArray::Float(pf.shear_deg.clone()));
+            }
+            let areas = prim_areas(&geo);
+            let atot: f64 = areas.iter().sum::<f64>().max(1e-12);
+            let mean = pf.shear_deg.iter().zip(&areas).map(|(s, a)| s * a).sum::<f64>() / atot;
+            let worst = pf.shear_deg.iter().cloned().fold(0.0, f64::max);
+            r.metric("max_shear_deg", Metric::new(worst, "deg").with_limit(limit, true));
+            r.metric("mean_shear_deg", Metric::new(mean, "deg"));
+            r.metric("fibre_undefined_faces", Metric::new(pf.undefined as f64, "count"));
+            r.note(
+                Severity::Info,
+                "ply mode: fibre_deg is the warp angle in the pattern; cut the ply with the warp along that direction. Shear is the loss of the weave's right angle on the draped surface",
+            );
+            if worst > limit {
+                r.note(
+                    Severity::Warning,
+                    format!("the weave shears by up to {worst:.0} degrees, beyond the {limit:.0} degree limit: the cloth wrinkles there, so cut a dart or split the ply"),
+                );
+            }
+        }
         Ok(vec![
             Data::geometry(out3),
             Data::geometry(pat),
@@ -583,7 +611,7 @@ impl NodeOp for StrainReportNode {
             .param(ParamSpec::float("deadband_percent", "Dead-band", 0.01, 0.0, 10.0).unit("%").help("Length changes below this do not count as stretch or compression."))
             .param(ParamSpec::int("max_markers", "Markers", 10, 0, 100).help("Number of worst-strain markers."))
             .param(ParamSpec::float("limit_pct", "Limit", 5.0, 0.0, 100.0).unit("%").help("Pass limit on the worst length change."))
-            .param(ParamSpec::float("range_pct", "Colour range", 5.0, 0.01, 100.0).unit("%"))
+            .param(ParamSpec::float("range_pct", "Colour range", 5.0, 0.01, 100.0).unit("%").help("Strain that maps to full colour, in percent."))
             .help("Compares a flat pattern with its 3-D surface: area change, stretch and compression (average, worst, share of area), folded triangles and markers at the worst places.")
             .emulates("Surface flattening deformation report (stretch, compression, markers)")
             .spec(FLATTEN_SPEC)
@@ -638,7 +666,7 @@ impl NodeOp for UvOverlayNode {
             .output(PortSpec::new("report", DataKind::Report))
             .param(ParamSpec::choice("mode", "Show", "signed", &["signed", "stretch", "compress", "area"]).help("Signed worst length change, stretch only, compression only, or area change."))
             .param(ParamSpec::float("range_pct", "Colour range", 5.0, 0.01, 100.0).unit("%").help("Strain that maps to full colour."))
-            .param(ParamSpec::float("deadband_percent", "Dead-band", 0.01, 0.0, 10.0).unit("%"))
+            .param(ParamSpec::float("deadband_percent", "Dead-band", 0.01, 0.0, 10.0).unit("%").help("Strains below this, in percent, do not count as stretched or compressed in the report."))
             .help("Colours a 3-D mesh and its flat pattern by the stretch of its UV map: red where the sheet is stretched, blue where it is compressed, white where lengths are kept.")
             .emulates("UV stretch visualisation (checker and stretch overlays)")
             .spec(FLATTEN_SPEC)

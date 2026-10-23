@@ -228,6 +228,37 @@ Tolerances are Vernon pass criteria; "(ref)" means compare to a recorded run of 
 - F6 seam cut: closed cylinder (chi = 0) -> one seam -> disk (chi = 1) with perimeter = 2 * seam length + the original boundary; sphere -> chi = 1 after one path.
 - F7 guard: a developable cone patch flattens with max strain < 0.1 %; flag "developable, use unroll" if the Gaussian-curvature integral (angle defect) over interior vertices is < 1e-3 rad.
 
+## 5a. Node map: conformal flatten and the stretch overlay
+
+**`flatten.conformal_map`** is the least-squares conformal map of Levy et al.: the conformal condition on each
+triangle is written as a linear least-squares problem in the 2-D coordinates, two vertices are pinned to fix the
+similarity, and the sparse system is solved iteratively. A closed or tube-like mesh is cut along a seam first
+(`seam_paths` in the report). The pattern is then scaled uniformly so its area equals the 3-D area (`area_change_pct`
+is about zero) and written as the `uv` attribute in millimetres, the flat pattern, and a report of flipped triangles
+and the worst length change against a limit. A developable surface (a flat sheet, a tube) maps with no length
+change; a sphere cap cannot, and its strain follows the stereographic projection: after area rescaling the rim grows
+by `1 / cos(t0 / 2) - 1` and the centre shrinks by `1 - cos(t0 / 2)` for polar half-angle `t0` (6.4 % and 6.0 % at 40
+degrees). Checks: triangle angles of a cap pattern stay within 2.5 degrees of the 3-D angles; the pattern boundary
+obeys `L^2 >= 4 pi A`; the worst length change of the tessellated cap agrees with the stereographic pattern built on
+the same mesh to within one percentage point; an unrolled tube changes lengths by less than 0.1 %.
+
+**`flatten.uv_stretch_overlay`** colours a 3-D mesh and its flat pattern by the strain of the map between them. Per
+triangle the singular values `s1 >= s2` of the 3-D to 2-D Jacobian give the stretch `max(s1 - 1, 0)` and the
+compression `max(1 - s2, 0)` (the isometry measures of Sander et al.), and the determinant gives the area change.
+`mode = signed` shows the larger of the two (red for stretch, blue for compression, white for none), `stretch` and
+`compress` show one side, `area` shows `det - 1`. `range_pct` is the strain that maps to full colour and
+`deadband_percent` the strain below which a triangle does not count as affected. With no pattern connected the
+mesh `uv` attribute is the map. The report carries the shares of stretched and compressed area, their area-weighted
+means and maxima, the worst length change and the flipped-triangle count. Check: an isometric map gives white
+everywhere and a maximum below 1e-6 %; scaling the pattern by 1.05 gives 5 % stretch on every triangle.
+
+Sources for this section:
+
+- Levy, Petitjean, Ray, Maillot, "Least squares conformal maps for automatic texture atlas generation", ACM TOG
+  21(3), 2002. https://doi.org/10.1145/566654.566590
+- Sander, Snyder, Gortler, Hoppe, "Texture mapping progressive meshes", SIGGRAPH 2001.
+  https://doi.org/10.1145/383259.383307
+
 ## 6. Sources (every URL consulted or cited)
 
 Fetched this session [F]:

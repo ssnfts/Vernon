@@ -78,9 +78,14 @@ pub struct SunPos {
     pub hour_angle_deg: f64,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Series for declination and equation of time. `Meeus` (the default) agrees
+/// with the Astronomical Almanac low-precision formulas to about 0.01 deg;
+/// `Low` is the day-of-year Fourier fit, off by up to about 0.5 deg near the
+/// equinoxes (kept as a fast tier and for reproducing older results).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum SunAlg {
     Low,
+    #[default]
     Meeus,
 }
 
@@ -171,10 +176,23 @@ pub fn sun_position_alg(
     finish(site, clock_h, eq, decl)
 }
 
-/// Low-accuracy position from a day of year.
+/// Position from a day of year with the default series ([`SunAlg::default`]).
 pub fn sun_position(site: Site, year: i32, doy: u32, clock_h: f64) -> SunPos {
-    let (eq, decl) = low_eqtime_decl(year, doy, clock_h);
-    finish(site, clock_h, eq, decl)
+    let (month, day) = month_day(year, doy);
+    sun_position_alg(SunAlg::default(), site, year, month, day, clock_h)
+}
+
+/// Calendar month and day of a 1-based day of year (clamped to the year).
+pub fn month_day(year: i32, doy: u32) -> (u32, u32) {
+    let mut d = doy.max(1);
+    for m in 1..=12 {
+        let n = days_in_month(year, m);
+        if d <= n {
+            return (m, d);
+        }
+        d -= n;
+    }
+    (12, 31)
 }
 
 /// Atmospheric refraction correction in degrees for a geometric altitude.
@@ -360,17 +378,17 @@ impl NodeOp for SunPositionNode {
             .output(PortSpec::new("sun", DataKind::Json))
             .output(PortSpec::new("report", DataKind::Report));
         site_params(info)
-            .param(ParamSpec::int("year", "Year", 2026, 1901, 2099))
-            .param(ParamSpec::int("month", "Month", 6, 1, 12))
-            .param(ParamSpec::int("day", "Day", 21, 1, 31))
+            .param(ParamSpec::int("year", "Year", 2026, 1901, 2099).help("Year of the date."))
+            .param(ParamSpec::int("month", "Month", 6, 1, 12).help("Month, 1 to 12."))
+            .param(ParamSpec::int("day", "Day", 21, 1, 31).help("Day of the month."))
             .param(
                 ParamSpec::float("clock_time_h", "Clock time", 12.0, 0.0, 24.0)
                     .unit("h")
                     .help("Local standard time, decimal hours. Used when no weather table is connected."),
             )
             .param(
-                ParamSpec::choice("algorithm", "Algorithm", "noaa_low", &["noaa_low", "noaa_meeus", "spa"])
-                    .help("Series used for declination and equation of time."),
+                ParamSpec::choice("algorithm", "Algorithm", "noaa_meeus", &["noaa_low", "noaa_meeus", "spa"])
+                    .help("Series used for declination and equation of time. noaa_meeus is accurate to about 0.01 deg; noaa_low is a faster day-of-year fit, off by up to about 0.5 deg near the equinoxes."),
             )
             .param(ParamSpec::bool("refraction", "Refraction", false).help("Apply atmospheric refraction to the altitude."))
             .param(
@@ -488,14 +506,14 @@ impl NodeOp for SunPathNode {
             .output(PortSpec::new("curves", DataKind::Geometry))
             .output(PortSpec::new("sun", DataKind::Json));
         site_params(info)
-            .param(ParamSpec::int("year", "Year", 2026, 1901, 2099))
+            .param(ParamSpec::int("year", "Year", 2026, 1901, 2099).help("Year of the sun positions."))
             .param(ParamSpec::int("month", "Month", 6, 1, 12).help("Date of the diurnal path."))
             .param(ParamSpec::int("day", "Day", 21, 1, 31).help("Date of the diurnal path."))
             .param(ParamSpec::choice("mode", "Mode", "diurnal", &["analemma", "diurnal"]).help("Diurnal: one day, many times. Analemma: one clock time, every day of the year."))
             .param(ParamSpec::float("clock_time_h", "Clock time", 12.0, 0.0, 24.0).unit("h").help("Clock time of the analemma."))
             .param(ParamSpec::float("step_min", "Step", 10.0, 1.0, 240.0).unit("min").help("Time step of the diurnal path."))
-            .param(ParamSpec::float("radius_mm", "Dome radius", 1000.0, 1.0, 1.0e7).unit("mm"))
-            .param(ParamSpec::float("north_angle_deg", "North angle", 0.0, -360.0, 360.0).unit("deg"))
+            .param(ParamSpec::float("radius_mm", "Dome radius", 1000.0, 1.0, 1.0e7).unit("mm").help("Radius of the dome the sun path is drawn on, in millimetres."))
+            .param(ParamSpec::float("north_angle_deg", "North angle", 0.0, -360.0, 360.0).unit("deg").help("Rotation of true north from the +Y axis, in degrees."))
             .help("Builds the sun path as polylines on a dome: one day sampled through the day, or the figure-eight of one clock time over a year. Only positions above the horizon are kept.")
             .emulates("Sun position diurnal path and analemma collections")
             .spec(SOLAR_SPEC)

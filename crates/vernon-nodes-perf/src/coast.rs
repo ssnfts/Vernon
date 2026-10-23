@@ -100,6 +100,26 @@ fn first_col<'a>(cols: &'a HashMap<String, Vec<f64>>, names: &[&str]) -> Option<
     names.iter().enumerate().find_map(|(i, n)| cols.get(*n).map(|c| (c, i)))
 }
 
+/// Relative humidity column as a fraction. Weather and logger files usually
+/// give percent, so an `rh` column with any value above 1 (or an `rh_pct`
+/// column) is read as percent; values outside 0..100 are rejected.
+fn rh_column(frac_or_pct: Option<Vec<f64>>, pct: Option<Vec<f64>>) -> Result<Option<Vec<f64>>, String> {
+    let (c, is_pct) = match (frac_or_pct, pct) {
+        (Some(c), _) => {
+            let p = c.iter().any(|x| x.is_finite() && *x > 1.0);
+            (c, p)
+        }
+        (None, Some(c)) => (c, true),
+        (None, None) => return Ok(None),
+    };
+    if let Some(bad) = c.iter().find(|x| x.is_finite() && !(0.0..=100.0).contains(*x)) {
+        return Err(format!(
+            "log humidity {bad} is outside 0..100 (rh is a fraction 0..1 or a percentage 0..100)"
+        ));
+    }
+    Ok(Some(c.into_iter().map(|x| if is_pct { x / 100.0 } else { x }).collect()))
+}
+
 /// Split named columns into runs (by a `run` column, else wherever time restarts).
 pub fn runs_from_columns(cols: &HashMap<String, Vec<f64>>) -> Result<Vec<Run>, String> {
     let (t, _) = first_col(cols, &["t", "time_s", "time"]).ok_or("log needs a time column 't'")?;
@@ -116,7 +136,7 @@ pub fn runs_from_columns(cols: &HashMap<String, Vec<f64>>) -> Result<Vec<Run>, S
     let grade = opt(&["grade", "slope"]);
     let temp = opt(&["temp_c", "t_c", "temperature_c"]);
     let pres = opt(&["p_pa", "pressure_pa"]);
-    let rh = opt(&["rh", "rel_humidity"]);
+    let rh = rh_column(opt(&["rh", "rel_humidity"]), opt(&["rh_pct"]))?;
     let dir = opt(&["dir", "direction"]);
     let heading = opt(&["heading_deg", "heading"]);
 

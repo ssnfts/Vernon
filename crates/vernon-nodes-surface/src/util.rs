@@ -19,15 +19,10 @@ pub fn placeholder_note(report: &mut Report, what: &str) {
     report.note(Severity::Warning, format!("white-box placeholder: {what}"));
 }
 
-/// Linear-interpolated percentile (`p` in 0..=100) of an ascending slice.
+/// Nearest-rank percentile (`p` in 0..=100) of an ascending slice: the shared
+/// convention of `vernon_core::stats`, so surface gates agree with the other stages.
 pub fn percentile(sorted: &[f64], p: f64) -> f64 {
-    if sorted.is_empty() {
-        return 0.0;
-    }
-    let pos = (p / 100.0).clamp(0.0, 1.0) * (sorted.len() - 1) as f64;
-    let lo = pos.floor() as usize;
-    let hi = pos.ceil() as usize;
-    sorted[lo] + (sorted[hi] - sorted[lo]) * (pos - lo as f64)
+    vernon_core::stats::percentile_pct(sorted, p)
 }
 
 /// Deterministic SplitMix64 generator (no external dependency).
@@ -201,12 +196,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn percentile_interpolates() {
+    fn percentile_is_nearest_rank() {
         let v = [0.0, 1.0, 2.0, 3.0, 4.0];
         assert_eq!(percentile(&v, 0.0), 0.0);
         assert_eq!(percentile(&v, 100.0), 4.0);
         assert!((percentile(&v, 50.0) - 2.0).abs() < 1e-12);
-        assert!((percentile(&v, 95.0) - 3.8).abs() < 1e-12);
+        // nearest rank, no interpolation: rank ceil(0.95 * 5) = 5
+        assert_eq!(percentile(&v, 95.0), 4.0);
+        let ten: Vec<f64> = (1..=10).map(f64::from).collect();
+        assert_eq!(percentile(&ten, 95.0), 10.0);
     }
 
     #[test]

@@ -35,7 +35,7 @@ fn coast_info() -> NodeTypeInfo {
         .input(PortSpec::optional("env", DataKind::Json))
         .output(PortSpec::new("fit", DataKind::Json))
         .output(PortSpec::new("report", DataKind::Report))
-        .param(ParamSpec::path("log_path", "Log file", &["csv"], false).help("CSV with t, v_ms (or v_kmh) and optional run, dir, wind_ms, grade, temp_c, p_pa, rh; used when no log is connected"))
+        .param(ParamSpec::path("log_path", "Log file", &["csv"], false).help("CSV with t, v_ms (or v_kmh) and optional run, dir, wind_ms, grade, temp_c, p_pa, rh (fraction, or percent when above 1); used when no log is connected"))
         .param(ParamSpec::float("mass_kg", "Mass", 1400.0, 50.0, 6000.0).unit("kg").help("Vehicle mass during the runs"))
         .param(ParamSpec::float("rot_mass_kg", "Rotating mass", 0.0, 0.0, 500.0).unit("kg").help("Equivalent mass of rotating parts, added to the mass in the force balance"))
         .param(ParamSpec::choice("method", "Method", "integrated", &["integrated", "accel"]).help("Integrated: least-squares fit of the closed-form speed curve. Accel: regression of 1 s deceleration slopes"))

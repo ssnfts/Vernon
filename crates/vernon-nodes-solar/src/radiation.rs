@@ -358,7 +358,7 @@ impl NodeOp for IncidentRadiationNode {
             .param(ParamSpec::choice("ground_mode", "Ground", "hemisphere", &["hemisphere", "none"]).help("Reflected light from a uniform lower hemisphere."))
             .param(ParamSpec::choice("average_over", "Average over", "all", &["all", "daylight"]).help("Hours used to turn energy into average W/m2."))
             .param(ParamSpec::bool("occlusion", "Occlusion", true).help("Cast rays against the study mesh and the context. Off: no shadows."))
-            .param(ParamSpec::bool("flip_normals", "Flip normals", false))
+            .param(ParamSpec::bool("flip_normals", "Flip normals", false).help("Reverse every face normal. Use it when the mesh is wound inward."))
             .param(ParamSpec::bool("export_matrix", "Export matrix", false).help("Write one visibility row per face and sky patch to the third output (limited to 20000 faces)."))
             .help("Cumulative or average solar radiation on every face from a sky matrix, with shadows from the mesh itself and optional context geometry. Writes irradiance, energy and a colour ramp.")
             .emulates("Incident radiation study from an EPW-driven sky matrix (ray-cast occlusion, no inter-reflection)")
@@ -498,12 +498,12 @@ impl NodeOp for SunExposureNode {
             .output(PortSpec::new("report", DataKind::Report))
             .param(ParamSpec::float("elevation_deg", "Sun elevation", 45.0, -90.0, 90.0).unit("deg").help("Used when no sun table is connected."))
             .param(ParamSpec::float("azimuth_deg", "Sun azimuth", 180.0, 0.0, 360.0).unit("deg").help("Clockwise from north. Used when no sun table is connected."))
-            .param(ParamSpec::float("north_angle_deg", "North angle", 0.0, -360.0, 360.0).unit("deg"))
+            .param(ParamSpec::float("north_angle_deg", "North angle", 0.0, -360.0, 360.0).unit("deg").help("Rotation of true north from the +Y axis, in degrees."))
             .param(ParamSpec::float("dni_w_m2", "Beam irradiance", 900.0, 0.0, 1400.0).unit("W/m2").help("Used for the W/m2 map when the sun table carries no beam values."))
             .param(ParamSpec::choice("weights", "Weights", "uniform", &["uniform", "dni"]).help("Weight each sun position equally or by its beam irradiance."))
             .param(ParamSpec::bool("normalise", "Normalise", true).help("Scale the exposure map so its maximum is 1."))
-            .param(ParamSpec::float("offset_mm", "Offset", 1.0, 0.0, 1.0e4).unit("mm"))
-            .param(ParamSpec::bool("occlusion", "Shadows", true))
+            .param(ParamSpec::float("offset_mm", "Offset", 1.0, 0.0, 1.0e4).unit("mm").help("Distance the rays start above each face, in millimetres, so a face does not shade itself."))
+            .param(ParamSpec::bool("occlusion", "Shadows", true).help("Cast shadows from the geometry. Off treats every sun-facing face as lit."))
             .help("Relative sun exposure per face: cosine of the incidence angle and shadow, averaged over one or many sun positions. A relative map, not calibrated irradiance.")
             .emulates("Diffuse-direct bake of cosine and shadow with a sun lamp")
             .spec(SOLAR_SPEC)
@@ -656,6 +656,48 @@ impl NodeOp for SunExposureNode {
 
 pub struct UvDoseNode;
 
+/// Weathering verdict of a material, coated or not, written to the report.
+///
+/// A coated part passes: the protection comes from the coating. An uncoated part
+/// passes only on published exposure figures that clear both gates; with no
+/// figures, or figures below a gate, the verdict fails closed.
+pub fn uv_verdict(r: &mut Report, material: &str, coated: bool, min_retention_pct: f64, max_delta_e: f64) {
+    let uv = vernon_core::materials::uv_data(material);
+    if let Some(d) = uv {
+        r.metric("uv_retention_pct", Metric::new(d.retention_pct, "%"));
+        if let Some(e) = d.delta_e {
+            r.metric("uv_delta_e", Metric::new(e, ""));
+        }
+        r.metric("uv_test_hours", Metric::new(d.hours, "h"));
+    }
+    let evidence_ok = uv.is_some_and(|d| d.retention_pct >= min_retention_pct && d.delta_e.is_none_or(|e| e <= max_delta_e));
+    let ok = coated || evidence_ok;
+    r.metric("uv_protection_ok", Metric::new(f64::from(ok), "").with_limit(1.0, false));
+    r.metric("coated", Metric::new(f64::from(coated), ""));
+    if coated {
+        r.note(
+            Severity::Info,
+            format!("coated: the UV protection comes from the coating (primer-filler, basecoat, 2K clear with UV absorbers or HALS), not from the {material} filament"),
+        );
+    } else if let Some(d) = uv {
+        let msg = format!("uncoated {material} {} ({}); gates: at least {min_retention_pct:.0} % kept, colour change at most {max_delta_e:.0}", d.basis, d.source.label());
+        if evidence_ok {
+            r.note(Severity::Info, format!("{msg}; coat it anyway for gloss and colour"));
+        } else {
+            r.note(Severity::Error, format!("{msg}; this misses a gate, so the UV protection has to come from a coating: set coated and specify the clear coat"));
+        }
+    } else {
+        r.note(
+            Severity::Error,
+            format!("no published UV exposure figures for uncoated {material}: the protection has to come from a coating (primer-filler, basecoat, 2K clear with UV absorbers or HALS), not the filament"),
+        );
+    }
+    r.note(
+        Severity::Info,
+        "no published factor converts accelerated-test hours into outdoor years in this climate: the figures rank materials, they do not predict a service life",
+    );
+}
+
 impl NodeOp for UvDoseNode {
     fn info(&self) -> NodeTypeInfo {
         NodeTypeInfo::new("solar.uv_dose_proxy", "UV Dose Proxy", Stage::Solar)
@@ -663,8 +705,12 @@ impl NodeOp for UvDoseNode {
             .output(PortSpec::new("mesh", DataKind::Geometry))
             .output(PortSpec::new("report", DataKind::Report))
             .param(ParamSpec::float("f_uv", "UV fraction", 0.045, 0.0, 0.2).help("Share of global irradiance that is ultraviolet. A few percent."))
+            .param(ParamSpec::choice("material", "Material", "ASA", &["PLA", "PETG", "ASA", "PET-CF", "PAHT-CF", "PPA-CF", "Nylon 12CF", "PC (unpainted)"]).help("Material of the part, for the weathering verdict. Only the materials with published UV exposure figures (ASA, Nylon 12CF, unpainted PC) can pass uncoated."))
+            .param(ParamSpec::bool("coated", "Coated", false).help("The part carries a UV-protective coat (primer-filler, basecoat, then a 2K clear with UV absorbers or HALS). UV protection should come from the coating, not the filament, so a coated part passes whatever the material."))
+            .param(ParamSpec::float("min_retention_pct", "Minimum strength kept", 90.0, 0.0, 100.0).unit("%").help("Gate for an uncoated part: the material must keep at least this share of its stress at break after 1000 h of accelerated UV exposure. An engineering choice, not a standard."))
+            .param(ParamSpec::float("max_delta_e", "Largest colour change", 5.0, 0.0, 100.0).help("Gate for an uncoated part: the colour change dE after the same exposure, where the source gives one. About 5 is clearly visible."))
             .param(ParamSpec::bool("label_as_proxy", "Label as proxy", true).help("Add a note that the result is proportional to total radiation, not a spectral UV result."))
-            .help("Scales a face-wise annual radiation map by a fixed ultraviolet fraction to give a proportional UV dose estimate.")
+            .help("Scales a face-wise annual radiation map by a fixed ultraviolet fraction to give a proportional UV dose estimate, and gives a weathering verdict for the chosen material: coated parts pass, uncoated ones need published UV exposure figures that clear the gates.")
             .emulates("UV-dose proxy remark of the report")
             .spec(SOLAR_SPEC)
             .implemented()
@@ -702,6 +748,13 @@ impl NodeOp for UvDoseNode {
                 "proxy only: proportional to total radiation, not a spectral ultraviolet result",
             );
         }
+        uv_verdict(
+            &mut r,
+            p.str("material")?,
+            p.bool("coated")?,
+            p.float("min_retention_pct")?,
+            p.float("max_delta_e")?,
+        );
         Ok(vec![Data::geometry(out), Data::report(r)])
     }
 }

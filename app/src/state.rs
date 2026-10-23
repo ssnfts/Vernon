@@ -25,7 +25,15 @@ pub struct SceneUi {
     pub schema_version: u32,
     pub colors: BTreeMap<NodeId, [u8; 3]>,
     pub hidden: BTreeSet<NodeId>,
+    /// Objects that cannot be picked or transformed in the viewports.
+    pub locked: BTreeSet<NodeId>,
+    /// Preserve Stack Position: the last highlighted entry per stack,
+    /// keyed by the stack's base node.
+    pub stack_positions: BTreeMap<NodeId, NodeId>,
 }
+
+/// Length of the recently used modifier list (spec 2.7).
+pub const RECENT_MODIFIERS: usize = 20;
 
 #[derive(Debug, Clone)]
 pub enum NodeResult {
@@ -117,6 +125,8 @@ pub struct AppState {
     undo: Vec<String>,
     redo: Vec<String>,
     last_checkpoint: Option<(String, f64)>,
+    /// True inside [`State::as_one_undo_step`]: nested edits add no entries.
+    undo_grouped: bool,
     pub results: HashMap<NodeId, NodeResult>,
     revision: u64,
     /// Count of scene edits (parameter, wiring, node changes); unlike
@@ -149,6 +159,12 @@ pub struct AppState {
     /// were last looked at: a changed file cooks its readers again.
     files_stamp: u64,
     files_checked: Option<Instant>,
+    /// Re-selecting an object returns to its last highlighted stack entry.
+    pub preserve_stack: bool,
+    /// Modifier types added most recently, newest first.
+    pub recent_modifiers: Vec<String>,
+    /// When each node last produced a new result (this session).
+    pub last_run: HashMap<NodeId, std::time::SystemTime>,
 }
 
 /// How long after the last parameter edit file writes stay deferred.
@@ -177,6 +193,7 @@ impl AppState {
             undo: Vec::new(),
             redo: Vec::new(),
             last_checkpoint: None,
+            undo_grouped: false,
             results: HashMap::new(),
             revision: 1,
             edits: 0,
@@ -191,10 +208,13 @@ impl AppState {
             writes_pending: false,
             files_stamp: 0,
             files_checked: None,
+            preserve_stack: true,
+            recent_modifiers: Vec::new(),
+            last_run: HashMap::new(),
         }
     }
 
-    fn touch(&mut self) {
+    pub(crate) fn touch(&mut self) {
         self.revision += 1;
         self.edits += 1;
         self.dirty = true;
@@ -229,12 +249,26 @@ impl AppState {
 
     /// Save the current graph so the next change can be undone.
     pub fn checkpoint(&mut self) {
+        if self.undo_grouped {
+            return;
+        }
         self.undo.push(self.graph.to_json());
         if self.undo.len() > UNDO_LIMIT {
             self.undo.remove(0);
         }
         self.redo.clear();
         self.last_checkpoint = None;
+    }
+
+    /// Run `edit` as a single undo step: one checkpoint of the state before
+    /// it, and none from the edits inside (a drag that adds a transform to
+    /// each selected object is one step, not one per object plus one more).
+    pub fn as_one_undo_step<R>(&mut self, edit: impl FnOnce(&mut Self) -> R) -> R {
+        self.checkpoint();
+        let outer = std::mem::replace(&mut self.undo_grouped, true);
+        let r = edit(self);
+        self.undo_grouped = outer;
+        r
     }
 
     /// Like [`checkpoint`](Self::checkpoint) but merges repeated edits of the
@@ -298,6 +332,8 @@ impl AppState {
         }
         self.scene.colors.retain(|id, _| nodes.contains_key(id));
         self.scene.hidden.retain(|id| nodes.contains_key(id));
+        self.scene.locked.retain(|id| nodes.contains_key(id));
+        self.scene.stack_positions.retain(|b, e| nodes.contains_key(b) && nodes.contains_key(e));
     }
 
     // ------------------------------------------------------------ queries
@@ -364,10 +400,15 @@ impl AppState {
     /// The stack entry the Modify panel edits: the highlighted entry when it
     /// belongs to the primary's stack, else the primary itself.
     pub fn current_entry(&self) -> Option<NodeId> {
-        let p = self.primary()?;
+        self.primary().map(|p| self.entry_of(p))
+    }
+
+    /// The highlighted entry when it belongs to `object`'s stack, else the
+    /// object itself.
+    pub fn entry_of(&self, object: NodeId) -> NodeId {
         match self.stack_entry {
-            Some(e) if self.graph.stack(p).contains(&e) => Some(e),
-            _ => Some(p),
+            Some(e) if self.graph.stack(object).contains(&e) => e,
+            _ => object,
         }
     }
 
@@ -403,34 +444,79 @@ impl AppState {
 
     // ------------------------------------------------------------ selection
 
-    pub fn select_only(&mut self, id: NodeId) {
-        self.selection = vec![id];
+    /// Before a selection change: remember the primary's highlighted stack
+    /// entry (Preserve Stack Position) and drop it.
+    fn leave_selection(&mut self) {
+        if let (Some(p), Some(e)) = (self.primary(), self.stack_entry) {
+            let stack = self.graph.stack(p);
+            if let (Some(base), true) = (stack.first().copied(), stack.contains(&e)) {
+                self.scene.stack_positions.insert(base, e);
+            }
+        }
         self.stack_entry = None;
     }
 
+    /// After a selection change: return to the new primary's last entry.
+    fn enter_selection(&mut self) {
+        self.stack_entry = None;
+        let Some(p) = self.primary().filter(|_| self.preserve_stack) else { return };
+        let stack = self.graph.stack(p);
+        if let Some(e) = stack.first().and_then(|b| self.scene.stack_positions.get(b)) {
+            if stack.contains(e) {
+                self.stack_entry = Some(*e);
+            }
+        }
+    }
+
+    pub fn select_only(&mut self, id: NodeId) {
+        self.leave_selection();
+        self.selection = vec![id];
+        self.enter_selection();
+    }
+
     pub fn toggle_select(&mut self, id: NodeId) {
+        self.leave_selection();
         if let Some(i) = self.selection.iter().position(|s| *s == id) {
             self.selection.remove(i);
         } else {
             self.selection.push(id);
         }
-        self.stack_entry = None;
+        self.enter_selection();
     }
 
     pub fn clear_selection(&mut self) {
+        self.leave_selection();
         self.selection.clear();
-        self.stack_entry = None;
     }
 
     pub fn select_all(&mut self) {
+        self.leave_selection();
         self.selection = self.objects().into_iter().filter(|id| !self.is_hidden(*id)).collect();
-        self.stack_entry = None;
+        self.enter_selection();
+    }
+
+    /// Select every visible object of the same node type as the primary
+    /// selection; returns how many are selected. Nothing changes when
+    /// nothing is selected.
+    pub fn select_similar(&mut self) -> usize {
+        let Some(ty) = self.primary().and_then(|p| self.graph.nodes.get(&p)).map(|n| n.type_id.clone()) else {
+            return 0;
+        };
+        self.leave_selection();
+        self.selection = self
+            .objects()
+            .into_iter()
+            .filter(|id| !self.is_hidden(*id) && self.graph.nodes.get(id).is_some_and(|n| n.type_id == ty))
+            .collect();
+        self.enter_selection();
+        self.selection.len()
     }
 
     pub fn select_invert(&mut self) {
+        self.leave_selection();
         let sel: HashSet<NodeId> = self.selection.iter().copied().collect();
         self.selection = self.objects().into_iter().filter(|id| !sel.contains(id)).collect();
-        self.stack_entry = None;
+        self.enter_selection();
     }
 
     pub fn select_by_name(&mut self, name: &str) -> bool {
@@ -491,24 +577,33 @@ impl AppState {
     /// selection, wired through input 0.
     pub fn add_modifier(&mut self, type_id: &str) -> Result<NodeId, String> {
         let primary = self.primary().ok_or("select an object first")?;
+        self.add_modifier_to(primary, type_id)
+    }
+
+    /// [`add_modifier`](Self::add_modifier) on the stack of `primary`
+    /// (selected or not: the Modify panel can be pinned to an object).
+    pub fn add_modifier_to(&mut self, primary: NodeId, type_id: &str) -> Result<NodeId, String> {
         let info = self
             .registry
             .info(type_id)
             .cloned()
             .ok_or_else(|| format!("unknown node type '{type_id}'"))?;
         let port = info.inputs.first().ok_or_else(|| format!("{} has no input", info.label))?;
-        let base = self.current_entry().unwrap_or(primary);
+        let base = self.entry_of(primary);
         let out = self
             .compatible_output(base, port.kind)
             .ok_or_else(|| format!("{} cannot take the output of {}", info.label, self.name(base)))?;
         let chain = self.graph.stack(primary);
         let next = chain.iter().position(|n| *n == base).and_then(|i| chain.get(i + 1)).copied();
 
+        let recorded = !self.undo_grouped;
         self.checkpoint();
         let id = self.graph.add_node(&self.registry, type_id).map_err(|e| e.to_string())?;
         if let Err(e) = self.graph.connect_checked(&self.registry, base, out, id, 0) {
             self.graph.remove_node(id);
-            self.undo.pop();
+            if recorded {
+                self.undo.pop();
+            }
             return Err(e.to_string());
         }
         if let Some(next) = next {
@@ -528,6 +623,9 @@ impl AppState {
             }
         }
         self.stack_entry = Some(id);
+        self.recent_modifiers.retain(|t| t != type_id);
+        self.recent_modifiers.insert(0, type_id.to_string());
+        self.recent_modifiers.truncate(RECENT_MODIFIERS);
         self.touch();
         self.info_text(format!("added {} on {}", self.name(id), self.name(base)));
         Ok(id)
@@ -936,6 +1034,20 @@ impl AppState {
     }
 
     fn apply_results(&mut self, results: Vec<(NodeId, CookResult<Vec<Data>>)>) {
+        // "Last run": the nodes whose result is new (cache hits hand back
+        // the same shared data).
+        let now = std::time::SystemTime::now();
+        for (id, r) in &results {
+            let same = match (self.results.get(id), r) {
+                (Some(NodeResult::Ok(a)), Ok(b)) => a.len() == b.len() && a.iter().zip(b).all(|(x, y)| same_data(x, y)),
+                (Some(NodeResult::Err(a)), Err(b)) => *a == b.to_string(),
+                _ => false,
+            };
+            if !same {
+                self.last_run.insert(*id, now);
+            }
+        }
+        self.last_run.retain(|id, _| self.graph.nodes.contains_key(id));
         self.results = results
             .into_iter()
             .map(|(id, r)| {
@@ -1249,6 +1361,17 @@ impl AppState {
     }
 }
 
+/// Two outputs are the same result (shared data, or the same file).
+fn same_data(a: &Data, b: &Data) -> bool {
+    match (a, b) {
+        (Data::Geometry(x), Data::Geometry(y)) => Arc::ptr_eq(x, y),
+        (Data::Report(x), Data::Report(y)) => Arc::ptr_eq(x, y),
+        (Data::Json(x), Data::Json(y)) => Arc::ptr_eq(x, y),
+        (Data::File(x), Data::File(y)) => x == y,
+        _ => false,
+    }
+}
+
 /// Write `bytes` to a temporary file in the target's folder and rename it over
 /// the target, so a crash mid-write never leaves a half-written scene.
 pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
@@ -1292,6 +1415,50 @@ mod tests {
         assert_eq!(s.primary_stack(), vec![b, t, sm]);
         assert_eq!(s.primary(), Some(sm));
         assert_eq!(s.object_of(b), sm);
+    }
+
+    #[test]
+    fn stack_position_is_preserved_and_recent_modifiers_listed() {
+        let mut s = state();
+        let b = s.create("geo.box").unwrap();
+        let sm = s.create("clean.smooth_mesh").unwrap();
+        let t = s.add_modifier("geo.transform").unwrap();
+        assert_eq!(s.recent_modifiers, vec!["geo.transform".to_string(), "clean.smooth_mesh".to_string()]);
+        s.add_modifier("clean.smooth_mesh").unwrap();
+        assert_eq!(s.recent_modifiers[0], "clean.smooth_mesh", "newest first, no duplicates");
+        assert_eq!(s.recent_modifiers.len(), 2);
+        let top = s.primary().unwrap();
+        s.stack_entry = Some(sm);
+        s.clear_selection();
+        let other = s.create("geo.box").unwrap();
+        assert_eq!(s.current_entry(), Some(other));
+        s.select_only(top);
+        assert_eq!(s.current_entry(), Some(sm), "re-selecting returns to the last entry");
+        // Saved with the scene.
+        let mut s2 = state();
+        s2.load_vrn(&s.to_vrn().unwrap()).unwrap();
+        s2.select_only(top);
+        assert_eq!(s2.current_entry(), Some(sm));
+        s2.preserve_stack = false;
+        s2.clear_selection();
+        s2.select_only(top);
+        assert_eq!(s2.current_entry(), Some(top));
+        assert!(s.graph.stack(top).starts_with(&[b, sm, t]));
+    }
+
+    #[test]
+    fn last_run_moves_only_for_nodes_that_cooked() {
+        let mut s = state();
+        let b = s.create("geo.box").unwrap();
+        s.clear_selection();
+        let c = s.create("geo.box").unwrap();
+        s.cook_all();
+        let (tb, tc) = (s.last_run[&b], s.last_run[&c]);
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        s.set_param(c, "size", ParamValue::Vec3(glam::DVec3::splat(50.0)), 0.0);
+        s.cook_all();
+        assert_eq!(s.last_run[&b], tb, "a cache hit is not a run");
+        assert!(s.last_run[&c] > tc);
     }
 
     #[test]
@@ -1425,6 +1592,43 @@ mod tests {
         t.load_vrn(crate::registry::DEMO_PIPELINE).unwrap();
         assert_eq!(t.graph.nodes.len(), n);
         assert!(t.log.iter().all(|l| !l.error));
+    }
+
+    #[test]
+    fn select_similar_picks_the_same_node_type() {
+        let mut s = state();
+        let a = s.create("geo.box").unwrap();
+        let b = s.create("geo.box").unwrap();
+        let c = s.create("geo.sphere").unwrap();
+        s.cook_all();
+        s.select_only(a);
+        assert_eq!(s.select_similar(), 2);
+        assert!(s.selection.contains(&a) && s.selection.contains(&b) && !s.selection.contains(&c));
+        s.clear_selection();
+        assert_eq!(s.select_similar(), 0);
+    }
+
+    #[test]
+    fn a_tool_drag_on_fresh_objects_is_one_undo_step() {
+        let mut s = state();
+        let a = s.create("geo.box").unwrap();
+        let b = s.create("geo.box").unwrap();
+        s.cook_all();
+        let n = s.undo.len();
+        let (ta, tb) = s.as_one_undo_step(|st| (st.ensure_transform(a).unwrap(), st.ensure_transform(b).unwrap()));
+        assert_ne!((ta, tb), (a, b));
+        assert_eq!(s.undo.len(), n + 1, "one entry for the whole drag");
+        // One undo takes both transforms away again.
+        assert!(s.undo());
+        assert!(!s.graph.nodes.contains_key(&ta) && !s.graph.nodes.contains_key(&tb));
+        assert_eq!(s.undo.len(), n);
+        // Existing transforms cost one entry, not two.
+        let t = s.ensure_transform(a).unwrap();
+        let n = s.undo.len();
+        s.as_one_undo_step(|st| {
+            assert_eq!(st.ensure_transform(t).unwrap(), t);
+        });
+        assert_eq!(s.undo.len(), n + 1);
     }
 
     #[test]

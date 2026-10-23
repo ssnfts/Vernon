@@ -159,12 +159,8 @@ pub fn estimate_cp(normal: DVec3) -> f64 {
     if normal.x < 0.0 { normal.x * normal.x } else { -0.3 }
 }
 
-fn percentile(sorted: &[f64], q: f64) -> f64 {
-    let q = if q.is_finite() { q.clamp(0.0, 1.0) } else { 0.5 };
-    let pos = q * (sorted.len() - 1) as f64;
-    let (lo, hi) = (pos.floor() as usize, pos.ceil() as usize);
-    sorted[lo] + (sorted[hi] - sorted[lo]) * (pos - lo as f64)
-}
+// Nearest-rank percentile, the shared convention of `vernon_core::stats`.
+use vernon_core::stats::nearest_rank as percentile;
 
 /// Pressure force on the surface in N at dynamic pressure `q`:
 /// `F = -sum Cp q A n` with outward normals; areas in mm2.
@@ -185,7 +181,7 @@ fn info() -> NodeTypeInfo {
         .output(PortSpec::new("report", DataKind::Report))
         .param(ParamSpec::choice("quantity", "Sampled quantity", "kinematic", &["kinematic", "static_pa", "cp"]).help("kinematic: p/rho as the incompressible solver writes it"))
         .param(ParamSpec::int("column", "Value column", 0, 0, 8).help("Column after x y z"))
-        .param(ParamSpec::choice("file_units", "Coordinate units", "m", &["m", "mm"]))
+        .param(ParamSpec::choice("file_units", "Coordinate units", "m", &["m", "mm"]).help("Unit of the coordinates in the pressure file. They are converted to millimetres."))
         .param(ParamSpec::float("p_inf", "Reference pressure", 0.0, -1.0e6, 1.0e6).help("Same unit as the sampled values; zero at the outlet for the incompressible solver"))
         .param(ParamSpec::float("u_ms", "Speed", 30.0, 10.0, 100.0).unit("m/s").help("Overridden by a wired air state"))
         .param(ParamSpec::float("rho", "Density", 1.225, 0.5, 1.4).unit("kg/m3").help("Overridden by a wired air state; only used for static pressure in Pa"))

@@ -51,6 +51,7 @@ impl NodeOp for PackageWrite {
             .param(ParamSpec::path("path", "File", &["3mf"], true).help("Output file; empty writes parts.3mf in the node folder."))
             .param(ParamSpec::choice("unit", "Unit", "millimeter", &UNIT_IDS).help("Length unit stored in the package."))
             .param(ParamSpec::bool("strict", "Require closed shells", true).help("Refuse parts with open or non-manifold edges."))
+            .param(ParamSpec::bool("stamp_time", "Stamp build time", false).help("Record the current time as the package creation date. Off keeps the package bytes identical between cooks of the same graph."))
             .output(PortSpec::new("package", DataKind::File))
             .output(PortSpec::new("report", DataKind::Report))
     }
@@ -61,7 +62,8 @@ impl NodeOp for PackageWrite {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let st = package::write_package(&geo, &path, package::unit_of(p.str("unit")?), p.bool("strict")?).map_err(|e| ctx.fail(e))?;
+        let date = if p.bool("stamp_time")? { None } else { Some(package::REPRODUCIBLE_DATE) };
+        let st = package::write_package_dated(&geo, &path, package::unit_of(p.str("unit")?), p.bool("strict")?, date).map_err(|e| ctx.fail(e))?;
         let mut rep = Report::new("Package writer");
         rep.metric("part_count", Metric::new(st.parts as f64, "count"));
         rep.metric("triangle_count", Metric::new(st.triangles as f64, "count"));
@@ -128,7 +130,7 @@ impl NodeOp for ProfileBuild {
         info("print.profile_build", "Profile Builder", "Write the process, printer and filament preset files for the slicer from a few high-level choices.")
             .emulates("slicer preset files for command-line runs")
             .param(ParamSpec::choice("flavour", "G-code flavour", "klipper", &FLAVOURS).help("Dialect of the output G-code."))
-            .param(ParamSpec::choice("printer", "Printer preset", "k1_max", &PRINTER_IDS).help("Build volume preset; custom uses the bed size below."))
+            .param(ParamSpec::choice("printer", "Printer preset", "bed_300", &PRINTER_IDS).help("Build volume preset; custom uses the bed size below."))
             .param(ParamSpec::vec3("bed", "Custom bed size", glam::DVec3::new(256.0, 256.0, 256.0)).unit("mm").help("Used when the preset is custom."))
             .param(ParamSpec::choice("material", "Material", "asa", &MATERIAL_IDS).help("Sets the temperatures and density."))
             .param(ParamSpec::float("nozzle", "Nozzle diameter", 0.4, 0.2, 1.2).unit("mm").help("Nozzle bore."))
@@ -141,12 +143,27 @@ impl NodeOp for ProfileBuild {
             .param(ParamSpec::bool("pellet", "Pellet extruder", false).help("Describe the extruder by a pellet flow coefficient."))
             .param(ParamSpec::float("pellet_coef", "Pellet flow coefficient", 0.4157, 0.05, 5.0).help("Equivalent filament diameter d = sqrt(4 / (coef * pi))."))
             .param(ParamSpec::choice("bed_temp_formula", "Bed temperature rule", "by_highest_temp", &["by_first_filament", "by_highest_temp"]).help("Which filament sets the bed temperature."))
+            .param(ParamSpec::float("chamber_c", "Chamber temperature", 0.0, 0.0, 90.0).unit("°C").help("Heated-chamber set point; 0 leaves chamber control off. Presets cap it at what the printer can hold; high-temperature materials want 45 to 65. The report warns when the material wants more."))
+            .param(ParamSpec::float("pressure_advance", "Pressure advance", 0.0, 0.0, 2.0).help("Pressure-advance (linear advance) factor from a calibration print; 0 leaves it off."))
+            .param(ParamSpec::float("flow_ratio", "Flow ratio", 1.0, 0.8, 1.2).help("Extrusion multiplier from a calibration print; 1 is as designed."))
+            .param(ParamSpec::float("max_volumetric_speed", "Max volumetric speed", 0.0, 0.0, 60.0).unit("mm³/s").help("Largest melt flow the hot end keeps up with, from a calibration print; 0 sets no limit."))
+            .param(ParamSpec::bool("z_anti_alias", "Z anti-aliasing", false).help("Vary the surface of shallow slopes between layers to hide the staircase; the remedy for what the stair-step estimate finds."))
             .output(PortSpec::new("profiles", DataKind::Json))
             .output(PortSpec::new("report", DataKind::Report))
     }
 
     fn cook(&self, ctx: &CookContext, _inp: &[Option<Data>], p: &Params) -> CookResult<Vec<Data>> {
         let bed = printer_bed(p.str("printer")?, p.vec3("bed")?);
+        let preset = crate::common::printer(p.str("printer")?);
+        let chamber_c = p.float("chamber_c")?;
+        if let Some(pr) = preset {
+            if chamber_c > pr.chamber_max_c {
+                return Err(ctx.fail(format!(
+                    "the printer preset {} holds a chamber of {:.0} deg C at most (asked for {chamber_c:.0}); lower the chamber temperature or use the custom preset",
+                    pr.id, pr.chamber_max_c
+                )));
+            }
+        }
         let spec = ProfileSpec {
             flavour: p.str("flavour")?.to_string(),
             bed,
@@ -161,6 +178,12 @@ impl NodeOp for ProfileBuild {
             pellet: p.bool("pellet")?,
             pellet_coef: p.float("pellet_coef")?,
             bed_temp_formula: p.str("bed_temp_formula")?.to_string(),
+            chamber_c,
+            chamber_capable: preset.is_none_or(|pr| pr.chamber_max_c > 0.0),
+            pressure_advance: p.float("pressure_advance")?,
+            flow_ratio: p.float("flow_ratio")?,
+            max_volumetric_speed: p.float("max_volumetric_speed")?,
+            z_anti_alias: p.bool("z_anti_alias")?,
         };
         if spec.layer_height > spec.nozzle_mm * 0.8 {
             return Err(ctx.fail("layer height must stay below 80 % of the nozzle diameter"));
@@ -178,6 +201,19 @@ impl NodeOp for ProfileBuild {
         rep.metric("preset_count", Metric::new(3.0, "count"));
         rep.metric("nozzle_temp_c", Metric::new(m.nozzle_c, "deg C"));
         rep.metric("bed_temp_c", Metric::new(m.bed_c, "deg C"));
+        rep.metric("chamber_temp_c", Metric::new(spec.chamber_c, "deg C"));
+        rep.metric("material_chamber_c", Metric::new(m.chamber_c, "deg C"));
+        if m.chamber_c > spec.chamber_c {
+            rep.note(
+                Severity::Warning,
+                format!(
+                    "{} prints best in a chamber of about {:.0} deg C (set: {:.0}); expect warping and weak layer bonds in a cold chamber",
+                    m.id.to_ascii_uppercase(),
+                    m.chamber_c,
+                    spec.chamber_c
+                ),
+            );
+        }
         if spec.pellet {
             rep.metric("equivalent_filament_diameter_mm", Metric::new(slicer::pellet_diameter(spec.pellet_coef), "mm"));
         }
@@ -585,6 +621,29 @@ mod tests {
         assert_eq!(printer["pellet_modded_printer"], "1");
         assert!((metric(&out[1], "equivalent_filament_diameter_mm") - 1.75).abs() < 1e-3);
         assert!(cook(&ProfileBuild, "prof_bad", &[], &[("layer_height", ParamValue::Float(0.5))]).is_err());
+    }
+
+    #[test]
+    fn profile_builder_checks_the_chamber_against_preset_and_material() {
+        // The default open-frame preset cannot hold a chamber.
+        let hot = [("chamber_c", ParamValue::Float(60.0))];
+        let err = cook(&ProfileBuild, "prof_hot", &[], &hot).unwrap_err().to_string();
+        assert!(err.contains("chamber"), "{err}");
+        // A heated preset can; ASA wants about 45 deg C and gets it.
+        let set = [("printer", ParamValue::Str("bed_350".into())), ("chamber_c", ParamValue::Float(60.0)), ("pressure_advance", ParamValue::Float(0.05))];
+        let out = cook(&ProfileBuild, "prof_warm", &[], &set).unwrap();
+        let rep = out[1].as_report().unwrap();
+        assert_eq!(metric(&out[1], "chamber_temp_c"), 60.0);
+        assert!(!rep.notes.iter().any(|(s, t)| *s == Severity::Warning && t.contains("chamber")));
+        let j = out[0].as_json().unwrap();
+        let filament: Value = serde_json::from_str(&std::fs::read_to_string(j["filament"].as_str().unwrap()).unwrap()).unwrap();
+        assert_eq!(filament["chamber_temperatures"][0], "60");
+        assert_eq!(filament["pressure_advance"][0], "0.05");
+        // A cold chamber for ASA is a warning, not a failure.
+        let cold = cook(&ProfileBuild, "prof_cold", &[], &[]).unwrap();
+        assert!(cold[1].as_report().unwrap().notes.iter().any(|(s, t)| *s == Severity::Warning && t.contains("chamber")));
+        // Old scenes that name a preset by its former id still resolve.
+        assert_eq!(crate::common::printer_bed("k2_plus", glam::DVec3::ZERO), glam::DVec3::splat(350.0));
     }
 
     #[test]

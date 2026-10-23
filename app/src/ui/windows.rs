@@ -255,7 +255,7 @@ fn gate_dashboard(app: &mut VernonApp, ctx: &egui::Context) {
                                 app.tab = super::PanelTab::Modify;
                             }
                             if let Some(e) = &ng.error {
-                                ui.label(RichText::new(e).small().color(theme::FAIL));
+                                ui.label(RichText::new(e).small().color(theme::FAIL_TEXT));
                                 ui.end_row();
                                 continue;
                             }

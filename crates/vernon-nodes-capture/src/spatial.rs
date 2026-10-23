@@ -7,7 +7,11 @@ use glam::DVec3;
 
 use crate::linalg::sym_eigen;
 
-type Key = [i32; 3];
+type Key = [i64; 3];
+
+/// Largest cell index magnitude; coordinates beyond it share the edge cell
+/// (a point at 1e300 mm must not overflow the key or stall a query).
+const KEY_LIMIT: f64 = (1u64 << 52) as f64;
 
 /// Hash grid over a point slice. Queries return indices into that slice.
 pub struct Grid {
@@ -16,12 +20,13 @@ pub struct Grid {
     cells: HashMap<Key, Vec<u32>>,
 }
 
+fn cell_index(v: f64) -> i64 {
+    // NaN casts to 0.
+    v.floor().clamp(-KEY_LIMIT, KEY_LIMIT) as i64
+}
+
 fn key_of(p: DVec3, inv: f64) -> Key {
-    [
-        (p.x * inv).floor() as i32,
-        (p.y * inv).floor() as i32,
-        (p.z * inv).floor() as i32,
-    ]
+    [cell_index(p.x * inv), cell_index(p.y * inv), cell_index(p.z * inv)]
 }
 
 impl Grid {
@@ -35,10 +40,23 @@ impl Grid {
         Grid { cell, inv, cells }
     }
 
+    /// The cell range to probe around a query of radius `r`, or `None` when
+    /// probing `(2 span + 1)^3` cells would cost more than testing every
+    /// point (a radius far larger than the cell, or an infinite one): the
+    /// caller then scans the point slice instead.
+    fn span(&self, r: f64, n_points: usize) -> Option<i64> {
+        let span = (r / self.cell).ceil().max(1.0);
+        let probes = (2.0 * span + 1.0).powi(3);
+        (probes <= n_points.max(27) as f64).then_some(span as i64)
+    }
+
     /// Append the indices of all points within `r` of `p` to `out`.
     pub fn radius_query(&self, points: &[DVec3], p: DVec3, r: f64, out: &mut Vec<u32>) {
         let r2 = r * r;
-        let span = (r / self.cell).ceil().max(1.0) as i32;
+        let Some(span) = self.span(r, points.len()) else {
+            out.extend((0..points.len() as u32).filter(|&i| (points[i as usize] - p).length_squared() <= r2));
+            return;
+        };
         let k = key_of(p, self.inv);
         for dx in -span..=span {
             for dy in -span..=span {
@@ -57,20 +75,28 @@ impl Grid {
 
     /// Nearest point within `r` (index, squared distance).
     pub fn nearest(&self, points: &[DVec3], p: DVec3, r: f64) -> Option<(u32, f64)> {
-        let span = (r / self.cell).ceil().max(1.0) as i32;
-        let k = key_of(p, self.inv);
         let mut best: Option<(u32, f64)> = None;
         let mut limit = r * r;
+        let mut visit = |i: u32, best: &mut Option<(u32, f64)>| {
+            let d2 = (points[i as usize] - p).length_squared();
+            if d2 <= limit && (best.is_none() || d2 < limit) {
+                *best = Some((i, d2));
+                limit = d2;
+            }
+        };
+        let Some(span) = self.span(r, points.len()) else {
+            for i in 0..points.len() as u32 {
+                visit(i, &mut best);
+            }
+            return best;
+        };
+        let k = key_of(p, self.inv);
         for dx in -span..=span {
             for dy in -span..=span {
                 for dz in -span..=span {
                     if let Some(v) = self.cells.get(&[k[0].wrapping_add(dx), k[1].wrapping_add(dy), k[2].wrapping_add(dz)]) {
                         for &i in v {
-                            let d2 = (points[i as usize] - p).length_squared();
-                            if d2 <= limit && (best.is_none() || d2 < limit) {
-                                best = Some((i, d2));
-                                limit = d2;
-                            }
+                            visit(i, &mut best);
                         }
                     }
                 }
@@ -182,6 +208,30 @@ mod tests {
         assert_eq!(pts[i as usize], DVec3::new(5.0, 6.0, 0.0));
         assert!((d2 - (0.09 + 0.01 + 0.16)).abs() < 1e-12);
         assert!(g.nearest(&pts, DVec3::new(100.0, 0.0, 0.0), 2.5).is_none());
+    }
+
+    #[test]
+    fn huge_radii_and_coordinates_neither_hang_nor_overflow() {
+        let mut pts = lattice(10);
+        pts.push(DVec3::new(1e300, -1e300, 5e17));
+        let g = Grid::build(&pts, 2.0);
+        let q = DVec3::new(4.2, 4.7, 0.1);
+        // A radius thousands of cells wide takes the scan path and agrees
+        // with a brute-force pass.
+        for r in [1e6, 1e300, f64::INFINITY] {
+            let mut out = Vec::new();
+            g.radius_query(&pts, q, r, &mut out);
+            out.sort_unstable();
+            let brute: Vec<u32> = (0..pts.len() as u32)
+                .filter(|&i| (pts[i as usize] - q).length_squared() <= r * r)
+                .collect();
+            assert_eq!(out, brute, "r = {r}");
+        }
+        assert_eq!(g.nearest(&pts, q, 1e300).map(|(i, _)| pts[i as usize]), Some(DVec3::new(4.0, 5.0, 0.0)));
+        // The outlier is found from its own neighbourhood.
+        let far = *pts.last().unwrap();
+        assert_eq!(g.nearest(&pts, far, 1.0).map(|(i, _)| i), Some(pts.len() as u32 - 1));
+        assert_eq!(voxel_groups(&pts, 1e-9).len(), pts.len());
     }
 
     #[test]

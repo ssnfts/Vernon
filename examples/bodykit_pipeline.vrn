@@ -27,12 +27,12 @@
             "params": { "thickness_mm": 3.0, "side": "inward" } },
 
     "12": { "type_id": "print.grid_partition", "name": "grid_split", "pos": [880, 0], "inputs": [[11, 0]],
-            "params": { "mode": "by_bed", "printer": "k1_max" } },
+            "params": { "mode": "by_bed", "printer": "bed_300" } },
     "13": { "type_id": "print.build_fit", "name": "bed_fit", "pos": [880, 120], "inputs": [[12, 0]],
-            "params": { "printer": "k1_max", "material": "asa" } },
+            "params": { "printer": "bed_300", "material": "asa" } },
     "14": { "type_id": "print.package_write", "name": "package_3mf", "pos": [880, 240], "inputs": [[13, 0]] },
 
-    "15": { "type_id": "cfd.air_state", "name": "air", "pos": [1100, 0], "params": { "u_ms": 30.0 } },
+    "15": { "type_id": "cfd.air_state", "name": "air", "pos": [1100, 0], "params": { "t_c": 45.0, "rh_pct": 30.0, "u_ms": 30.0 } },
     "16": { "type_id": "cfd.vehicle_prep", "name": "vehicle_prep", "pos": [1100, 120], "inputs": [[11, 0], null, null],
             "expect_fail": { "wheels_found": "the example prepares a single body panel, which has no wheels" } },
     "17": { "type_id": "cfd.frontal_area", "name": "frontal_area", "pos": [1100, 240], "inputs": [[16, 0]] },

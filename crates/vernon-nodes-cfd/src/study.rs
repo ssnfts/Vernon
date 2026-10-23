@@ -109,6 +109,11 @@ pub fn last_two_diff_pct(fine: f64, medium: f64) -> f64 {
     ((fine - medium) / fine).abs() * 100.0
 }
 
+/// Largest two-finest-grids change the acceptance rule may be given, percent. The project
+/// note asks for the last two grids within 1 to 2 %; a looser limit would accept a mesh that
+/// is not yet independent.
+pub const MAX_ACCEPT_PCT: f64 = 2.0;
+
 /// Acceptance: the two finest grids within `accept_pct` and the fine-grid GCI
 /// within `gci_max_pct`. Without a GCI (oscillatory) the spread of all three
 /// values must stay within twice the acceptance level instead.
@@ -129,14 +134,14 @@ fn study_info() -> NodeTypeInfo {
         .output(PortSpec::new("study", DataKind::Json))
         .output(PortSpec::new("accepted", DataKind::Json))
         .output(PortSpec::new("report", DataKind::Report))
-        .param(ParamSpec::choice("quantity", "Quantity", "cd", &["cd", "cda", "cl", "cla"]))
+        .param(ParamSpec::choice("quantity", "Quantity", "cd", &["cd", "cda", "cl", "cla"]).help("Quantity whose convergence over the three grids is judged: drag or lift coefficient, or the coefficient times area."))
         .param(ParamSpec::float("r21", "Refinement ratio medium/fine", 1.3, 1.25, 2.0).help("Linear cell-size ratio; cell count grows by r cubed"))
-        .param(ParamSpec::float("r32", "Refinement ratio coarse/medium", 1.3, 1.25, 2.0))
-        .param(ParamSpec::float("accept_pct", "Two-finest-grids change", 2.0, 0.5, 5.0).unit("%").help("Accept when the last two grids differ by less than this"))
-        .param(ParamSpec::float("gci_max_pct", "Fine-grid GCI limit", 3.0, 0.5, 10.0).unit("%"))
+        .param(ParamSpec::float("r32", "Refinement ratio coarse/medium", 1.3, 1.25, 2.0).help("Linear cell-size ratio between the coarse and the medium grid."))
+        .param(ParamSpec::float("accept_pct", "Two-finest-grids change", 2.0, 0.5, MAX_ACCEPT_PCT).unit("%").help("Accept when the last two grids differ by less than this. Capped at 2 %: the project note asks for the last two grids within 1 to 2 %."))
+        .param(ParamSpec::float("gci_max_pct", "Fine-grid GCI limit", 3.0, 0.5, 10.0).unit("%").help("Largest acceptable grid-convergence index on the fine grid. A larger value flags the result as not mesh independent."))
         .param(ParamSpec::float("fine_value", "Fine value (manual)", 0.0, -1.0e6, 1.0e6).help("Used when the fine input is not connected; 0 means not given"))
-        .param(ParamSpec::float("medium_value", "Medium value (manual)", 0.0, -1.0e6, 1.0e6))
-        .param(ParamSpec::float("coarse_value", "Coarse value (manual)", 0.0, -1.0e6, 1.0e6))
+        .param(ParamSpec::float("medium_value", "Medium value (manual)", 0.0, -1.0e6, 1.0e6).help("Value on the medium grid, used when the medium input is not connected. 0 means not given."))
+        .param(ParamSpec::float("coarse_value", "Coarse value (manual)", 0.0, -1.0e6, 1.0e6).help("Value on the coarse grid, used when the coarse input is not connected. 0 means not given."))
         .help("Three-grid convergence study: observed order, extrapolated value and grid-convergence index of the chosen coefficient, plus the two-finest-grids acceptance rule. Oscillating results are flagged and not extrapolated.")
         .emulates("automotive wind-tunnel service: mesh independence check")
         .spec("docs/specs/automotive-cfd.md")
@@ -177,7 +182,11 @@ fn study_cook(ctx: &CookContext, ins: &[Option<Data>], p: &Params) -> CookResult
         let study = json!({"placeholder": true, "quantity": quantity, "pass": false});
         return Ok(vec![Data::json(study), Data::json(json!({"placeholder": true})), Data::report(rep)]);
     }
-    let (accept, gci_max) = (p.float("accept_pct")?, p.float("gci_max_pct")?);
+    let (accept_asked, gci_max) = (p.float("accept_pct")?, p.float("gci_max_pct")?);
+    let accept = accept_asked.min(MAX_ACCEPT_PCT);
+    if accept_asked > MAX_ACCEPT_PCT {
+        rep.note(Severity::Warning, format!("the two-grids limit of {accept_asked} % was capped at {MAX_ACCEPT_PCT} %: a looser limit accepts meshes that are not yet independent"));
+    }
     let g = grid_convergence([grids[0].value, grids[1].value, grids[2].value], p.float("r21")?, p.float("r32")?)
         .map_err(|e| ctx.fail(e))?;
     let accepted = mesh_accepted(&g, accept, gci_max);
@@ -436,7 +445,7 @@ fn bench_info() -> NodeTypeInfo {
         .help("drivaer_set: fastback, estate, notchback in the three inputs. ahmed_set: 25 and 35 degrees in the first two."))
         .param(ParamSpec::float("band_pct", "Allowed drag error", 5.0, 1.0, 15.0).unit("%").help("The recipe is trusted for kit runs only inside this band"))
         .param(ParamSpec::float("slant_share_pct", "Slant pressure share of drag", 0.0, 0.0, 100.0).unit("%").help("Slant-body cases, from the solver run; 0 = not given"))
-        .param(ParamSpec::float("share_band_pts", "Share tolerance", 10.0, 1.0, 30.0).unit("%"))
+        .param(ParamSpec::float("share_band_pts", "Share tolerance", 10.0, 1.0, 30.0).unit("%").help("Largest allowed difference, in percentage points, between a computed share of the total and the benchmark share."))
         .help("Compares a benchmark run with the published wind-tunnel drag of the road-car body family (and the slant-body trends) and reports whether the recipe is within its error band. Kit runs should stay disabled until this passes.")
         .emulates("automotive wind-tunnel service: validation against reference data")
         .spec("docs/specs/automotive-cfd.md")
@@ -612,6 +621,20 @@ mod tests {
     }
 
     #[test]
+    fn two_grid_limit_is_capped_at_two_percent() {
+        // the two finest grids differ by 3.0 %: a 5 % limit would accept them, the cap does not
+        let ins: Vec<Option<Data>> = [0.2800, 0.2884, 0.2975].iter().map(|c| Some(Data::json(fr(*c, 0.001).to_json()))).collect();
+        let out = run(study_info, study_cook, &ins, &[("accept_pct", ParamValue::Float(5.0))]).unwrap();
+        let r = out[2].as_report().unwrap();
+        assert_eq!(out[0].as_json().unwrap()["accept_pct"], MAX_ACCEPT_PCT);
+        assert_eq!(out[0].as_json().unwrap()["pass"], false);
+        assert!(r.notes.iter().any(|(s, m)| *s == Severity::Warning && m.contains("capped")), "{r:?}");
+        // inside the cap nothing is said
+        let out = run(study_info, study_cook, &ins, &[("accept_pct", ParamValue::Float(2.0))]).unwrap();
+        assert!(!out[2].as_report().unwrap().notes.iter().any(|(_, m)| m.contains("capped")));
+    }
+
+    #[test]
     fn mesh_study_manual_values_and_missing_inputs() {
         let manual = [("fine_value", ParamValue::Float(6.063)), ("medium_value", ParamValue::Float(5.972)), ("coarse_value", ParamValue::Float(5.863)), ("r21", ParamValue::Float(1.5)), ("r32", ParamValue::Float(1.333))];
         let out = run(study_info, study_cook, &[], &manual).unwrap();
@@ -700,7 +723,7 @@ mod tests {
     fn compare_node_rejects_mismatched_mesh_or_boundary_treatment() {
         use crate::types::Recipe;
         let w = |r: ForceResult| Some(Data::json(r.to_json()));
-        let recipe = Recipe { dx0_m: Some(0.32), base_cells: Some(1000.0), levels: Some("{\"body\":[4,5]}".into()), ground_mode: "moving".into(), wheel_mode: "rotating".into(), yaw_deg: 0.0, turbulence: "kOmegaSST".into() };
+        let recipe = Recipe { dx0_m: Some(0.32), base_cells: Some(1000.0), levels: Some("{\"body\":[4,5]}".into()), ground_mode: "moving".into(), wheel_mode: "rotating".into(), yaw_deg: 0.0, turbulence: "kOmegaSST".into(), separated_flow: false };
         let (mut base, mut kit) = (fr(0.320, 0.0015), fr(0.340, 0.0015));
         base.recipe = Some(recipe.clone());
         kit.recipe = Some(recipe.clone());

@@ -143,6 +143,7 @@ impl NodeOp for FileWriteNode {
         let opts = WriteOptions {
             unit: file_unit(params.str("unit")?),
             ascii: params.bool("ascii")?,
+            ..Default::default()
         };
         vernon_io::write(&path, &g, &opts)
             .map_err(|e| ctx.fail(format!("cannot write '{}': {e}", path.display())))?;

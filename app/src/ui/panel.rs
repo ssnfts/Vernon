@@ -114,14 +114,31 @@ fn create_tab(app: &mut VernonApp, ui: &mut Ui) {
 }
 
 fn modify_tab(app: &mut VernonApp, ui: &mut Ui) {
-    let Some(primary) = app.st.primary() else {
+    // Pin Stack keeps the panel on one object whatever is selected; the pin
+    // follows the object when modifiers go on top of it.
+    if let Some(p) = app.pinned {
+        app.pinned = app.st.graph.nodes.contains_key(&p).then(|| app.st.object_of(p));
+    }
+    let Some(primary) = app.pinned.or(app.st.primary()) else {
         ui.label(RichText::new("Select an object to see its stack.").color(theme::TEXT_DIM));
         return;
     };
-    name_and_color(app, ui, primary);
-    let entry = app.st.current_entry().unwrap_or(primary);
+    ui.horizontal(|ui| {
+        let pinned = app.pinned.is_some();
+        let tip = if pinned {
+            "Unpin: the panel follows the selection again"
+        } else {
+            "Pin Stack: keep this object's stack in the panel when the selection changes"
+        };
+        if icons::button_sized(ui, Icon::Pin, pinned, tip, 20.0).clicked() {
+            app.pinned = if pinned { None } else { Some(primary) };
+        }
+        name_and_color(app, ui, primary);
+    });
+    let entry = app.st.entry_of(primary);
 
-    // Modifier List: types whose first input takes the entry's output.
+    // Modifier List: types whose first input takes the entry's output;
+    // recently used first. Typing narrows the list; Enter adds the first.
     let mut choices: Vec<(Stage, String, String)> = app
         .st
         .registry
@@ -135,13 +152,42 @@ fn modify_tab(app: &mut VernonApp, ui: &mut Ui) {
         .collect();
     choices.sort();
     let mut pick = None;
+    let typed = ui.add(
+        egui::TextEdit::singleline(&mut app.modifier_filter)
+            .hint_text("Type to find a modifier (Enter adds it)")
+            .desired_width(f32::INFINITY),
+    );
+    let filter = app.modifier_filter.trim().to_lowercase();
+    let shown: Vec<&(Stage, String, String)> = choices
+        .iter()
+        .filter(|(_, id, label)| filter.is_empty() || label.to_lowercase().contains(&filter) || id.contains(&filter))
+        .collect();
+    if typed.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) && !filter.is_empty() {
+        pick = shown.first().map(|c| c.1.clone());
+        app.modifier_filter.clear();
+    }
+    let recent: Vec<&(Stage, String, String)> = app
+        .st
+        .recent_modifiers
+        .iter()
+        .filter_map(|t| choices.iter().find(|c| &c.1 == t))
+        .collect();
+    let title = if filter.is_empty() { "Modifier List".to_string() } else { format!("Modifier List ({} found)", shown.len()) };
     egui::ComboBox::from_id_salt("modifier_list")
-        .selected_text("Modifier List")
+        .selected_text(title)
         .width(ui.available_width())
         .height(420.0)
         .show_ui(ui, |ui| {
+            if filter.is_empty() && !recent.is_empty() {
+                ui.label(RichText::new("Recently used").small().color(theme::ACCENT));
+                for (_, id, label) in &recent {
+                    if ui.selectable_label(false, format!("   {label}")).clicked() {
+                        pick = Some(id.clone());
+                    }
+                }
+            }
             let mut last = None;
-            for (stage, id, label) in &choices {
+            for (stage, id, label) in &shown {
                 if last != Some(*stage) {
                     ui.label(RichText::new(stage.label()).small().color(theme::ACCENT));
                     last = Some(*stage);
@@ -152,7 +198,11 @@ fn modify_tab(app: &mut VernonApp, ui: &mut Ui) {
             }
         });
     if let Some(id) = pick {
-        app.add_modifier(&id);
+        if app.st.primary() == Some(primary) {
+            app.add_modifier(&id);
+        } else if let Err(e) = app.st.add_modifier_to(primary, &id) {
+            app.st.error_text(e);
+        }
     }
 
     // The stack, top entry first.
@@ -183,7 +233,7 @@ fn modify_tab(app: &mut VernonApp, ui: &mut Ui) {
                     if node.bypass {
                         text = text.color(theme::DISABLED);
                     } else if app.st.error_of(*n).is_some() {
-                        text = text.color(theme::FAIL);
+                        text = text.color(theme::FAIL_TEXT);
                     }
                     if k == 0 {
                         text = text.strong();
@@ -201,12 +251,29 @@ fn modify_tab(app: &mut VernonApp, ui: &mut Ui) {
                         ui.label(RichText::new("WB").small().color(theme::WARN))
                             .on_hover_text("White-box node");
                     }
+                    let users = app.st.consumers(*n).len();
+                    if users > 1 {
+                        ui.label(RichText::new(format!("shared x{users}")).small().color(theme::ACCENT)).on_hover_text(format!(
+                            "Shared: feeds {users} nodes, so edits here change every stack built on it. Make Unique gives this object its own copy."
+                        ));
+                    }
                 });
             }
         });
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         ui.toggle_value(&mut app.st.show_end_result, "Show end result")
             .on_hover_text("Off: the viewport shows the object only up to the highlighted entry");
+        let shared = entry != primary && app.st.consumers(entry).len() > 1;
+        if ui
+            .add_enabled(shared, egui::Button::new("Make Unique"))
+            .on_hover_text("Give this object its own copy of the highlighted shared entry; the other stacks keep the original")
+            .on_disabled_hover_text("The highlighted entry is not shared with another stack")
+            .clicked()
+        {
+            if let Err(e) = app.st.make_unique(primary, entry) {
+                app.st.error_text(e);
+            }
+        }
         if ui.button("Remove").on_hover_text("Delete the highlighted entry and reconnect around it").clicked() {
             app.st.delete(&[entry]);
         }
@@ -214,6 +281,8 @@ fn modify_tab(app: &mut VernonApp, ui: &mut Ui) {
             app.st.reset_params(entry);
         }
     });
+    ui.checkbox(&mut app.st.preserve_stack, "Preserve stack position")
+        .on_hover_text("Re-selecting an object returns to the stack entry it was on");
     ui.separator();
 
     let Some(info) = app.st.info(entry).cloned() else { return };
@@ -232,7 +301,7 @@ fn modify_tab(app: &mut VernonApp, ui: &mut Ui) {
             ui.label(RichText::new(&info.help).small().color(theme::TEXT_DIM));
         }
         if let Some(e) = app.st.error_of(entry) {
-            ui.label(RichText::new(format!("✖ {e}")).color(theme::FAIL));
+            ui.label(RichText::new(format!("✖ {e}")).color(theme::FAIL_TEXT));
         }
         ui.add_space(4.0);
         params::rollout(app, ui, entry);
@@ -251,7 +320,7 @@ pub fn report_grid(ui: &mut Ui, r: &vernon_core::Report) {
     egui::Grid::new(("report_grid", r.title.as_str())).num_columns(4).striped(true).show(ui, |ui| {
         for (name, m) in &r.metrics {
             ui.label(name);
-            ui.label(RichText::new(format!("{:.4} {}", m.value, m.unit)).monospace());
+            ui.label(RichText::new(format!("{} {}", vernon_core::units::fixed4(m.value), m.unit)).monospace());
             match m.limit {
                 Some(l) => ui.label(
                     RichText::new(format!("{} {l:.4}", if m.lower_is_better { "≤" } else { "≥" }))
@@ -267,7 +336,7 @@ pub fn report_grid(ui: &mut Ui, r: &vernon_core::Report) {
     });
     for (sev, text) in &r.notes {
         let col = match sev {
-            vernon_core::Severity::Error => theme::FAIL,
+            vernon_core::Severity::Error => theme::FAIL_TEXT,
             vernon_core::Severity::Warning => theme::WARN,
             vernon_core::Severity::Info => theme::TEXT_DIM,
         };
@@ -278,7 +347,7 @@ pub fn report_grid(ui: &mut Ui, r: &vernon_core::Report) {
 pub fn state_color(s: GateState) -> Color32 {
     match s {
         GateState::Pass => theme::PASS,
-        GateState::Fail | GateState::Error => theme::FAIL,
+        GateState::Fail | GateState::Error => theme::FAIL_TEXT,
         _ => theme::TEXT_DIM,
     }
 }
@@ -483,7 +552,16 @@ fn display_tab(app: &mut VernonApp, ui: &mut Ui) {
         });
         ui.checkbox(&mut t.edged, "Edged faces (F4)");
         ui.checkbox(&mut app.vp.show_grid, "Home grid (G)");
-        ui.checkbox(&mut app.vp.show_gizmo, "Orientation gizmo");
+        ui.horizontal(|ui| {
+            ui.checkbox(&mut app.vp.show_gizmo, "View cube");
+            egui::ComboBox::from_id_salt("cube_size")
+                .selected_text(["Large", "Normal", "Small", "Tiny"][usize::from(app.vp.cube_size.min(3))])
+                .show_ui(ui, |ui| {
+                    for (k, s) in ["Large", "Normal", "Small", "Tiny"].into_iter().enumerate() {
+                        ui.selectable_value(&mut app.vp.cube_size, k as u8, s);
+                    }
+                });
+        });
     });
     rollout(ui, "Colour by", true, |ui| {
         for c in ColorBy::ALL {
@@ -538,6 +616,8 @@ fn utilities_tab(app: &mut VernonApp, ui: &mut Ui) {
             (Utility::Reports, "Reports"),
             (Utility::Statistics, "Scene Statistics"),
             (Utility::Listener, "Listener"),
+            (Utility::Units, "Units and Checks"),
+            (Utility::ExternalTools, "External Tools"),
             (Utility::CleanRoom, "Clean-Room Notice"),
         ]
         .into_iter()
@@ -562,6 +642,16 @@ fn utilities_tab(app: &mut VernonApp, ui: &mut Ui) {
             let nodes = app.st.report_nodes();
             if nodes.is_empty() {
                 ui.label(RichText::new("No reports yet.").color(theme::TEXT_DIM));
+            } else if ui
+                .button("Export all to CSV")
+                .on_hover_text("Every metric with its value, unit, limit, margin and state, then the notes; written next to the scene")
+                .clicked()
+            {
+                let path = report_export_path(app);
+                match app.st.export_reports(&path) {
+                    Ok(n) => app.st.info_text(format!("{n} metrics written to {}", path.display())),
+                    Err(e) => app.st.error_text(format!("report export failed: {e}")),
+                }
             }
             for n in nodes {
                 let Some(r) = app.st.report(n) else { continue };
@@ -604,7 +694,7 @@ fn utilities_tab(app: &mut VernonApp, ui: &mut Ui) {
             ui.label(RichText::new(crate::listener::HELP).small().color(theme::TEXT_DIM));
             egui::ScrollArea::vertical().max_height(300.0).stick_to_bottom(true).show(ui, |ui| {
                 for l in &app.st.log {
-                    let col = if l.error { theme::FAIL } else { theme::TEXT };
+                    let col = if l.error { theme::FAIL_TEXT } else { theme::TEXT };
                     ui.label(RichText::new(&l.text).monospace().size(11.0).color(col));
                 }
             });
@@ -623,6 +713,99 @@ fn utilities_tab(app: &mut VernonApp, ui: &mut Ui) {
         Some(Utility::CleanRoom) => {
             ui.label(super::windows::CLEAN_ROOM_TEXT);
         }
+        Some(Utility::Units) => units_and_checks(app, ui),
+        Some(Utility::ExternalTools) => external_tools(app, ui),
+    }
+}
+
+/// `<scene>_reports.csv` next to the scene, or in the untitled work folder.
+fn report_export_path(app: &VernonApp) -> std::path::PathBuf {
+    match &app.st.path {
+        Some(p) => {
+            let stem = p.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "scene".into());
+            p.with_file_name(format!("{stem}_reports.csv"))
+        }
+        None => app
+            .st
+            .graph
+            .work_root
+            .clone()
+            .unwrap_or_else(std::env::temp_dir)
+            .join("untitled_reports.csv"),
+    }
+}
+
+fn units_and_checks(app: &mut VernonApp, ui: &mut Ui) {
+    rollout(ui, "Units", true, |ui| {
+        egui::Grid::new("units").num_columns(2).show(ui, |ui| {
+            for (k, v) in [
+                ("Length", "mm"),
+                ("Angles", "degrees"),
+                ("Physics", "SI (N, Pa, W, kg/m3) with the unit on each value"),
+                ("Temperature", "°C"),
+                ("Up axis", "+Z"),
+            ] {
+                ui.label(k);
+                ui.label(RichText::new(v).color(theme::TEXT_DIM));
+                ui.end_row();
+            }
+        });
+    });
+    rollout(ui, "Checks", true, |ui| {
+        let errors: Vec<NodeId> = app.st.graph.nodes.keys().copied().filter(|id| app.st.error_of(*id).is_some()).collect();
+        let gates = crate::gate::stage_gates(&app.st);
+        let failing = gates.iter().filter(|g| g.state == GateState::Fail).count();
+        let col = |bad: bool| if bad { theme::FAIL_TEXT } else { theme::PASS };
+        ui.label(RichText::new(format!("Nodes with errors: {}", errors.len())).color(col(!errors.is_empty())));
+        for id in errors.iter().take(8) {
+            if ui.link(format!("  {}", app.st.name(*id))).clicked() {
+                app.st.select_only(app.st.object_of(*id));
+                app.st.stack_entry = Some(*id);
+                app.tab = PanelTab::Modify;
+            }
+        }
+        ui.label(RichText::new(format!("Failing stage gates: {failing} of {}", gates.len())).color(col(failing > 0)));
+        let unknown = app.st.graph.nodes.values().filter(|n| app.st.registry.info(&n.type_id).is_none()).count();
+        ui.label(RichText::new(format!("Unknown node types: {unknown}")).color(col(unknown > 0)));
+        if ui.button("Open Gate Dashboard").clicked() {
+            app.show.gates = true;
+        }
+    });
+}
+
+fn external_tools(app: &mut VernonApp, ui: &mut Ui) {
+    let tools = app.st.external_tools();
+    if tools.is_empty() {
+        ui.label(RichText::new("No node in this scene runs an external program.").color(theme::TEXT_DIM));
+        return;
+    }
+    ui.label(
+        RichText::new("Where each external program lives, for every node that runs it. Empty searches the program path.")
+            .small()
+            .color(theme::TEXT_DIM),
+    );
+    for t in tools {
+        rollout(ui, &format!("{} ({} node(s))", t.tool, t.nodes.len()), true, |ui| {
+            let current: Vec<&str> = t.nodes.iter().map(|(_, _, v)| v.as_str()).collect();
+            let same = current.windows(2).all(|w| w[0] == w[1]);
+            let buf = app
+                .tool_paths
+                .entry(t.tool.clone())
+                .or_insert_with(|| if same { current.first().copied().unwrap_or_default().to_string() } else { String::new() });
+            ui.add(egui::TextEdit::singleline(buf).hint_text("program or folder path").desired_width(f32::INFINITY));
+            if !same {
+                ui.label(RichText::new("The nodes use different paths.").small().color(theme::WARN));
+            }
+            let path = buf.trim().to_string();
+            if ui.button("Apply to all").clicked() {
+                let n = app.st.set_tool_path(&t.tool, &path);
+                app.st.info_text(format!("{}: path set on {n} node(s)", t.tool));
+            }
+            for (id, _, v) in &t.nodes {
+                let shown = if v.is_empty() { "(program path)" } else { v.as_str() };
+                ui.label(RichText::new(format!("{}: {shown}", app.st.name(*id))).small().color(theme::TEXT_DIM));
+            }
+        });
     }
 }
 

@@ -96,7 +96,7 @@ impl ParamSpec {
     }
 
     pub fn unit(mut self, unit: &str) -> Self {
-        self.unit = Some(unit.into());
+        self.unit = Some(vernon_core::units::canonical(unit).into_owned());
         self
     }
 

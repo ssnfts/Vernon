@@ -13,10 +13,17 @@ pub struct Metric {
 }
 
 impl Metric {
+    /// The unit is stored in its canonical spelling and a negative zero as a
+    /// plain zero (see [`crate::units`]).
     pub fn new(value: f64, unit: impl Into<String>) -> Self {
+        let unit = unit.into();
+        let unit = match crate::units::canonical(&unit) {
+            std::borrow::Cow::Borrowed(c) if c == unit => unit,
+            c => c.into_owned(),
+        };
         Self {
-            value,
-            unit: unit.into(),
+            value: crate::units::clean_zero(value),
+            unit,
             limit: None,
             lower_is_better: true,
         }

@@ -232,7 +232,7 @@ fn canvas(app: &mut VernonApp, ui: &mut egui::Ui) {
             }
         });
         let resp = match &error {
-            Some(e) => resp.on_hover_text(RichText::new(e).color(theme::FAIL)),
+            Some(e) => resp.on_hover_text(RichText::new(e).color(theme::FAIL_TEXT)),
             None => resp.on_hover_text(&info.help),
         };
         let _ = resp;

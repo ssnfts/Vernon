@@ -75,6 +75,71 @@ pub fn tri_jacobian(p: [DVec3; 3], u: [DVec2; 3]) -> Option<(f64, f64, f64)> {
     Some((q + r, q - r, a * d - b * c))
 }
 
+/// Fibre direction and trellis shear of a woven ply on the pattern, per primitive.
+#[derive(Debug, Clone, Default)]
+pub struct PlyFields {
+    /// Angle of the warp fibre in the flat pattern, degrees from the pattern X axis.
+    pub fibre_deg: Vec<f64>,
+    /// Shear of the weave in the pattern: how far the right angle between warp and weft has
+    /// closed or opened, degrees (always >= 0).
+    pub shear_deg: Vec<f64>,
+    /// Primitives where the fibre direction is undefined (degenerate triangle, or the
+    /// direction is normal to the surface); their values are zero.
+    pub undefined: usize,
+}
+
+/// Fibre angle and shear of a woven ply whose warp follows `dir` (projected on each
+/// face) on the 3-D surface `g`, once laid out on the pattern `uv`. The weft is the
+/// in-plane perpendicular. A rigid unroll leaves the right angle intact (shear 0); a
+/// double-curved surface shears the weave, and past the locking angle of the cloth
+/// it wrinkles. For a face with several triangles the fibre angle is that of the first
+/// and the shear the largest.
+pub fn ply_fields(g: &Geometry, uv: &[DVec2], dir: DVec3) -> PlyFields {
+    let np = g.prims.len();
+    let mut out = PlyFields { fibre_deg: vec![0.0; np], shear_deg: vec![0.0; np], undefined: 0 };
+    let mut seen = vec![false; np];
+    for (pi, t) in g.triangles() {
+        let p = [g.points[t[0] as usize], g.points[t[1] as usize], g.points[t[2] as usize]];
+        let u = [uv[t[0] as usize], uv[t[1] as usize], uv[t[2] as usize]];
+        let Some(x) = local_frame(p) else { continue };
+        let e1 = (p[1] - p[0]).normalize();
+        let n = (p[1] - p[0]).cross(p[2] - p[0]).normalize();
+        let e2 = n.cross(e1);
+        let d = dir - n * dir.dot(n);
+        if d.length_squared() < 1e-18 * dir.length_squared().max(1e-300) || d.length_squared() < 1e-18 {
+            continue;
+        }
+        let warp = DVec2::new(d.dot(e1), d.dot(e2)).normalize();
+        let weft = DVec2::new(-warp.y, warp.x);
+        // Jacobian from the local 2-D triangle to the pattern: J = [du1 du2] * [dx1 dx2]^-1
+        let (dx1, dx2) = (x[1] - x[0], x[2] - x[0]);
+        let (du1, du2) = (u[1] - u[0], u[2] - u[0]);
+        let det = dx1.perp_dot(dx2);
+        if det.abs() < 1e-18 {
+            continue;
+        }
+        let map = |v: DVec2| {
+            // solve v = a dx1 + b dx2, then the image is a du1 + b du2
+            let a = v.perp_dot(dx2) / det;
+            let b = dx1.perp_dot(v) / det;
+            du1 * a + du2 * b
+        };
+        let (a, b) = (map(warp), map(weft));
+        if a.length_squared() < 1e-24 || b.length_squared() < 1e-24 {
+            continue;
+        }
+        let angle = (a.dot(b) / (a.length() * b.length())).clamp(-1.0, 1.0).acos();
+        let shear = (PI / 2.0 - angle).abs().to_degrees();
+        if !seen[pi] {
+            out.fibre_deg[pi] = a.y.atan2(a.x).to_degrees();
+            seen[pi] = true;
+        }
+        out.shear_deg[pi] = out.shear_deg[pi].max(shear);
+    }
+    out.undefined = seen.iter().filter(|s| !**s).count();
+    out
+}
+
 /// Strain of the pattern `uv` (indexed like `g.points`) against `g`.
 pub fn compute_strain(g: &Geometry, uv: &[DVec2], o: &StrainOpts) -> StrainResult {
     let tris = g.triangles();
@@ -250,6 +315,28 @@ mod tests {
         );
         let uv = g.points.iter().map(|p| DVec2::new(p.x, p.y)).collect();
         (g, uv)
+    }
+
+    #[test]
+    fn ply_fibre_angle_and_shear_follow_the_pattern() {
+        let (g, uv) = tri_pair();
+        // identity layout: a warp along X stays at 0 degrees and the weave stays square
+        let f = ply_fields(&g, &uv, DVec3::X);
+        assert_eq!(f.undefined, 0);
+        assert!(f.fibre_deg.iter().all(|a| a.abs() < 1e-9) && f.shear_deg.iter().all(|s| *s < 1e-9));
+        // a warp along Y reads 90 degrees
+        assert!(ply_fields(&g, &uv, DVec3::Y).fibre_deg.iter().all(|a| (a - 90.0).abs() < 1e-9));
+        // the pattern turned by 30 degrees turns the fibre by 30 degrees without shearing it
+        let rot: Vec<DVec2> = uv.iter().map(|u| DVec2::from_angle(30f64.to_radians()).rotate(*u)).collect();
+        let f = ply_fields(&g, &rot, DVec3::X);
+        assert!(f.fibre_deg.iter().all(|a| (a - 30.0).abs() < 1e-9) && f.shear_deg.iter().all(|s| *s < 1e-9));
+        // a pure shear x' = x + y/2 closes the weave: the weft goes to (0.5, 1), 63.43 degrees from the warp
+        let sheared: Vec<DVec2> = uv.iter().map(|u| DVec2::new(u.x + 0.5 * u.y, u.y)).collect();
+        let f = ply_fields(&g, &sheared, DVec3::X);
+        let want = 90.0 - (1.0f64).atan2(0.5).to_degrees();
+        assert!(f.shear_deg.iter().all(|s| (s - want).abs() < 1e-9), "{:?} vs {want}", f.shear_deg);
+        // a direction along the face normal has no fibre direction
+        assert_eq!(ply_fields(&g, &uv, DVec3::Z).undefined, 2);
     }
 
     #[test]

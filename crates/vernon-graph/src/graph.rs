@@ -607,6 +607,12 @@ impl Graph {
         self.deferred
     }
 
+    /// Node evaluations (signature work included) in the last cook pass:
+    /// at most one per node, however many paths reach it.
+    pub fn last_visits(&self) -> usize {
+        self.visits
+    }
+
     /// A hash of the size and time stamp of every file the graph's nodes
     /// read. The app polls it to cook again when such a file changes.
     pub fn read_files_stamp(&self, registry: &Registry) -> u64 {

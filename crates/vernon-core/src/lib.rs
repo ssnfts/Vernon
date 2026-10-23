@@ -8,11 +8,15 @@
 //!
 //! All lengths are millimetres unless an attribute or report says otherwise.
 
+pub mod air;
 pub mod attrib;
+pub mod clean_room;
 pub mod geometry;
 pub mod materials;
 pub mod process;
 pub mod report;
+pub mod stats;
+pub mod units;
 
 pub use attrib::{AttribArray, AttribTable, AttribType};
 pub use geometry::{Aabb, Geometry, Prim};

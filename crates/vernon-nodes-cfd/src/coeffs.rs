@@ -304,11 +304,8 @@ pub struct Stats {
     pub p95: f64,
 }
 
-fn percentile(sorted: &[f64], q: f64) -> f64 {
-    let pos = q * (sorted.len() - 1) as f64;
-    let (lo, hi) = (pos.floor() as usize, pos.ceil() as usize);
-    sorted[lo] + (sorted[hi] - sorted[lo]) * (pos - lo as f64)
-}
+// Nearest-rank percentile, the shared convention of `vernon_core::stats`.
+use vernon_core::stats::nearest_rank as percentile;
 
 /// Mean, standard deviation, drift and the 5-95% band. `None` for empty or
 /// non-finite input.
@@ -319,7 +316,7 @@ pub fn window_stats(v: &[f64]) -> Option<Stats> {
     }
     let nf = n as f64;
     let mean = v.iter().sum::<f64>() / nf;
-    let var = if n > 1 { v.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / (nf - 1.0) } else { 0.0 };
+    let sd = vernon_core::stats::sample_std(v);
     let centre = (nf - 1.0) / 2.0;
     let (mut sxy, mut sxx) = (0.0, 0.0);
     for (i, x) in v.iter().enumerate() {
@@ -331,7 +328,7 @@ pub fn window_stats(v: &[f64]) -> Option<Stats> {
     let drift_pct = if mean.abs() > 0.0 { slope * nf / mean.abs() * 100.0 } else { 0.0 };
     let mut sorted = v.to_vec();
     sorted.sort_by(f64::total_cmp);
-    Some(Stats { n, mean, sd: var.sqrt(), drift_pct, p05: percentile(&sorted, 0.05), p95: percentile(&sorted, 0.95) })
+    Some(Stats { n, mean, sd, drift_pct, p05: percentile(&sorted, 0.05), p95: percentile(&sorted, 0.95) })
 }
 
 /// Coefficient from a force: `F / (q Aref)`.
@@ -622,7 +619,7 @@ fn force_info() -> NodeTypeInfo {
         .param(ParamSpec::float("rho_inf", "Density of the run", 1.225, 0.9, 1.3).unit("kg/m3").help("Overridden by a wired air state"))
         .param(ParamSpec::float("u_ms", "Speed of the run", 30.0, 10.0, 100.0).unit("m/s").help("Overridden by a wired air state; otherwise the speed recorded in the history is used"))
         .param(ParamSpec::bool("custom_cofr", "Custom centre of rotation", false).help("Off: the centre of rotation recorded by the solver, else mid-wheelbase"))
-        .param(ParamSpec::float("cofr_x_m", "Centre of rotation x", 0.0, -10.0, 20.0).unit("m"))
+        .param(ParamSpec::float("cofr_x_m", "Centre of rotation x", 0.0, -10.0, 20.0).unit("m").help("Centre of rotation for the moment coefficients: x position in metres from the nose."))
         .param(ParamSpec::bool("custom_drag_height", "Custom drag height", false).help("Off: the drag acts at mid-height of the vehicle (lowest point + height / 2)"))
         .param(ParamSpec::float("drag_height_m", "Drag line height", 0.45, -1.0, 5.0).unit("m").help("Height of the drag's line of action in the solver frame; its pitch moment is removed before the axle split"))
         .help("Drag and lift coefficients, CdA and ClA, front/rear axle split and aero balance with their iteration spread, from the solver's force histories. Checks the reference area so a half-car run can never be normalised by the full area.")
@@ -635,6 +632,7 @@ fn force_info() -> NodeTypeInfo {
 fn force_report(c: &Computed) -> Report {
     let r = &c.result;
     let mut rep = Report::new("Force coefficients");
+    rep.note(Severity::Info, vernon_core::stats::CONVENTION);
     rep.metric("data_available", Metric::new(1.0, "-").with_limit(1.0, false))
         .metric("Cd", Metric::new(r.cd, "-"))
         .metric("Cl", Metric::new(r.cl, "-"))
@@ -657,6 +655,13 @@ fn force_report(c: &Computed) -> Report {
         rep.note(*sev, text.clone());
     }
     rep.note(Severity::Info, "downforce is less trustworthy than drag in steady RANS; trust only A/B deltas on a validated recipe");
+    if c.result.recipe.as_ref().is_some_and(|r| r.separated_flow) {
+        rep.metric("separated_flow_flagged", Metric::new(1.0, "-"));
+        rep.note(
+            Severity::Warning,
+            "the case is flagged with separated-flow features (diffuser, rear wing near stall or tail separation): steady k-omega SST misses or smears that separation, so read these coefficients as a trend and confirm them with a transient detached-eddy (DDES or SBES) run",
+        );
+    }
     rep
 }
 
@@ -793,9 +798,9 @@ fn conv_info() -> NodeTypeInfo {
         .output(PortSpec::new("status", DataKind::Json))
         .output(PortSpec::new("report", DataKind::Report))
         .param(ParamSpec::choice("column", "Monitored quantity", "auto", &["auto", "Cd", "Cl", "Fx", "Fz"]).help("auto: drag coefficient, else drag force"))
-        .param(ParamSpec::int("window", "Window", 1000, 100, 2000).unit("iter"))
+        .param(ParamSpec::int("window", "Window", 1000, 100, 2000).unit("iter").help("Number of final iterations the drift of each coefficient is measured over."))
         .param(ParamSpec::float("tol_pct", "Window-to-window change", 0.2, 0.01, 2.0).unit("%").help("Mean of the last window against the one before"))
-        .param(ParamSpec::float("drift_limit_pct", "Drift per window", 0.1, 0.01, 2.0).unit("%"))
+        .param(ParamSpec::float("drift_limit_pct", "Drift per window", 0.1, 0.01, 2.0).unit("%").help("Largest acceptable drift of a coefficient over the window, in percent. A larger drift marks the run as not converged."))
         .param(ParamSpec::float("sd_limit_pct", "Scatter flag level", 0.5, 0.05, 5.0).unit("%").help("Above this the result is flagged unsteady: report the spread, not just the mean"))
         .param(ParamSpec::float("residual_target", "Residual target", 1e-5, 1e-6, 1e-3).help("RMS initial residual of every field over the last window"))
         .param(ParamSpec::bool("require_residuals", "Require residual history", true).help("Without residuals convergence cannot be certified"))
@@ -1009,6 +1014,22 @@ mod tests {
         // the same history as a full-car run gives half the force coefficients
         let full = compute_forces(&s, &ForceSpec { half_model: false, ..spec }).unwrap().result;
         assert!((full.cd * 2.0 - c.cd).abs() < 1e-9);
+    }
+
+    #[test]
+    fn separated_flow_flag_reaches_the_force_report() {
+        let mut rf = RefGeom::reference_car();
+        rf.a_front_m2 = 2.0;
+        let s = force_series(300, 548.0, -428.25, 0.0);
+        let spec = ForceSpec { rf: &rf, half_model: true, window: 100, rho: 1.11, u_wire: Some(200.0 / 3.6), u_param: 30.0, cofr_x: None, drag_z: None };
+        let mut c = compute_forces(&s, &spec).unwrap();
+        let plain = force_report(&c);
+        assert!(!plain.notes.iter().any(|(_, m)| m.contains("separated-flow")));
+        assert!(!plain.metrics.contains_key("separated_flow_flagged"));
+        c.result.recipe = Some(crate::types::Recipe { separated_flow: true, ..Default::default() });
+        let flagged = force_report(&c);
+        assert!(flagged.notes.iter().any(|(sev, m)| *sev == Severity::Warning && m.contains("separated-flow") && m.contains("DDES")), "{flagged:?}");
+        assert_eq!(flagged.metrics["separated_flow_flagged"].value, 1.0);
     }
 
     #[test]

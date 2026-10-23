@@ -182,6 +182,12 @@ Shift+G H L C S W P hide geometry, helpers, lights, cameras, shapes, space warps
 I pan, Ctrl+R orbit, [ and ] zoom in and out.
 - Undo: Ctrl+Z and Ctrl+Y scene undo and redo, Shift+Z and Shift+Y viewport undo and redo.
 
+Vernon status [design]: 37 of the 61 chords are bound (`BINDINGS` in `app/src/hotkeys.rs`; `[` zooms in, `]` out, Alt+Home is the home view, Ctrl+R switches the orbit
+style, Ctrl+Shift+A selects objects of the same node type, 7 opens the statistics utility). The other 24 name features Vernon does not have (snap-type cycling, affect-pivot
+mode, gizmo axis and plane constraints and size, global search, quad-set lock, camera view, shade-selected-faces, safe frames, see-through, adaptive degradation, zoom and
+pan modes, the Shift+G/H/L/C/S/W/P hide categories). They stay in the `RESERVED` list of the same file, resolve to no action and cannot be given to another command;
+a test checks the whole table, bound and reserved, for conflicts.
+
 No bottom-view key appears in the table [doc]; Vernon assigns B [design]. Walk-through keys (2.3) are a modal context and may reuse letters. Vernon default mouse map: MMB pan,
 Alt+MMB orbit, wheel zoom to cursor, RMB quad menu [design on 2.3].
 
@@ -272,6 +278,13 @@ downstream cells until re-run. Clicking a cell selects the producing node. Examp
 dry; 1.098 / 1.225 = 0.896, -10.4% at 45 C and 30% RH) [report]; heat margin from the slicing spec. Icons are drawn in-house (24 px grid, 1.5 px stroke); no vendor name, logo
 or glyph appears in labels, help or menus.
 
+Status (implemented): Scene Explorer rows carry visibility, lock (locked objects cannot be picked or transformed in the viewports), colour, name, gate, stage and
+last run (time since the object last produced a new result), sortable by name, stage or last run; rows are per object (a part split is one object), not per part.
+Utilities: Units and Checks (scene units, nodes with errors, failing gates, unknown node types), External Tools (one program location per external program, applied to
+every node that runs it) and a CSV export of every report metric (Reports page). Hotkeys: Alt+Q isolate (again to end), Alt+I hide unselected, Ctrl+Shift+N selection
+lock, Ctrl+W zoom region, F12 transform type-in. Not yet: Hierarchy parts with parent/child links, joint datums and pivots (the Hierarchy tab counts faces per `part`
+value only).
+
 ### 4.2 Proposed nodes
 
 Support nodes are headless: pure functions of their inputs, so shell logic is unit-testable without a window. "Now" = implement from this spec; "WB" = white-box-first.
@@ -295,7 +308,7 @@ Support nodes are headless: pure functions of their inputs, so shell logic is un
 
 14 nodes proposed. Ids use the registry's stage prefixes (`geo.`, `perf.`).
 
-Status (implemented): the logic of #1-#12 is UI-state logic and lives as headless, unit-tested app modules rather than graph nodes, because it works on window, camera and selection state that no graph wire carries: #1 `app/src/viewport/layout.rs`, #2/#5/#6 `app/src/viewport/camera.rs`, #3 `app/src/viewport/grid.rs`, #4 the viewport orientation gizmo (six axis views so far; the 26-region cube is still to do), #7 the Move/Rotate/Scale tools (the status-bar numeric type-in is still to do), #8 the Utilities statistics page, #9 the Modify stack, #10 the node editor's layered layout, #11 `app/src/hotkeys.rs`, #12 `app/src/theme.rs`. #13 is the Motion tab's study sweep (`app/src/study.rs`): it maps the time-slider frame to a node parameter, passes the frame to every cook (`Graph::frame` -> `CookContext::frame`) and keeps a solved/failed/stale state per sample for the track bar. #14 is a registered node, `perf.gate_summary`, built on the gate rules in `vernon_graph::gate` that the app's Gate Dashboard and `vernon-cli cook` share.
+Status (implemented): the logic of #1-#12 is UI-state logic and lives as headless, unit-tested app modules rather than graph nodes, because it works on window, camera and selection state that no graph wire carries: #1 `app/src/viewport/layout.rs`, #2/#5/#6 `app/src/viewport/camera.rs`, #3 `app/src/viewport/grid.rs`, #4 `app/src/viewport/viewcube.rs` (26 regions, roll arrows and neighbour-face triangles in face views, drag snapping within 10 deg, four sizes, 0.5 inactive opacity), #7 `app/src/typein.rs` (status-bar Absolute/Offset X/Y/Z fields and the F12 dialog, on top of the Move/Rotate/Scale tools), #8 the Utilities statistics page, #9 the Modify stack (Pin Stack, Make Unique, Preserve Stack Position saved with the scene, a recently used list of 20 and type-to-find in the modifier list; logic in `app/src/state.rs` and `app/src/scene_ops.rs`), #10 the node editor's layered layout, #11 `app/src/hotkeys.rs`, #12 `app/src/theme.rs`. #13 is the Motion tab's study sweep (`app/src/study.rs`): it maps the time-slider frame to a node parameter, passes the frame to every cook (`Graph::frame` -> `CookContext::frame`) and keeps a solved/failed/stale state per sample for the track bar. #14 is a registered node, `perf.gate_summary`, built on the gate rules in `vernon_graph::gate` that the app's Gate Dashboard and `vernon-cli cook` share.
 
 ## 5. Golden test ideas (numbers)
 
@@ -324,7 +337,7 @@ integers and strings.
 11. Numeric transform: object at (10, 20, 30): offset (5, 0, 0) gives (15, 20, 30) and the offset field returns to 0; absolute 5 on X gives (5, 20, 30); with nothing selected
     the node returns a disabled readout.
 12. Undo split: move (scene), orbit (viewport): Ctrl+Z reverts the move and leaves the camera; Shift+Z reverts the orbit and leaves the object.
-13. Hotkeys: every chord in 2.12 (61 by our count) plus B resolves with zero conflicts per context; W, E, R, Q map to move, rotate, scale, select; Alt+W twice returns tile
+13. Hotkeys: every chord in 2.12 (61 by our count) plus B is bound or reserved (see the status note in 2.12) with zero conflicts per context; W, E, R, Q map to move, rotate, scale, select; Alt+W twice returns tile
     rects identical to the start.
 14. Layout: 1360 x 760 px area with gutter 2: four tiles tile exactly (sum of areas = area minus gutters); maximise then restore gives identical rects; right-click activation
     leaves the selection set unchanged, left-click on empty space clears it.

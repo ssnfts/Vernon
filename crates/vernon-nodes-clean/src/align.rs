@@ -1093,6 +1093,28 @@ mod tests {
     }
 
     #[test]
+    fn icp_with_an_independently_sampled_moving_cloud() {
+        // A different random sample of the same ellipsoid: no moving point has an
+        // exact counterpart, so the correspondences are only as good as the
+        // sampling density and the registration has to recover the true pose.
+        let reference = ellipsoid_cloud(120.0, 60.0, 40.0, 20_000, 11);
+        let sample = ellipsoid_cloud(120.0, 60.0, 40.0, 12_000, 97);
+        assert!(sample.points.iter().zip(&reference.points).all(|(a, b)| (*a - *b).length() > 1e-6));
+        let tr = pose(3.0, DVec3::new(1.0, 2.0, 3.0), DVec3::new(2.0, -1.0, 0.5));
+        let moving = tr.apply_to(&sample);
+        let out = run(icp_info, icp_cook, vec![geo(moving), geo(reference)], &[]).unwrap();
+        let o = out_geo(&out[0]);
+        let max_err = o.points.iter().zip(&sample.points).map(|(a, b)| (*a - *b).length()).fold(0.0, f64::max);
+        assert!(max_err < 0.05, "max error against the true pose {max_err}");
+        let r = out_report(&out[2]);
+        assert_eq!(r.metrics["converged"].value, 1.0);
+        assert!(r.metrics["rms_all_before"].value > 1.0);
+        // the pair distances are limited by the sample spacing (about 1.7 mm), not zero
+        let rp = r.metrics["rms_pairs"].value;
+        assert!(rp > 0.2 && rp < 2.0, "rms of the pairs {rp}");
+    }
+
+    #[test]
     fn icp_point_to_point_matches() {
         let (reference, moving, _) = ellipsoid_case();
         let out = run(

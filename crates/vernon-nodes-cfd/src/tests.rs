@@ -11,7 +11,7 @@ use crate::coeffs::ForceResult;
 use crate::types::Series;
 use crate::util::testutil::{ctx, synthetic_car, tmp};
 
-const EXPECTED: [&str; 20] = [
+const EXPECTED: [&str; 21] = [
     "air_state",
     "frontal_area",
     "symmetry_check",
@@ -20,6 +20,7 @@ const EXPECTED: [&str; 20] = [
     "ground_wheels",
     "porous_core",
     "refinement_plan",
+    "mesh_levels",
     "mesh_setup",
     "mesh_build",
     "mesh_quality",
@@ -319,4 +320,15 @@ fn data_kinds_of_declared_ports_match_the_documented_chain() {
     assert_eq!(kind("cfd.mesh_setup", "case"), DataKind::File);
     assert_eq!(kind("cfd.surface_pressure", "surface"), DataKind::Geometry);
     assert_eq!(kind("cfd.compare_ab", "delta"), DataKind::Json);
+}
+
+#[test]
+fn window_percentiles_use_the_shared_nearest_rank_convention() {
+    // 1..10: nearest-rank p95 is 10 (linear interpolation would give 9.55),
+    // the same number the clean and surface stages gate on.
+    let v: Vec<f64> = (1..=10).map(f64::from).collect();
+    let s = crate::coeffs::window_stats(&v).unwrap();
+    assert_eq!(s.p95, 10.0);
+    assert_eq!(s.p05, 1.0);
+    assert!((s.sd - vernon_core::stats::sample_std(&v)).abs() < 1e-15);
 }

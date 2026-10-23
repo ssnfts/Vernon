@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use crate::{CookError, CookResult, Data, DataKind, ParamSpec, Params};
+use crate::{CookError, CookResult, Data, DataKind, ParamKind, ParamSpec, Params};
 
 /// The body-kit pipeline stage a node belongs to. Drives grouping in the
 /// Create panel and the pipeline-gate dashboard.
@@ -116,6 +116,29 @@ pub struct NodeTypeInfo {
 }
 
 impl NodeTypeInfo {
+    /// Every string of this node a user can read: label, help, port and
+    /// parameter names and labels, units, tooltips, text defaults and choice
+    /// options. Not `emulates` or `spec`, which are documentation.
+    pub fn visible_strings(&self) -> Vec<String> {
+        let mut v = vec![self.label.clone(), self.help.clone()];
+        for p in self.inputs.iter().chain(&self.outputs) {
+            v.push(p.name.clone());
+        }
+        for p in &self.params {
+            v.extend([p.name.clone(), p.label.clone(), p.help.clone()]);
+            v.extend(p.unit.clone());
+            match &p.kind {
+                ParamKind::Str { default } | ParamKind::Path { default, .. } => v.push(default.clone()),
+                ParamKind::Enum { default, options } => {
+                    v.push(default.clone());
+                    v.extend(options.iter().cloned());
+                }
+                _ => {}
+            }
+        }
+        v
+    }
+
     pub fn new(id: &str, label: &str, stage: Stage) -> Self {
         Self {
             id: id.into(),

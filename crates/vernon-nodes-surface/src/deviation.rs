@@ -31,7 +31,6 @@ pub fn dev_stats(signed: &[f64], tol: f64) -> DevStats {
     let n = signed.len() as f64;
     let mean = signed.iter().sum::<f64>() / n;
     let rms = (signed.iter().map(|d| d * d).sum::<f64>() / n).sqrt();
-    let var = signed.iter().map(|d| (d - mean) * (d - mean)).sum::<f64>() / n;
     let mut abs: Vec<f64> = signed.iter().map(|d| d.abs()).collect();
     abs.sort_by(|a, b| a.total_cmp(b));
     let within = abs.partition_point(|&d| d <= tol + 1e-12);
@@ -39,7 +38,8 @@ pub fn dev_stats(signed: &[f64], tol: f64) -> DevStats {
         count: signed.len(),
         mean,
         rms,
-        std: var.sqrt(),
+        // sample (N - 1) standard deviation, the shared convention
+        std: vernon_core::stats::sample_std(signed),
         max_abs: *abs.last().expect("non-empty"),
         p50: percentile(&abs, 50.0),
         p95: percentile(&abs, 95.0),
@@ -197,6 +197,7 @@ impl NodeOp for DeviationCheckNode {
             percentile(&a, p_gate)
         };
         let mut report = Report::new("Surface deviation");
+        report.note(vernon_core::Severity::Info, vernon_core::stats::CONVENTION);
         report.metric("dev_mean_mm", Metric::new(st.mean, "mm"));
         report.metric("dev_rms_mm", Metric::new(st.rms, "mm"));
         report.metric("dev_std_mm", Metric::new(st.std, "mm"));
@@ -316,5 +317,18 @@ mod tests {
         let s = dev_stats(&[-1.0, 2.0, 0.0, 1.0], 1.0);
         assert_eq!(s.max_abs, 2.0);
         assert!((s.pct_within - 75.0).abs() < 1e-9);
+    }
+}
+
+#[cfg(test)]
+mod shared_convention_tests {
+    #[test]
+    fn dev_stats_use_nearest_rank_and_sample_std() {
+        let v: Vec<f64> = (1..=10).map(f64::from).collect();
+        let s = super::dev_stats(&v, 9.8);
+        // nearest rank: p95 of 1..10 is 10, so a 9.8 gate fails here as in the clean stage
+        assert_eq!(s.p95, 10.0);
+        assert_eq!(s.p50, 5.0);
+        assert!((s.std - vernon_core::stats::sample_std(&v)).abs() < 1e-12);
     }
 }

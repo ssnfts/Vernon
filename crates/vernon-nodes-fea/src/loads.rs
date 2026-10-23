@@ -13,8 +13,9 @@ use crate::mesh::{boundary_faces, corners, element_volume, BFace, EDGES10, FACES
 use crate::spatial::TriGrid;
 use crate::types::{FacePressure, NodalForce};
 
-/// Standard gravity in the deck's unit system (mm/s2).
-pub const G_MM_S2: f64 = 9810.0;
+/// Standard gravity in the deck's unit system (mm/s2), from the one constant
+/// the performance stage also uses.
+pub const G_MM_S2: f64 = 1000.0 * vernon_core::units::STANDARD_GRAVITY_M_S2;
 
 /// q = 1/2 rho v^2 in Pa for a density in kg/m3 and a speed in km/h.
 pub fn dynamic_pressure_pa(rho_kg_m3: f64, v_kmh: f64) -> f64 {
@@ -394,9 +395,9 @@ mod tests {
         let m = mesh_mass_tonne(&g, rho);
         assert!((m - 8000.0 * rho).abs() < 1e-18);
         let a = accel_field(0.0, DVec3::NEG_Z, true);
-        assert!((m * a.length() - 8000.0 * rho * 9810.0).abs() < 1e-12);
+        assert!((m * a.length() - 8000.0 * rho * G_MM_S2).abs() < 1e-12);
         let bump = accel_field(4.0, DVec3::NEG_Z, true);
-        assert!((bump.z + 5.0 * 9810.0).abs() < 1e-9);
+        assert!((bump.z + 5.0 * G_MM_S2).abs() < 1e-9);
         assert_eq!(nearest_node(&g, DVec3::new(-20.0, -10.0, -5.0)).map(|i| g.points[i as usize]), Some(DVec3::new(-20.0, -10.0, -5.0)));
     }
 }

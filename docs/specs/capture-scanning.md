@@ -188,6 +188,59 @@ Tolerances: closed-form checks 1e-6 relative; stochastic checks fixed RNG seed.
 - Open3D-derived thresholds (voxel multiples) came from room-scale RGB-D data; confirm on car panels (golden tests 14-17) before freezing defaults.
 - All scanner accuracy numbers are vendor or retailer claims; the only independent figure is the 0.03-0.04 mm reviewer measurement on a small part.
 
+## 6a. Node map: stage-1 nodes and point-cloud filters under their registered ids
+
+Section 4 used working names; the ids below are the registered ones. Everything is a paraphrase of textbook or
+published methods (Sources at the end of this section).
+
+- `capture.drift_report`: the scanner's published volumetric figure is `E = a + b L` (a in mm, b in mm per metre, L
+  in metres; section 2.1). Parameters: `length` (mm), `a`, `b`, `gate` (mm) and `haircut` (a planning factor of 1 or more for difficult
+  surfaces). The node evaluates `E`, separates the constant part `a` from the part that grows with length `b L`, and
+  checks the planning value (`haircut` times `E`) against the gate. It states that a manufacturer figure is a claim to verify with the scale-bar and sphere-spacing
+  checks of section 2, not a measurement. Check: defaults a = 0.02 mm, b = 0.05 mm/m, L = 4.5 m give 0.245 mm, of
+  which 0.225 mm (92 %) grows with length.
+- `capture.import_phone_scan`: reads a mock-up grade mesh or cloud from a phone or photogrammetry export (section
+  2.4). `unit = unknown` keeps the numbers as they are and flags the geometry as non-metric until a scale node has run;
+  nothing guesses a scale. `weld` merges coincident vertices and `keep_colors` keeps vertex colours.
+- `capture.marker_merge`: markers with the same ids in a scan and in the reference marker set (or in the first
+  scan) form point pairs; each scan is moved into the common frame by the closed-form rigid fit of the pairs (section
+  3.1), optionally with a uniform scale (`allow_scale`) and a RANSAC pass (`ransac`, `inlier`, `iterations`). Fewer
+  than `min_shared` shared markers is an error; a scan whose marker residual exceeds `max_rms` makes the report fail. The report
+  lists the shared marker count and residual per scan; the merged cloud is thinned with `dedupe_voxel`.
+- `clean.estimate_normals`: plane fit to the `k` nearest neighbours (normal = eigenvector of the smallest
+  covariance eigenvalue; Hoppe et al.) for clouds, area-weighted face normals for meshes. `orient` sets the sign:
+  `up` makes Z non-negative, `viewpoint` faces a point, `centroid_out` points away from the centroid, `none` leaves
+  it arbitrary. Also writes `curv`, the surface variation `l0 / (l0 + l1 + l2)` (Pauly et al.): 0 for a plane, 1/3
+  for isotropic noise. Check: a planar patch gives `curv` below 1e-9 and normals within 0.01 degree of the plane normal.
+- `clean.outlier_remove`: statistical outlier removal (Rusu et al.). Each point's mean distance to its `k` nearest
+  neighbours is compared with the distribution over the cloud; points above `mean + sigma * std` are outliers.
+  `remove` deletes them, `flag` keeps everything and writes the point attribute `outlier`.
+- `clean.radius_filter`: removes points that have fewer than the required number of other points inside a fixed
+  `radius`; it takes out floating specks and stray returns.
+- `clean.random_subsample`: keeps `count` points, or a `fraction` of them, chosen uniformly at random from the seeded
+  generator, in their original order; the same seed gives the same subset.
+- `clean.voxel_subsample`: one point per occupied grid cell of edge `voxel`; `centroid` mode averages position and
+  float and vector attributes, the other modes keep an original point.
+- `clean.denoise_points`: moving-least-squares style smoothing after Alexa et al. For each point the `k` nearest
+  neighbours get Gaussian weights `exp(-d^2 / h^2)` where `h^2` is half the squared distance to the farthest
+  neighbour; the weighted centroid and covariance define a local plane (normal = eigenvector of the smallest
+  eigenvalue) and the point moves toward that plane by `strength` times its signed distance. `iterations` passes run,
+  rebuilding the neighbour search each time. Corners round off slightly; remove off-surface speckle first. Stored
+  normals are kept and may no longer match the moved points (an info note says so). The report gives the mean and
+  maximum shift. Check: an exactly planar cloud does not move (maximum shift below 1e-9 mm) and a plane with added
+  height noise has its height RMS reduced.
+
+Sources for this section:
+
+- Hoppe, DeRose, Duchamp, McDonald, Stuetzle, "Surface reconstruction from unorganized points", SIGGRAPH 1992.
+  https://doi.org/10.1145/142920.134011
+- Pauly, Gross, Kobbelt, "Efficient simplification of point-sampled surfaces", IEEE Visualization 2002.
+  https://doi.org/10.1109/VISUAL.2002.1183771
+- Rusu, Marton, Blodow, Dolha, Beetz, "Towards 3D point cloud based object maps for household environments",
+  Robotics and Autonomous Systems 56(11), 2008. https://doi.org/10.1016/j.robot.2008.08.005
+- Alexa, Behr, Cohen-Or, Fleishman, Levin, Silva, "Computing and rendering point set surfaces", IEEE TVCG 9(1), 2003.
+  https://doi.org/10.1109/TVCG.2003.1175093
+
 ## 7. Sources
 S1 COLMAP command-line interface: https://colmap.github.io/cli.html [fetched]
 S2 COLMAP tutorial: https://colmap.github.io/tutorial.html [fetched]

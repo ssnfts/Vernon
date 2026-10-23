@@ -500,6 +500,8 @@ impl NodeOp for ThickenShellNode {
             .output(PortSpec::new("report", DataKind::Report))
             .param(ParamSpec::float("thickness_mm", "Thickness", 3.0, 0.01, 100.0).unit("mm").help("Wall thickness."))
             .param(ParamSpec::choice("side", "Side", "outward", &["outward", "inward", "both"]).help("Which way the wall grows from the surface; both splits it evenly."))
+            .param(ParamSpec::float("skin_mm", "Skin thickness", 0.0, 0.0, 50.0).unit("mm").help("Plug mode: thickness of the light composite skin laid over a printed core. The whole wall moves this far inside the input surface so the finished, skinned part lands on the design surface. 0 = off."))
+            .param(ParamSpec::float("sanding_mm", "Sanding allowance", 0.0, 0.0, 20.0).unit("mm").help("Plug mode: extra material left under the skin for filler and sanding. Added to the skin thickness when the wall moves inside the input surface."))
             .param(ParamSpec::float("refit_tol_mm", "Refit tolerance", 0.05, 0.001, 5.0).unit("mm").help("Tolerance when offset patches are fitted again."))
             .param(ParamSpec::float("radius_ratio", "Curvature safety", 0.8, 0.1, 1.0).help("Warn when the thickness exceeds this share of the tightest radius of curvature."))
             .param(ParamSpec::float("weld_tol_mm", "Weld tolerance", 1e-6, 0.0, 10.0).unit("mm").help("Vertices closer than this are merged before thickening a mesh."))
@@ -520,9 +522,23 @@ impl NodeOp for ThickenShellNode {
             "both" => (t / 2.0, t / 2.0),
             _ => (t, 0.0),
         };
+        // plug mode: a printed core under a skin lies inside the design surface by skin + sanding
+        let (skin, sanding) = (params.float("skin_mm")?, params.float("sanding_mm")?);
+        if !(skin.is_finite() && sanding.is_finite() && skin >= 0.0 && sanding >= 0.0) {
+            return Err(ctx.fail("skin thickness and sanding allowance must be zero or positive"));
+        }
+        let plug = skin + sanding;
+        let (d_out, d_in) = (d_out - plug, d_in + plug);
         let ratio = params.float("radius_ratio")?;
         let mut report = Report::new("Thicken shell");
         report.metric("thickness_mm", Metric::new(t, "mm"));
+        if plug > 0.0 {
+            report.metric("plug_offset_mm", Metric::new(plug, "mm"));
+            report.note(
+                Severity::Info,
+                format!("plug mode: the wall lies {plug:.2} mm ({skin:.2} mm skin + {sanding:.2} mm sanding) inside the input surface; the skin carries the load and the printed core only shapes it"),
+            );
+        }
         let mut solid = Geometry::new();
         let mut out_ps = PatchSet::new(vec![]);
         if let Some(g) = shell {
@@ -812,6 +828,34 @@ mod tests {
         // too thick for the curvature warns
         let thick = cook("surface.thicken_shell", &[some(&sph), None], &[("thickness_mm", f(45.0)), ("side", s("inward"))]).unwrap();
         assert!(!report_of(&thick[2]).notes.is_empty());
+    }
+
+    #[test]
+    fn plug_mode_moves_the_wall_inside_by_skin_plus_sanding() {
+        let sph = sphere(50.0, 96, 48);
+        let radii = |out: &[Data]| {
+            let g = geo_of(&out[0]);
+            let lo = g.points.iter().map(|p| p.length()).fold(f64::INFINITY, f64::min);
+            let hi = g.points.iter().map(|p| p.length()).fold(0.0, f64::max);
+            (lo, hi)
+        };
+        let plain = cook("surface.thicken_shell", &[some(&sph), None], &[("thickness_mm", f(3.0)), ("side", s("inward"))]).unwrap();
+        let (lo, hi) = radii(&plain);
+        assert!((lo - 47.0).abs() < 0.05 && (hi - 50.0).abs() < 0.05, "{lo} {hi}");
+        assert!(!report_of(&plain[2]).metrics.contains_key("plug_offset_mm"));
+        // a 1 mm skin and 0.5 mm of sanding allowance: the 3 mm wall sits 1.5 mm deeper
+        let plug = cook("surface.thicken_shell", &[some(&sph), None], &[("thickness_mm", f(3.0)), ("side", s("inward")), ("skin_mm", f(1.0)), ("sanding_mm", f(0.5))]).unwrap();
+        let (lo, hi) = radii(&plug);
+        assert!((lo - 45.5).abs() < 0.05 && (hi - 48.5).abs() < 0.05, "{lo} {hi}");
+        let r = report_of(&plug[2]);
+        assert!((r.metrics["plug_offset_mm"].value - 1.5).abs() < 1e-12);
+        // the wall keeps its thickness, so the volume follows the shifted radii
+        let expect = 4.0 / 3.0 * PI * (48.5f64.powi(3) - 45.5f64.powi(3));
+        assert!((r.metrics["volume_mm3"].value - expect).abs() / expect < 0.005);
+        // outward walls move too: outer face at design + 3 - 1.5
+        let out = cook("surface.thicken_shell", &[some(&sph), None], &[("thickness_mm", f(3.0)), ("skin_mm", f(1.0)), ("sanding_mm", f(0.5))]).unwrap();
+        let (lo, hi) = radii(&out);
+        assert!((lo - 48.5).abs() < 0.05 && (hi - 51.5).abs() < 0.05, "{lo} {hi}");
     }
 
     #[test]

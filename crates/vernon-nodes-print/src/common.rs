@@ -44,17 +44,47 @@ pub fn path_or_default(ctx: &CookContext, value: &str, default_name: &str) -> Co
 
 // ---------------------------------------------------------------- printers
 
-pub const PRINTER_IDS: [&str; 5] = ["k1_max", "k2_plus", "h2d", "giga_800", "custom"];
+/// Printer presets, named by what they are: the build volume in mm.
+pub const PRINTER_IDS: [&str; 5] = ["bed_300", "bed_350", "bed_350x320x325", "bed_800x800x1000", "custom"];
+
+/// A printer preset: build volume and the hottest chamber it can hold.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Printer {
+    pub id: &'static str,
+    /// Build volume, mm.
+    pub bed: DVec3,
+    /// Hottest chamber the preset can hold, deg C; 0 when the chamber is
+    /// not heated (open frame or unheated enclosure).
+    pub chamber_max_c: f64,
+}
+
+pub const PRINTERS: [Printer; 4] = [
+    Printer { id: "bed_300", bed: DVec3::new(300.0, 300.0, 300.0), chamber_max_c: 0.0 },
+    Printer { id: "bed_350", bed: DVec3::new(350.0, 350.0, 350.0), chamber_max_c: 60.0 },
+    Printer { id: "bed_350x320x325", bed: DVec3::new(350.0, 320.0, 325.0), chamber_max_c: 65.0 },
+    Printer { id: "bed_800x800x1000", bed: DVec3::new(800.0, 800.0, 1000.0), chamber_max_c: 0.0 },
+];
+
+/// Preset ids saved in scenes before the presets were named by size.
+fn current_printer_id(id: &str) -> &str {
+    match id {
+        "k1_max" => "bed_300",
+        "k2_plus" => "bed_350",
+        "h2d" => "bed_350x320x325",
+        "giga_800" => "bed_800x800x1000",
+        other => other,
+    }
+}
+
+/// The preset for `id`; `None` for `custom` or an unknown id.
+pub fn printer(id: &str) -> Option<Printer> {
+    let id = current_printer_id(id);
+    PRINTERS.iter().copied().find(|p| p.id == id)
+}
 
 /// Build volume in mm for a printer preset id; `custom` returns `custom_bed`.
 pub fn printer_bed(id: &str, custom_bed: DVec3) -> DVec3 {
-    match id {
-        "k1_max" => DVec3::new(300.0, 300.0, 300.0),
-        "k2_plus" => DVec3::new(350.0, 350.0, 350.0),
-        "h2d" => DVec3::new(350.0, 320.0, 325.0),
-        "giga_800" => DVec3::new(800.0, 800.0, 1000.0),
-        _ => custom_bed,
-    }
+    printer(id).map_or(custom_bed, |p| p.bed)
 }
 
 // --------------------------------------------------------------- materials
@@ -81,9 +111,12 @@ pub struct Material {
     pub sigma_xy_mpa: f64,
     pub nozzle_c: f64,
     pub bed_c: f64,
+    /// Chamber temperature the material prints best at, deg C (assumed
+    /// typical value; 0 when a cold chamber is fine).
+    pub chamber_c: f64,
 }
 
-const fn mat(m: &'static vernon_core::materials::PrintMaterial, nozzle_c: f64, bed_c: f64) -> Material {
+const fn mat(m: &'static vernon_core::materials::PrintMaterial, nozzle_c: f64, bed_c: f64, chamber_c: f64) -> Material {
     Material {
         id: m.id,
         shared: m,
@@ -97,18 +130,19 @@ const fn mat(m: &'static vernon_core::materials::PrintMaterial, nozzle_c: f64, b
         sigma_xy_mpa: m.sigma_xy_mpa,
         nozzle_c,
         bed_c,
+        chamber_c,
     }
 }
 
 const MATERIALS: [Material; 6] = {
     use vernon_core::materials as m;
     [
-        mat(&m::PLA, 215.0, 60.0),
-        mat(&m::PETG, 240.0, 80.0),
-        mat(&m::ASA, 250.0, 100.0),
-        mat(&m::PET_CF, 280.0, 80.0),
-        mat(&m::PAHT_CF, 290.0, 90.0),
-        mat(&m::PPA_CF, 300.0, 100.0),
+        mat(&m::PLA, 215.0, 60.0, 0.0),
+        mat(&m::PETG, 240.0, 80.0, 0.0),
+        mat(&m::ASA, 250.0, 100.0, 45.0),
+        mat(&m::PET_CF, 280.0, 80.0, 0.0),
+        mat(&m::PAHT_CF, 290.0, 90.0, 60.0),
+        mat(&m::PPA_CF, 300.0, 100.0, 65.0),
     ]
 };
 

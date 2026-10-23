@@ -290,8 +290,9 @@ fn detect_cook(ctx: &CookContext, inp: &[Option<Data>], p: &Params) -> CookResul
     let frac = within as f64 / md.len().max(1) as f64;
     let mut sorted: Vec<f64> = md.iter().cloned().filter(|d| d.is_finite()).collect();
     sorted.sort_by(|a, b| a.total_cmp(b));
-    let q = |f: f64| if sorted.is_empty() { 0.0 } else { sorted[((sorted.len() as f64 * f).ceil() as usize).clamp(1, sorted.len()) - 1] };
+    let q = |f: f64| vernon_core::stats::nearest_rank(&sorted, f);
     let mut rep = Report::new("Find Mirror Plane");
+    rep.note(vernon_core::Severity::Info, vernon_core::stats::CONVENTION);
     rep.metric("mirror_rms", Metric::new(det.rms, "mm"));
     rep.metric("mirror_p50", Metric::new(q(0.5), "mm"));
     rep.metric("mirror_p95", Metric::new(q(0.95), "mm"));

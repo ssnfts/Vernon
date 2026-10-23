@@ -579,6 +579,71 @@ mod tests {
         assert_eq!(r.metrics["reference_open_edges"].value, 0.0);
     }
 
+    /// L-shaped prism (two boxes sharing a reflex edge at x = y = 10), outward normals.
+    fn l_prism() -> Geometry {
+        let ring = [(0.0, 0.0), (20.0, 0.0), (20.0, 10.0), (10.0, 10.0), (10.0, 20.0), (0.0, 20.0)];
+        let mut pts: Vec<DVec3> = ring.iter().map(|&(x, y)| DVec3::new(x, y, 0.0)).collect();
+        pts.extend(ring.iter().map(|&(x, y)| DVec3::new(x, y, 10.0)));
+        let mut faces: Vec<Vec<u32>> = Vec::new();
+        for k in 1..5u32 {
+            faces.push(vec![6, 6 + k, 6 + k + 1]); // top, +z
+            faces.push(vec![0, k + 1, k]); // bottom, -z
+        }
+        for i in 0..6u32 {
+            let j = (i + 1) % 6;
+            faces.push(vec![i, j, 6 + j]);
+            faces.push(vec![i, 6 + j, 6 + i]);
+        }
+        Geometry::from_polygons(pts, faces)
+    }
+
+    #[test]
+    fn edge_safe_sign_is_right_around_a_reflex_edge() {
+        // Convex cube edges cannot tell the pseudo-normal from the nearest face
+        // normal; the reflex edge, the saddle vertices at its ends and the two
+        // wedges beside it can.
+        let inside = |p: DVec3| {
+            let l = (p.x > 0.0 && p.x < 20.0 && p.y > 0.0 && p.y < 10.0) || (p.x > 0.0 && p.x < 10.0 && p.y > 0.0 && p.y < 20.0);
+            l && p.z > 0.0 && p.z < 10.0
+        };
+        let box_dist = |p: DVec3, lo: DVec3, hi: DVec3| (lo - p).max(DVec3::ZERO).max(p - hi).length();
+        let outside_dist = |p: DVec3| {
+            let a = box_dist(p, DVec3::new(0.0, 0.0, 0.0), DVec3::new(20.0, 10.0, 10.0));
+            let b = box_dist(p, DVec3::new(0.0, 0.0, 0.0), DVec3::new(10.0, 20.0, 10.0));
+            a.min(b)
+        };
+        let mut pts = vec![
+            DVec3::new(8.0, 8.0, 5.0),   // inside, nearest feature is the reflex edge
+            DVec3::new(12.0, 12.0, 5.0), // outside, in the notch
+            DVec3::new(11.0, 11.0, 11.0),
+            DVec3::new(9.0, 9.0, 11.0),
+            DVec3::new(9.0, 9.0, -1.0),
+            DVec3::new(11.0, 11.0, -1.0),
+            DVec3::new(10.5, 9.5, 5.0),
+            DVec3::new(9.5, 10.5, 5.0),
+        ];
+        let mut seed = 12345u64;
+        let mut next = |lo: f64, hi: f64| {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            lo + (hi - lo) * ((seed >> 11) as f64 / (1u64 << 53) as f64)
+        };
+        for _ in 0..400 {
+            pts.push(DVec3::new(next(-8.0, 28.0), next(-8.0, 28.0), next(-8.0, 18.0)));
+        }
+        let out = run(mesh_info, mesh_cook, vec![geo(Geometry::from_points(pts.clone())), geo(l_prism())], &[]).unwrap();
+        let r = out_report(&out[1]);
+        assert_eq!(r.metrics["reference_open_edges"].value, 0.0);
+        let d = out_geo(&out[0]).point_attribs.floats("dist").unwrap().to_vec();
+        for (p, d) in pts.iter().zip(&d) {
+            if inside(*p) {
+                assert!(*d < 0.0, "{p:?} is inside but dist = {d}");
+            } else {
+                assert!(*d > 0.0, "{p:?} is outside but dist = {d}");
+                assert!((d - outside_dist(*p)).abs() < 1e-9, "{p:?}: {d} vs {}", outside_dist(*p));
+            }
+        }
+    }
+
     #[test]
     fn swapping_roles_flips_the_sign_of_a_displaced_sheet() {
         // mesh A below mesh B; distance of A's vertices to B is negative... of B's to A is positive

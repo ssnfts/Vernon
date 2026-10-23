@@ -263,7 +263,7 @@ pub fn toolbar(app: &mut VernonApp, ctx: &egui::Context) {
                 let overall = crate::gate::overall(&gates);
                 let col = match overall {
                     crate::gate::GateState::Pass => theme::PASS,
-                    crate::gate::GateState::Fail | crate::gate::GateState::Error => theme::FAIL,
+                    crate::gate::GateState::Fail | crate::gate::GateState::Error => theme::FAIL_TEXT,
                     _ => theme::TEXT_DIM,
                 };
                 if ui

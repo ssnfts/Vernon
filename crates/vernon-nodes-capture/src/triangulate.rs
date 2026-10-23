@@ -246,7 +246,7 @@ impl NodeOp for MarkerTriangulate {
             .output(PortSpec::new("report", DataKind::Report))
             .param(ParamSpec::string("model_dir", "Model folder", "").help("Folder with cameras.txt and images.txt; used when no model input is connected."))
             .param(ParamSpec::string("observations", "Observations", "").help("Rows 'image, marker_id, u, v' in pixels; ignored when an observations table is connected."))
-            .param(ParamSpec::int("min_views", "Minimum views", 3, 2, 50))
+            .param(ParamSpec::int("min_views", "Minimum views", 3, 2, 50).help("Fewest images in which a marker must be seen to be triangulated. More views give a more reliable position."))
             .param(ParamSpec::float("max_reproj", "Reprojection limit", 2.0, 0.1, 20.0).unit("px").help("Observations further from the solution are dropped."))
             .param(ParamSpec::bool("refine", "Refine", true).help("Polish the linear solution on the reprojection error."))
             .help("Finds the 3D position of marked targets from their pixel positions in several photos and the camera poses of a sparse model. Rejects observations that disagree and reports the pixel residual. The result has the model's arbitrary scale until a scale node runs.")

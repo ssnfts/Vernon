@@ -573,18 +573,18 @@ impl NodeOp for SfmFeaturesMatch {
                 .help("Use the simplest model that keeps the reprojection error low."),
             )
             .param(ParamSpec::bool("single_camera", "Single camera", false).help("Share one set of intrinsics between all photos; only when every photo used the same settings."))
-            .param(ParamSpec::int("max_image_size", "Maximum image size", 3200, 256, 20000).unit("px"))
-            .param(ParamSpec::int("max_features", "Maximum features", 8192, 256, 100_000))
-            .param(ParamSpec::choice("feature_type", "Feature type", "SIFT", &["SIFT", "ALIKED_N16ROT", "ALIKED_N32", "LOMA_B"]))
+            .param(ParamSpec::int("max_image_size", "Maximum image size", 3200, 256, 20000).unit("px").help("Longest image side used for feature detection, in pixels. Larger images are scaled down."))
+            .param(ParamSpec::int("max_features", "Maximum features", 8192, 256, 100_000).help("Most features kept per image. More features cost memory and matching time."))
+            .param(ParamSpec::choice("feature_type", "Feature type", "SIFT", &["SIFT", "ALIKED_N16ROT", "ALIKED_N32", "LOMA_B"]).help("Feature detector and descriptor. SIFT is the classic default; the others need a newer program build."))
             .param(
                 ParamSpec::choice("matcher", "Matcher", "exhaustive", &["exhaustive", "sequential", "vocab_tree", "spatial"])
                     .help("Exhaustive compares every pair and is only sensible for a few hundred photos."),
             )
             .param(ParamSpec::int("overlap", "Sequential overlap", 10, 1, 500).help("Neighbouring photos compared by the sequential matcher."))
-            .param(ParamSpec::int("neighbors", "Spatial neighbours", 50, 1, 1000))
+            .param(ParamSpec::int("neighbors", "Spatial neighbours", 50, 1, 1000).help("Number of spatially nearest images each image is matched against (spatial matching)."))
             .param(ParamSpec::string("vocab_tree", "Vocabulary tree", "").help("Path of the vocabulary tree file for the vocab_tree matcher."))
             .param(ParamSpec::bool("guided", "Guided matching", false).help("More matches on difficult surfaces, slower."))
-            .param(ParamSpec::bool("use_gpu", "Use GPU", true));
+            .param(ParamSpec::bool("use_gpu", "Use GPU", true).help("Use the graphics card for feature detection and matching when the program supports it."));
         for p in tool_params() {
             info = info.param(p);
         }
@@ -677,10 +677,10 @@ impl NodeOp for SfmReconstruct {
             .output(PortSpec::new("report", DataKind::Report))
             .param(image_dir_param())
             .param(ParamSpec::choice("mapper", "Mapper", "incremental", &["incremental", "global", "hierarchical"]).help("Incremental is the careful default; global and hierarchical suit very large sets."))
-            .param(ParamSpec::bool("refine_focal", "Refine focal length", true))
-            .param(ParamSpec::bool("refine_principal", "Refine principal point", false))
+            .param(ParamSpec::bool("refine_focal", "Refine focal length", true).help("Let the reconstruction adjust the focal length of each camera."))
+            .param(ParamSpec::bool("refine_principal", "Refine principal point", false).help("Let the reconstruction adjust the principal point. Off is steadier for most cameras."))
             .param(ParamSpec::int("init_image_1", "Initial image A", -1, -1, 1_000_000).help("Image id to start from; -1 lets the program choose."))
-            .param(ParamSpec::int("init_image_2", "Initial image B", -1, -1, 1_000_000));
+            .param(ParamSpec::int("init_image_2", "Initial image B", -1, -1, 1_000_000).help("Second image to start from; -1 lets the program choose."));
         for p in tool_params() {
             info = info.param(p);
         }
@@ -857,7 +857,7 @@ impl NodeOp for MvsMesh {
             .param(ParamSpec::choice("mesher", "Mesher", "poisson", &["poisson", "delaunay"]).help("Poisson needs point normals; Delaunay needs the dense workspace folder."))
             .param(ParamSpec::string("dense_workspace", "Dense workspace", "").help("Folder of the dense reconstruction, used by the Delaunay mesher."))
             .param(ParamSpec::float("target_face_ratio", "Target face ratio", 0.1, 0.01, 1.0).help("Share of faces kept by the simplifier; 1 skips simplification."))
-            .param(ParamSpec::float("boundary_weight", "Boundary weight", 1000.0, 0.0, 100_000.0))
+            .param(ParamSpec::float("boundary_weight", "Boundary weight", 1000.0, 0.0, 100_000.0).help("Weight that holds open boundary edges in place when the mesh is simplified. Higher keeps borders more exact."))
             .param(ParamSpec::float("cell", "Placeholder cell", 0.0, 0.0, 1000.0).unit("mm").help("Grid size of the height-field stand-in used when the program is not run; 0 chooses it from the point count."));
         for p in tool_params() {
             info = info.param(p);

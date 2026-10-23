@@ -6,8 +6,9 @@ use vernon_graph::{CookContext, CookResult, Data, DataKind, NodeTypeInfo, ParamS
 
 use crate::util::{fin, jf, json_in, FnNode};
 
-pub const R_DRY: f64 = 287.05;
-pub const R_VAPOUR: f64 = 461.5;
+/// Gas constants and the saturation pressure are shared with the performance
+/// stage through `vernon_core::air`, so both stages compute the same density.
+pub use vernon_core::air::R_DRY;
 pub const RHO_ISA: f64 = 1.225;
 
 /// Thermodynamic state of the tunnel air.
@@ -21,11 +22,6 @@ pub struct Air {
     pub nu: f64,
 }
 
-/// Saturation vapour pressure (Magnus form), Pa.
-pub fn p_sat_pa(t_c: f64) -> f64 {
-    610.94 * (17.625 * t_c / (t_c + 243.04)).exp()
-}
-
 /// Sutherland dynamic viscosity, Pa s.
 pub fn sutherland_mu(t_k: f64) -> f64 {
     1.458e-6 * t_k.powf(1.5) / (t_k + 110.4)
@@ -34,9 +30,7 @@ pub fn sutherland_mu(t_k: f64) -> f64 {
 /// Moist-air state from temperature (deg C), total pressure (Pa) and relative humidity (%).
 pub fn moist_air(t_c: f64, p_pa: f64, rh_pct: f64) -> Air {
     let t_k = t_c + 273.15;
-    let p_v = (rh_pct / 100.0).clamp(0.0, 1.0) * p_sat_pa(t_c);
-    let p_d = (p_pa - p_v).max(0.0);
-    let rho = p_d / (R_DRY * t_k) + p_v / (R_VAPOUR * t_k);
+    let rho = vernon_core::air::moist_air_density(t_c, p_pa, rh_pct / 100.0, R_DRY);
     let mu = sutherland_mu(t_k);
     Air {
         t_c,
@@ -75,10 +69,10 @@ fn info() -> NodeTypeInfo {
     NodeTypeInfo::new("cfd.air_state", "Air State", Stage::Cfd)
         .output(PortSpec::new("air", DataKind::Json))
         .output(PortSpec::new("report", DataKind::Report))
-        .param(ParamSpec::float("t_c", "Temperature", 15.0, -30.0, 60.0).unit("°C"))
-        .param(ParamSpec::float("p_pa", "Pressure", 101_325.0, 60_000.0, 110_000.0).unit("Pa"))
-        .param(ParamSpec::float("rh_pct", "Relative humidity", 0.0, 0.0, 100.0).unit("%"))
-        .param(ParamSpec::float("u_ms", "Speed", 30.0, 10.0, 100.0).unit("m/s"))
+        .param(ParamSpec::float("t_c", "Temperature", 15.0, -30.0, 60.0).unit("°C").help("Air temperature. With pressure and humidity it sets density and viscosity."))
+        .param(ParamSpec::float("p_pa", "Pressure", 101_325.0, 60_000.0, 110_000.0).unit("Pa").help("Static air pressure."))
+        .param(ParamSpec::float("rh_pct", "Relative humidity", 0.0, 0.0, 100.0).unit("%").help("Relative humidity. Humid air is slightly less dense than dry air."))
+        .param(ParamSpec::float("u_ms", "Speed", 30.0, 10.0, 100.0).unit("m/s").help("Free-stream speed the case is run at."))
         .help("Moist-air density, viscosity and dynamic pressure from temperature, pressure and humidity. Feeds the case writer and the site-load scaling.")
         .emulates("automotive wind-tunnel service: site air density input")
         .spec("docs/specs/automotive-cfd.md")
@@ -100,7 +94,13 @@ fn cook(ctx: &CookContext, _inputs: &[Option<Data>], p: &Params) -> CookResult<V
     if mach > 0.3 {
         r.note(Severity::Warning, "Mach number above 0.3: the incompressible solver is no longer a good model");
     }
-    let j = json!({"rho": air.rho, "mu": air.mu, "nu": air.nu, "q": q, "u_ms": u, "t_c": air.t_c, "p_pa": air.p_pa, "rh_pct": air.rh_pct});
+    // Shared air-state keys (t_c, p_pa, rh as a fraction, rh_pct, rho) so the
+    // performance stage reads the same state; plus the airflow extras.
+    let state = vernon_core::air::AirState { rho: air.rho, t_c: air.t_c, p_pa: air.p_pa, rh: air.rh_pct / 100.0 };
+    let mut j = json!({"mu": air.mu, "nu": air.nu, "q": q, "u_ms": u});
+    for (k, v) in state.fields() {
+        j[k] = json!(v);
+    }
     Ok(vec![Data::json(j), Data::report(r)])
 }
 
@@ -122,7 +122,7 @@ mod tests {
     #[test]
     fn golden_dubai_45c_30rh() {
         let a = moist_air(45.0, 101_325.0, 30.0);
-        assert!((a.rho - 1.098).abs() < 0.002, "{}", a.rho);
+        assert!((a.rho - 1.098).abs() < 5e-4, "{}", a.rho);
         assert!((a.mu / 1.93e-5 - 1.0).abs() < 0.01, "{}", a.mu);
         assert!((a.nu / 1.76e-5 - 1.0).abs() < 0.01, "{}", a.nu);
     }
@@ -149,5 +149,22 @@ mod tests {
         let r = out[1].as_report().unwrap();
         assert!((r.metrics["q"].value - 0.5 * 1.225 * 900.0).abs() < 1.0);
         assert!(r.passes());
+    }
+
+    #[test]
+    fn air_json_uses_the_shared_schema() {
+        let ctx = crate::util::testutil::ctx("air_schema");
+        let mut params = Params::from_specs(&info().params);
+        params.set("t_c", vernon_graph::ParamValue::Float(30.0));
+        params.set("rh_pct", vernon_graph::ParamValue::Float(40.0));
+        let out = cook(&ctx, &[], &params).unwrap();
+        let j = out[0].as_json().unwrap();
+        assert_eq!(j["t_c"].as_f64(), Some(30.0));
+        assert!((j["rh"].as_f64().unwrap() - 0.4).abs() < 1e-12);
+        assert!((j["rh_pct"].as_f64().unwrap() - 40.0).abs() < 1e-9);
+        // the performance stage's reader recovers the same state and density
+        let s = vernon_core::air::AirState::from_lookup(|k| j.get(k).and_then(|v| v.as_f64())).unwrap();
+        let again = vernon_core::air::moist_air_density(s.t_c, s.p_pa, s.rh, R_DRY);
+        assert!((again - s.rho).abs() < 1e-12 && (s.rho - 1.157).abs() < 0.001, "{}", s.rho);
     }
 }

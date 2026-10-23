@@ -1,0 +1,9 @@
+#!/bin/sh
+cd "${0%/*}" || exit 1
+set -e
+surfaceFeatures > log.surfaceFeatures 2>&1
+blockMesh > log.blockMesh 2>&1
+decomposePar -force > log.decomposePar 2>&1
+mpirun -np 8 snappyHexMesh -overwrite -parallel > log.snappyHexMesh 2>&1
+reconstructParMesh -constant > log.reconstructParMesh 2>&1
+checkMesh -allTopology -allGeometry > log.checkMesh 2>&1

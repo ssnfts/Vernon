@@ -278,8 +278,9 @@ fn remesh_cook(ctx: &CookContext, inp: &[Option<Data>], p: &Params) -> CookResul
     out.detail_attribs = g.detail_attribs.clone();
     out.compute_normals();
 
-    // quality numbers
-    let mut e = std::collections::HashSet::new();
+    // quality numbers: a sorted edge set, so the sums run in the same order
+    // on every cook and the statistics are bit-reproducible
+    let mut e = std::collections::BTreeSet::new();
     for t in &tris {
         for k in 0..3 {
             e.insert((t[k].min(t[(k + 1) % 3]), t[k].max(t[(k + 1) % 3])));
@@ -336,6 +337,19 @@ mod tests {
         assert!(r.metrics["max_deviation"].value < 1.0);
         // far fewer faces than the 60 x 61 input
         assert!(o.triangles().len() < 6000 && o.triangles().len() > 200);
+    }
+
+    #[test]
+    fn identical_cooks_give_bit_identical_statistics() {
+        let cook = || {
+            let out = run(remesh_info, remesh_cook, vec![geo(sphere_geo(30.0, 24, 25))], &[("target_edge_length", f(6.0))]).unwrap();
+            let r = out_report(&out[1]);
+            (r.metrics["mean_edge_length"].value.to_bits(), r.metrics["edge_length_cv"].value.to_bits())
+        };
+        let first = cook();
+        for _ in 0..4 {
+            assert_eq!(cook(), first);
+        }
     }
 
     #[test]

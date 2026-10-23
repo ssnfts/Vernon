@@ -118,6 +118,12 @@ pub struct Material {
     pub hdt_annealed_c: Option<f64>,
     pub tg_c: Option<f64>,
     pub water_abs_pct: Option<f64>,
+    /// Strength kept after accelerated UV exposure, percent; `None` when no evidence exists.
+    #[serde(default)]
+    pub uv_retention_pct: Option<f64>,
+    /// Colour change dE after the same exposure, when a number is known.
+    #[serde(default)]
+    pub uv_delta_e: Option<f64>,
     pub source: String,
     pub note: String,
 }
@@ -138,6 +144,8 @@ fn mat(
         hdt_annealed_c: ann,
         tg_c: tg,
         water_abs_pct: w,
+        uv_retention_pct: None,
+        uv_delta_e: None,
         source: "rep".into(),
         note: note.into(),
     }
@@ -154,7 +162,7 @@ pub fn builtin_materials() -> Vec<Material> {
             if let Some(w) = m.water_abs_pct {
                 note += &format!("; water uptake {w}% ({})", m.water_source.label());
             }
-            mat(
+            let mut row = mat(
                 m.name,
                 Some(m.hdt_vendor_c.unwrap_or(m.hdt_045_c)),
                 m.hdt_045_annealed_c.map(|_| m.hdt_045_c),
@@ -162,7 +170,13 @@ pub fn builtin_materials() -> Vec<Material> {
                 None,
                 m.water_abs_pct,
                 &note,
-            )
+            );
+            if let Some(uv) = m.uv {
+                row.uv_retention_pct = Some(uv.retention_pct);
+                row.uv_delta_e = uv.delta_e;
+                row.note += &format!("; UV: {} ({})", uv.basis, uv.source.label());
+            }
+            row
         })
         .collect();
     rows.extend([
@@ -233,6 +247,8 @@ fn parse_csv_materials(text: &str) -> Result<Vec<Material>, String> {
             hdt_annealed_c: num(2),
             tg_c: num(3),
             water_abs_pct: num(4),
+            uv_retention_pct: None,
+            uv_delta_e: None,
             source: f.get(5).copied().unwrap_or("user").to_string(),
             note: String::new(),
         });
@@ -300,21 +316,21 @@ impl NodeOp for SurfaceBalanceNode {
             .output(PortSpec::new("mesh", DataKind::Geometry))
             .output(PortSpec::new("report", DataKind::Report))
             .param(ParamSpec::float("alpha", "Solar absorptance", 0.95, 0.0, 1.0).help("0.95 black or raw carbon fibre, 0.6 mid grey, 0.3 white. A per-face 'alpha' attribute overrides it."))
-            .param(ParamSpec::float("emissivity", "Emissivity", 0.9, 0.0, 1.0))
+            .param(ParamSpec::float("emissivity", "Emissivity", 0.9, 0.0, 1.0).help("Long-wave emissivity of the surface, 0 to 1."))
             .param(ParamSpec::float("t_air_c", "Air temperature", 45.0, -60.0, 70.0).unit("degC").help("Used when no weather table is connected."))
             .param(ParamSpec::float("wind_m_s", "Wind speed", 0.0, 0.0, 40.0).unit("m/s").help("Speed of air relative to the panel. Used when no weather table is connected."))
             .param(ParamSpec::choice("hc_model", "Convection", "mcadams", &["mcadams", "mowitt_windward", "mowitt_leeward", "natural"]).help("Convection coefficient correlation. The default is 5.7 + 3.8 V."))
             .param(ParamSpec::choice("sky_model", "Sky temperature", "fixed_depression", &["fixed_depression", "epw"]).help("Fixed drop below air temperature, or from the weather row (measured infrared or correlation)."))
-            .param(ParamSpec::float("depression_k", "Sky depression", 15.0, 0.0, 60.0).unit("K"))
+            .param(ParamSpec::float("depression_k", "Sky depression", 15.0, 0.0, 60.0).unit("K").help("How far the effective sky temperature lies below the air temperature, in kelvin."))
             .param(ParamSpec::float("ground_offset_k", "Ground above air", 0.0, -20.0, 60.0).unit("K").help("Ground temperature minus air temperature (a hot road is worse)."))
             .param(ParamSpec::float("back_h", "Back-face coefficient", 0.0, 0.0, 100.0).unit("W/m2K").help("0 means an insulated back: an upper bound."))
-            .param(ParamSpec::float("t_inside_c", "Interior temperature", 45.0, -60.0, 120.0).unit("degC"))
+            .param(ParamSpec::float("t_inside_c", "Interior temperature", 45.0, -60.0, 120.0).unit("degC").help("Temperature on the inside of the panel, in degrees Celsius. Heat flows through the panel toward it."))
             .param(ParamSpec::float("g_fallback_w_m2", "Irradiance fallback", 1000.0, 0.0, 1400.0).unit("W/m2").help("Used when the mesh has no irr_w_m2 attribute."))
             .param(ParamSpec::bool("use_weather", "Use weather row", true).help("Take air temperature, wind and sky from the connected weather row."))
-            .param(ParamSpec::int("weather_row", "Weather row", 0, 0, 8783))
+            .param(ParamSpec::int("weather_row", "Weather row", 0, 0, 8783).help("Row of the connected weather table to use, counted from 0."))
             .param(ParamSpec::bool("wind_height_scale", "Scale wind to panel height", false).help("Convert the weather-station wind speed to the height of the panel."))
-            .param(ParamSpec::choice("terrain", "Terrain", "flat", &["flat", "city"]))
-            .param(ParamSpec::float("panel_height_m", "Panel height", 0.5, 0.05, 10.0).unit("m"))
+            .param(ParamSpec::choice("terrain", "Terrain", "flat", &["flat", "city"]).help("Terrain class that scales the measured wind to the panel height: open flat ground or city."))
+            .param(ParamSpec::float("panel_height_m", "Panel height", 0.5, 0.05, 10.0).unit("m").help("Height of the panel above the ground, in metres. With the terrain it scales the wind speed to the panel."))
             .help("Steady energy balance per face: absorbed sun equals convection plus radiation to sky and ground (and optional back loss). Writes the surface temperature per face and reports the hottest one.")
             .emulates("Peak-hour hand energy balance of the report")
             .spec(SOLAR_SPEC)
@@ -456,11 +472,11 @@ impl NodeOp for BalanceSweepNode {
             .param(ParamSpec::string("alphas", "Absorptances", "0.95, 0.6, 0.3").help("Comma-separated list."))
             .param(ParamSpec::string("winds", "Wind speeds", "0, 1, 3").help("Comma-separated list, m/s."))
             .param(ParamSpec::string("t_airs", "Air temperatures", "45, 50").help("Comma-separated list, degC."))
-            .param(ParamSpec::float("g_w_m2", "Irradiance", 1000.0, 0.0, 1400.0).unit("W/m2"))
-            .param(ParamSpec::float("emissivity", "Emissivity", 0.9, 0.0, 1.0))
-            .param(ParamSpec::float("depression_k", "Sky depression", 15.0, 0.0, 60.0).unit("K"))
-            .param(ParamSpec::float("tilt_deg", "Tilt from horizontal", 0.0, 0.0, 180.0).unit("deg"))
-            .param(ParamSpec::choice("hc_model", "Convection", "mcadams", &["mcadams", "mowitt_windward", "mowitt_leeward", "natural"]))
+            .param(ParamSpec::float("g_w_m2", "Irradiance", 1000.0, 0.0, 1400.0).unit("W/m2").help("Solar irradiance on the surface, in W/m2."))
+            .param(ParamSpec::float("emissivity", "Emissivity", 0.9, 0.0, 1.0).help("Long-wave emissivity of the surface, 0 to 1."))
+            .param(ParamSpec::float("depression_k", "Sky depression", 15.0, 0.0, 60.0).unit("K").help("How far the effective sky temperature lies below the air temperature, in kelvin."))
+            .param(ParamSpec::float("tilt_deg", "Tilt from horizontal", 0.0, 0.0, 180.0).unit("deg").help("Tilt of the surface from horizontal: 0 faces up, 90 is vertical."))
+            .param(ParamSpec::choice("hc_model", "Convection", "mcadams", &["mcadams", "mowitt_windward", "mowitt_leeward", "natural"]).help("Convection model for the surface-to-air heat transfer."))
             .help("Tabulates the steady surface temperature for every combination of absorptance, wind speed and air temperature: the design table of the thermal check.")
             .emulates("Result table of the report's hand model")
             .spec(SOLAR_SPEC)
@@ -526,6 +542,9 @@ impl NodeOp for BalanceSweepNode {
 
 pub struct HdtCheckNode;
 
+/// Black-panel temperature of the SAE J2527 weathering cycle, degC.
+pub const J2527_PANEL_C: f64 = 70.0;
+
 fn resolve<'a>(table: &'a [Material], name: &str) -> Option<&'a Material> {
     table.iter().find(|m| m.name.eq_ignore_ascii_case(name))
 }
@@ -542,7 +561,7 @@ impl NodeOp for HdtCheckNode {
             .param(ParamSpec::bool("annealed", "Annealed", false).help("Use the annealed heat-deflection value where the material has one."))
             .param(ParamSpec::float("margin_warn_k", "Warning margin", 10.0, 0.0, 100.0).unit("K").help("Faces within this margin below the limit get a warning."))
             .param(ParamSpec::bool("use_tg_cap", "Cap at glass transition", true).help("Limit the allowed temperature to the measured glass transition when known."))
-            .help("Compares each face's surface temperature with the heat-deflection temperature of its material. Writes the margin and a verdict per face (0 ok, 1 warning, 2 fail) and reports the worst margin for the next stage.")
+            .help("Compares each face's surface temperature with the heat-deflection temperature of its material. Writes the margin and a verdict per face (0 ok, 1 warning, 2 fail) and reports the worst margin for the next stage. Materials whose as-printed and annealed limits differ show both in the report, and a peak above the 70 degC weathering-panel temperature adds a reminder that a UV test does not test heat.")
             .emulates("Heat-deflection comparison of the report")
             .spec(SOLAR_SPEC)
             .implemented()
@@ -619,6 +638,7 @@ impl NodeOp for HdtCheckNode {
                 / atot
         };
         let (min_margin, worst_face) = worst.unwrap_or((0.0, 0));
+        let max_temp = temps.iter().cloned().fold(f64::MIN, f64::max);
         let mut r = Report::new("Heat deflection check");
         r.metric(
             "min_margin_k",
@@ -631,10 +651,44 @@ impl NodeOp for HdtCheckNode {
         r.metric("warn_area_pct", Metric::new(share(1), "%"));
         r.metric("ok_area_pct", Metric::new(share(0), "%"));
         r.metric("worst_face", Metric::new(worst_face as f64, "index"));
-        r.metric(
-            "max_temp_c",
-            Metric::new(temps.iter().cloned().fold(f64::MIN, f64::max), "degC"),
-        );
+        r.metric("max_temp_c", Metric::new(max_temp, "degC"));
+        r.metric("annealed", Metric::new(f64::from(annealed), ""));
+        // the treatment behind the limit is a metric, not only a note: some materials carry a
+        // datasheet figure, an as-printed figure and an annealed figure that differ by 100 K
+        if override_hdt.is_none() {
+            if let Some(row) = resolve(&table, &default_name) {
+                if let Some(v) = row.hdt_datasheet_c {
+                    r.metric("hdt_datasheet_c", Metric::new(v, "degC"));
+                }
+                if let Some(v) = row.hdt_as_printed_c {
+                    r.metric("hdt_as_printed_c", Metric::new(v, "degC"));
+                }
+                if let Some(v) = row.hdt_annealed_c {
+                    r.metric("hdt_annealed_c", Metric::new(v, "degC"));
+                }
+                if let (Some(asp), Some(ann)) = (row.hdt_as_printed_c, row.hdt_annealed_c) {
+                    r.metric("treatment_matters", Metric::new(1.0, ""));
+                    let used = if annealed { ann } else { asp };
+                    r.note(
+                        Severity::Warning,
+                        format!(
+                            "{}: the limit used is the {} value {used:.1} degC (as printed {asp:.1}, annealed {ann:.1}{}); the verdict depends on the treatment, so state it before trusting a pass",
+                            row.name,
+                            if annealed { "annealed" } else { "as-printed" },
+                            row.hdt_datasheet_c.map_or(String::new(), |d| format!(", datasheet {d:.1}")),
+                        ),
+                    );
+                }
+            }
+        }
+        if max_temp > J2527_PANEL_C {
+            r.note(
+                Severity::Info,
+                format!(
+                    "weathering tests of the SAE J2527 type hold a {J2527_PANEL_C:.0} degC black panel, below the {max_temp:.0} degC peak here: a weathering or UV pass says nothing about heat, so add a separate oven test at the design temperature"
+                ),
+            );
+        }
         if let Some((key, h)) = found {
             r.metric(keys::HDT_C, Metric::new(h, "degC"));
             r.note(

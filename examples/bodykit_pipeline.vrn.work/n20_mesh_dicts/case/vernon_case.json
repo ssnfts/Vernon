@@ -1,0 +1,177 @@
+{
+  "case_setup": {
+    "aref_m2": 0.013600642430946478,
+    "half_model": true,
+    "has_topo": false,
+    "n_iter": 3000,
+    "nu": 0.000017590218382828032,
+    "recipe": {
+      "base_cells": 464.0,
+      "dx0_m": 0.32,
+      "ground_mode": "moving",
+      "levels": "{\"body\":[4,5],\"far_wake\":3,\"kit\":6,\"near_wake\":4,\"underbody\":6,\"wheel\":5}",
+      "separated_flow": false,
+      "turbulence": "kOmegaSST I=0.250% nut/nu=10.0",
+      "wheel_mode": "rotating",
+      "yaw_deg": 0.0
+    },
+    "reference": {
+      "a_front_m2": 0.027201284861892955,
+      "half_model": true,
+      "height_m": 0.07157963677955663,
+      "kit_bbox_m": null,
+      "length_m": 0.9030846458018802,
+      "nose_x_m": 0.0,
+      "patches": [
+        "body"
+      ],
+      "tail_x_m": 0.9030846458018802,
+      "track_m": 0.5166038741430938,
+      "wheel_centres_m": {},
+      "wheel_radius_m": 0.06140975591452786,
+      "width_m": 0.6077692636977574,
+      "x_front_axle_m": 0.18061692916037606,
+      "x_rear_axle_m": 0.7224677166415042,
+      "z_min_m": 0.0
+    },
+    "residual_target": 0.00001,
+    "rho_inf": 1.0975711542750712,
+    "u_ms": 30.0,
+    "window": 1000
+  },
+  "domain": {
+    "blockage_pct": 1.0,
+    "cross_section_m2": 2.7201284861892954,
+    "down_l": 6.0,
+    "half_model": true,
+    "max_m": [
+      6.321592520613161,
+      1.064606438664326,
+      1.2775277263971916
+    ],
+    "min_m": [
+      -2.709253937405641,
+      0.0,
+      0.0
+    ],
+    "ref_length_m": 0.9030846458018802,
+    "up_l": 3.0,
+    "yaw_deg": 0.0
+  },
+  "dx0_m": 0.32,
+  "flavour": "foundation11",
+  "np": 8,
+  "patches": [
+    "body"
+  ],
+  "plan": {
+    "boxes": [
+      {
+        "level": 4,
+        "max": [
+          1.8061692916037604,
+          0.5038846318488788,
+          0.09305352781342362
+        ],
+        "min": [
+          0.4030846458018802,
+          0.0,
+          0.0
+        ],
+        "name": "nearWake"
+      },
+      {
+        "level": 3,
+        "max": [
+          2.709253937405641,
+          1.0038846318488788,
+          0.11452741884729062
+        ],
+        "min": [
+          0.4030846458018802,
+          0.0,
+          0.0
+        ],
+        "name": "farWake"
+      },
+      {
+        "level": 6,
+        "max": [
+          0.9030846458018802,
+          0.3038846318488787,
+          0.3
+        ],
+        "min": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "name": "underbodyBox"
+      }
+    ],
+    "cf": 0.0033965152184647217,
+    "dx0_m": 0.32,
+    "finest_cell_m": 0.005,
+    "first_layer_m_target": 0.0004268442610493415,
+    "half_model": true,
+    "levels": {
+      "body": [
+        4,
+        5
+      ],
+      "far_wake": 3,
+      "kit": 6,
+      "near_wake": 4,
+      "underbody": 6,
+      "wheel": 5
+    },
+    "nu": 0.000017590218382828032,
+    "patches": [
+      "body"
+    ],
+    "re_l": 1540204.8334149595,
+    "reference": {
+      "a_front_m2": 0.027201284861892955,
+      "half_model": true,
+      "height_m": 0.07157963677955663,
+      "kit_bbox_m": null,
+      "length_m": 0.9030846458018802,
+      "nose_x_m": 0.0,
+      "patches": [
+        "body"
+      ],
+      "tail_x_m": 0.9030846458018802,
+      "track_m": 0.5166038741430938,
+      "wheel_centres_m": {},
+      "wheel_radius_m": 0.06140975591452786,
+      "width_m": 0.6077692636977574,
+      "x_front_axle_m": 0.18061692916037608,
+      "x_rear_axle_m": 0.7224677166415042,
+      "z_min_m": 0.0
+    },
+    "u_ms": 30.0,
+    "u_tau": 1.236297637427624,
+    "underbody_dist_m": 0.1,
+    "underbody_mode": "box",
+    "yplus_target": 30.0
+  },
+  "reference": {
+    "a_front_m2": 0.027201284861892955,
+    "half_model": true,
+    "height_m": 0.07157963677955663,
+    "kit_bbox_m": null,
+    "length_m": 0.9030846458018802,
+    "nose_x_m": 0.0,
+    "patches": [
+      "body"
+    ],
+    "tail_x_m": 0.9030846458018802,
+    "track_m": 0.5166038741430938,
+    "wheel_centres_m": {},
+    "wheel_radius_m": 0.06140975591452786,
+    "width_m": 0.6077692636977574,
+    "x_front_axle_m": 0.18061692916037608,
+    "x_rear_axle_m": 0.7224677166415042,
+    "z_min_m": 0.0
+  }
+}
