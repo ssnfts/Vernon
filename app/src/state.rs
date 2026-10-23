@@ -1555,27 +1555,29 @@ mod tests {
             .collect();
         assert_eq!(missing, Vec::<Stage>::new());
         // The demo has no wheels on its body and no FEA solver, so these two
-        // gates fail on purpose; the dashboard must show them (every report
-        // node of a stage counts, not just the newest one).
+        // gates fail on purpose and the scene lists them under expect_fail.
+        // They stay visible on their nodes (every report node of a stage
+        // counts, not just the newest) but, as in vernon-cli, they are
+        // expected and do not fail the pipeline.
         let nodes = &s.graph.nodes;
-        let mut failing: Vec<String> = gates
+        let mut expected: Vec<String> = gates
             .iter()
             .flat_map(|g| {
-                g.failing_metrics()
-                    .into_iter()
-                    .map(move |(n, m)| format!("{:?}: {} {m}", g.stage, nodes[&n].type_id))
+                g.nodes.iter().flat_map(move |ng| {
+                    ng.expected
+                        .iter()
+                        .map(move |m| format!("{:?}: {} {m}", g.stage, nodes[&ng.node].type_id))
+                })
             })
             .collect();
-        failing.sort();
+        expected.sort();
         assert_eq!(
-            failing,
+            expected,
             vec!["Cfd: cfd.vehicle_prep wheels_found".to_string(), "Fea: fea.tet_mesh placeholder".to_string()],
         );
-        let state_of = |st: Stage| gates.iter().find(|g| g.stage == st).unwrap().state;
-        assert_eq!(state_of(Stage::Cfd), crate::gate::GateState::Fail);
-        assert_eq!(state_of(Stage::Fea), crate::gate::GateState::Fail);
+        assert!(gates.iter().all(|g| g.failing_metrics().is_empty()), "no unexpected failures");
         assert!(gates.iter().all(|g| g.state != crate::gate::GateState::Error));
-        assert_eq!(crate::gate::overall(&gates), crate::gate::GateState::Fail);
+        assert_eq!(crate::gate::overall(&gates), crate::gate::GateState::Pass);
         // Only the display object is visible, and it carries deviation colours.
         let visible: Vec<NodeId> = s.objects().into_iter().filter(|o| !s.is_hidden(*o)).collect();
         assert_eq!(visible.len(), 1);

@@ -269,7 +269,15 @@ fn gate_dashboard(app: &mut VernonApp, ctx: &egui::Context) {
                                     }
                                     first = false;
                                     let s = metric_state(m);
-                                    ui.label(RichText::new(format!("{} {name}", s.glyph())).color(state_color(s)));
+                                    let excused = s == gate::GateState::Fail && ng.expected.contains(name);
+                                    let label = if excused {
+                                        let why = app.st.graph.nodes.get(&ng.node).and_then(|n| n.expect_fail.get(name));
+                                        format!("{} {name} (expected: {})", s.glyph(), why.map_or("", |w| w.as_str()))
+                                    } else {
+                                        format!("{} {name}", s.glyph())
+                                    };
+                                    let col = if excused { theme::TEXT_DIM } else { state_color(s) };
+                                    ui.label(RichText::new(label).color(col));
                                     ui.label(RichText::new(format!("{:.3} {}", m.value, m.unit)).monospace());
                                     match (m.limit, gate::margin(m)) {
                                         (Some(l), Some(mg)) => ui.label(
