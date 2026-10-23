@@ -78,7 +78,7 @@ then the external solvers, then UI polish, then release.
 - **Acceptance:**
   - On `geo.car_panel` with a 0.2 mm tolerance: p95 deviation ≤ 0.2 mm,
     reported through the existing surface-deviation metric names so
-    `surface.surface_deviation` gates it.
+    `surface.deviation_check` gates it.
   - Boundary gap between adjacent patches ≤ 0.01 mm.
   - Normal-angle jump ≤ 1° (G1).
 
