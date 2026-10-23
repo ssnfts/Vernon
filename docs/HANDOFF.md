@@ -1,0 +1,417 @@
+# Vernon handoff: what is left and exactly how to do it
+
+Written 2026-10-24 at commit `779bb61` on `main` in `C:\Users\mabdu\REA\vernon`.
+Read `AGENTS.md` first: it has the hard rules, build commands and definition
+of done. This document lists the remaining work as ordered **work packages
+(WP)**. Do them in order, one commit each. Every WP ends with the full
+definition-of-done check from `AGENTS.md`.
+
+---
+
+## 0. Current state (verified at handoff)
+
+- `cargo build --workspace`, `cargo test --workspace` (**982 passed, 0 failed**,
+  6 ignored) and `cargo clippy --workspace --all-targets -- -D warnings` are
+  all clean.
+- `vernon-cli cook examples/bodykit_pipeline.vrn`: 36 nodes cook, 32 reports,
+  0 failing gates, 2 expected (`vehicle_prep.wheels_found` and
+  `tet_mesh.placeholder`, declared under the nodes' `expect_fail`).
+- The app launches, renders with wgpu over Vulkan and stays up. The toolbar
+  verdict and the Gate Dashboard honour `expect_fail` the same way the CLI does.
+- **197 node types: 171 implemented, 26 white-box.**
+- Code size: app 10.3k lines; node crates 3–10k lines each; io 5.2k; graph 2.0k; core 1.7k.
+- Specs (source of truth for behaviour, parameters and golden tests):
+  `docs/specs/{alignment-deviation, automotive-cfd, capture-scanning,
+  geometry-basics, performance-validation, reverse-engineering-surfacing,
+  rhino8-mesh-tools, slicing-printing, solar-thermal, structural-fea,
+  ui-dcc-conventions}.md`.
+- Vetted suggestions per stage: `docs/research/k2/{general, ui, capture-clean,
+  surface, print, cfd-fea, solar-flatten-perf}.md`. Only use rows marked
+  ACCEPT or ADAPT; ignore REJECT rows.
+
+How to find a node's code: `rg -n '"surface.quad_remesh"' crates`. Each node's
+`.spec(...)` field names its spec file. Search that spec for the node id to
+find its parameters and golden tests.
+
+---
+
+## 1. Work packages in priority order
+
+Body-kit fit is the product's core value, so surface and print come first,
+then the external solvers, then UI polish, then release.
+
+### WP1 — Surface: quad remesh (`surface.quad_remesh`, crate `vernon-nodes-surface`)
+- **Algorithm:** Instant Field-Aligned Meshes (Jakob, Tarini, Panozzo,
+  Sorkine-Hornung, SIGGRAPH Asia 2015). Steps: smooth a 4-RoSy orientation
+  field, then a position field, extract the graph, then extract the quad
+  mesh. Implement from the paper (the reference code is BSD, so reading it is
+  allowed, but write your own). Keep the existing params (target quad count /
+  edge length, adaptive size, hard-edge angle, symmetry axis) as declared in
+  the node and spec.
+- **Acceptance:**
+  - On `geo.car_panel` at default params: ≥ 90% of output faces are quads.
+  - Mean edge length is within ±15% of the target.
+  - The output Report has `quad_ratio`, `irregular_vertices` and
+    `max_dev_mm` (Hausdorff to the input).
+  - `max_dev_mm` is below 1% of the bounding-box diagonal.
+  - Runs in under 5 s in release on 100k triangles.
+  - Remove the white-box warning and add `.implemented()`.
+
+### WP2 — Surface: auto-surface + refine regions (`surface.auto_surface`, `surface.refine_regions`)
+- **Pipeline:**
+  1. Region segmentation (output of `surface.segment_regions`). Refine
+     regions by curvature-based region growing with merge/split; that is
+     `refine_regions`.
+  2. Lay out 4-sided patches per region: quad-dominant layout from the WP1
+     field, or a region boundary split into 4 corners by curvature extrema.
+  3. Least-squares bicubic B-spline fit per patch with thin-plate smoothing,
+     after Weiss, Andor, Renner, Várady, "Advanced surface fitting
+     techniques" (CAGD 2002).
+  4. Insert knots where local deviation exceeds the tolerance, until it is
+     met or a max knot count is reached.
+  5. Enforce G1 across shared boundaries by averaging control-point
+     tangents (C0 is the minimum).
+- **Output:** patch geometry as a `Data::Json` NURBS description (degree,
+  knots, control points, weights) plus a tessellated `Geometry` with prim
+  attrib `part` = patch id. Use the existing NURBS JSON shape if the crate
+  already has one (`rg -n "knots" crates/vernon-nodes-surface`).
+- **Acceptance:**
+  - On `geo.car_panel` with a 0.2 mm tolerance: p95 deviation ≤ 0.2 mm,
+    reported through the existing surface-deviation metric names so
+    `surface.surface_deviation` gates it.
+  - Boundary gap between adjacent patches ≤ 0.01 mm.
+  - Normal-angle jump ≤ 1° (G1).
+
+### WP3 — Surface: G2 mesh-to-surface and prismatic solid (`surface.mesh_to_g2_surface`, `surface.convert_prismatic`)
+- **`mesh_to_g2_surface`:** convert a quad mesh (WP1) into bicubic patches:
+  - Start from Approximating Catmull-Clark (Loop & Schaefer 2008), which is
+    G1 at extraordinary vertices and C2 elsewhere.
+  - Then raise continuity to G2 around extraordinary vertices with a
+    guided-surfacing or Karčiauskas–Peters style construction, or report
+    `g2_fraction` honestly if only partial.
+  - The Report must state measured continuity: max position gap, max normal
+    angle and max curvature jump across seams.
+- **`convert_prismatic`:**
+  - RANSAC primitive detection (Schnabel, Wahl, Klein 2007) for plane,
+    cylinder, sphere and cone on mesh regions.
+  - Output primitive parameters as Json, plus a tessellated solid whose prim
+    attrib `part` is the primitive id.
+  - Acceptance: a box with a drilled cylinder made by `geo` nodes yields 6
+    planes and 1 cylinder (radius within 1%).
+
+### WP4 — Surface: real STEP writer (`surface.write_step`)
+- **Format:** write ISO 10303-21 (Part 21) files, schema AP214
+  (`AUTOMOTIVE_DESIGN`) or AP242.
+  - Faceted solids: `CLOSED_SHELL` with `FACE_SURFACE` + `PLANE` + `POLY_LOOP`.
+  - Fitted patches: `B_SPLINE_SURFACE_WITH_KNOTS` faces in an `OPEN_SHELL`
+    inside a `SHELL_BASED_SURFACE_MODEL`, with an
+    `ADVANCED_BREP_SHAPE_REPRESENTATION` once edges are shared.
+  - Units: millimetre (`SI_UNIT(.MILLI.,.METRE.)`). Build the standard
+    product, context and header entities.
+- **Acceptance:**
+  - A unit test parses the output back: entity count, matching `#n` refs, no
+    dangling references.
+  - Add a test with `#[ignore = "needs FreeCAD"]` that runs
+    `freecadcmd -c "import Part; s=Part.read('out.step'); print(s.isValid())"`
+    and asserts `True`.
+  - Document that check in the node's help.
+
+### WP5 — Print: body-line cut, smart partition, region select, snap joint (`vernon-nodes-print`)
+- **`print.polyline_cut`:**
+  - Project the user polyline (open prim from a curve or `geo` node) onto the
+    mesh along a direction param (default: view axis or average normal).
+  - Insert the projected curve as edges: split the triangles it crosses,
+    with robust predicates (`robust` crate, MIT/Apache, pure Rust).
+  - Separate the connected components on either side.
+  - For thickened shells, cut both skins and stitch a side wall so each part
+    is closed.
+  - Output each piece with prim attrib `part`.
+  - Acceptance: cutting a 3 mm shell of `geo.car_panel` with a diagonal
+    polyline gives 2 parts, both closed (`validate()` + an edge-manifold
+    check), with total volume preserved within 0.5%.
+- **`print.smart_partition`:**
+  - Partition a part that is too big for the bed into the fewest printable
+    pieces. Follow the Chopper method (Luo, Baran, Rusinkiewicz, Matusik,
+    SIGGRAPH Asia 2012): beam search over cutting planes, scoring part
+    count, fit to the printer volume (existing bed-fit logic), seam length,
+    seam on high-curvature/body lines (preferred) and connector feasibility.
+  - Acceptance: a 1200×600×300 mm box on a 350³ bed gives ≥ 1 valid plan,
+    every part fits, and the Report lists `parts`, `seam_length_mm` and
+    `min_fit_margin_mm`.
+- **`print.cut_region_select`:** select the face region for a cut by
+  bounding box, normal cone or group, and emit a prim group consumed by the
+  cut nodes. It is a small, deterministic node.
+- **`print.snap_joint`:**
+  - Generate cantilever snap-fit hooks on a seam (hook length, thickness,
+    undercut, angle).
+  - Check permissible strain with the standard cantilever formula
+    ε = 1.5·t·y / l² (rectangular section) against a material
+    allowable-strain table. Put that table in `vernon-core` materials next to
+    the existing FDM rows; cite a public snap-fit design guide in the spec.
+  - Report `strain_pct` vs `allowable_pct` as a gate.
+- **`print.flavour_check`:**
+  - Parse G-code. Validate commands against a per-flavour allow-list
+    (`marlin`, `marlin2`, `klipper`, `reprapfirmware`, `repetier`) from
+    `docs/specs/slicing-printing.md`.
+  - Also check temperature, bed-size and extrusion-mode consistency.
+  - Report unknown commands as warnings and out-of-bounds moves as errors.
+- **`print.profile_build`:** emit OrcaSlicer/PrusaSlicer printer, filament
+  and process profile JSON/INI from Vernon's presets (keys per the spec).
+  Validate by a round-trip parse.
+- **`print.script_bridge`:** leave white-box. It targets OrcaSlicer 2.5's
+  alpha Python plugin API, which is unstable. Update only the help text with
+  the API version it was checked against.
+
+### WP6 — Clean: conservative wrap (`clean.alpha_wrap`)
+- **Algorithm:** implement "Alpha Wrapping with an Offset" (Portaneri,
+  Rouxel-Labbé, Hemmer, Cohen-Steiner, Alliez, SIGGRAPH 2022) **from the
+  paper only**: CGAL's implementation is GPL, so do not read it.
+  - Acceptable simpler route: sparse voxel / octree offset surface, then
+    dual contouring, then a shrink-wrap projection.
+  - Params: `alpha` (mm) and `offset` (mm), plus the ones already declared.
+- **Acceptance:** output is closed and manifold, and every output vertex is
+  between `offset` and `offset + alpha` from the input (sampled check).
+  Holes smaller than alpha close. 1M-triangle input finishes in under 30 s
+  in release.
+
+### WP7 — Capture: alignment (`capture.global_align`, `capture.multiway_align`)
+- **`global_align`:** initial alignment needing no manual pose.
+  - Compute FPFH descriptors (Rusu, Blodow, Beetz 2009).
+  - Match with RANSAC, or with Fast Global Registration (Zhou, Park, Koltun 2016).
+  - Then refine with the existing point-to-plane ICP.
+- **`multiway_align`:** pose-graph optimisation, as in Choi, Zhou, Koltun 2015.
+  - Edges are pairwise ICP results with information matrices.
+  - Use Gauss-Newton or Levenberg–Marquardt on SE(3) via `nalgebra`, with
+    line-process or switchable loop closures to reject bad edges.
+- **Acceptance:**
+  - Synthetic test: 5 noisy partial copies of `geo.car_panel`, each moved by
+    a random rigid transform of up to 30°/200 mm, are recovered to ≤ 0.5°
+    and ≤ 0.5 mm.
+  - The Report has `rmse_mm` and `fitness`.
+
+### WP8 — Capture: COLMAP photogrammetry (`capture.sfm_features_match`, `sfm_reconstruct`, `mvs_dense`, `mvs_mesh`)
+- **Commands:** wire the real COLMAP CLI calls, BSD licence, run as a process:
+  1. `colmap feature_extractor --database_path db.db --image_path images`
+  2. `colmap exhaustive_matcher` or `sequential_matcher`
+  3. `colmap mapper --database_path db.db --image_path images --output_path sparse`
+  4. `colmap image_undistorter --image_path images --input_path sparse/0 --output_path dense`
+  5. `colmap patch_match_stereo` (needs CUDA)
+  6. `colmap stereo_fusion --output_path dense/fused.ply`
+  7. `colmap poisson_mesher` or `delaunay_mesher`
+- **Outputs:** read via `vernon_io::read`, then apply scale-bar correction
+  through the existing capture nodes.
+- **Error handling:** surface stderr in the Report; a missing CUDA device is
+  a Warning that says to use `delaunay_mesher` instead of patch-match.
+- **Tests:** add `#[ignore = "needs COLMAP"]` tests that use a public sample
+  dataset. Don't commit images; the test downloads to a temp dir only when
+  `VERNON_COLMAP_DATA` is set.
+- **Native fallback stays white-box:** Poisson surface reconstruction
+  (Kazhdan & Hoppe 2013 "Screened Poisson") may be implemented natively
+  later as its own node.
+
+### WP9 — CFD: real OpenFOAM runs (`cfd.mesh_build`, `cfd.solve_steady`)
+- **Install:** OpenFOAM isn't on this machine. On Windows use WSL Ubuntu
+  with `openfoam` from openfoam.org or ESI. Ask the user before installing.
+  Add an exe-prefix param, e.g. `wsl -e bash -lc`.
+- **`mesh_build`:**
+  - Run `blockMesh`, `surfaceFeatureExtract` (or `surfaceFeatures`),
+    `snappyHexMesh -overwrite`, then `checkMesh`.
+  - Parse `checkMesh` output for cell count, max non-orthogonality, max
+    skewness and "Mesh OK".
+  - Report these as gates: non-ortho < 70, skewness < 4.
+- **`solve_steady`:** run `simpleFoam`. Optionally `decomposePar`, then
+  `mpirun -np N simpleFoam -parallel`, then `reconstructPar`.
+  - Parse residuals from the log and `postProcessing/forceCoeffs*/0/coefficient.dat`.
+  - Feed the existing convergence-gate and force-coefficient nodes.
+- **Validation:**
+  - Ahmed 25° and 35° and DrivAer cases with the targets and tolerances in
+    `docs/specs/automotive-cfd.md` (goldens G13–G24, e.g. DrivAer Cd within
+    5% of 0.275/0.319/0.277).
+  - Tests that need OpenFOAM are `#[ignore = "needs OpenFOAM"]`.
+- **Hand-off to performance:** wire CFD force coefficients into
+  `perf.vehicle` in the example scene (currently CdA/ClA are typed in by
+  hand).
+  - Feed it a CFD report via the existing `keys` aliases.
+  - Keep the guard that refuses a placeholder CFD result (CdA = 0) unless the
+    user overrides it.
+- **Transient DDES/SBES:** add a transient DDES/SBES case writer (flagged
+  only so far), using `pimpleFoam` with `kOmegaSSTDDES`. Write files only;
+  real runs are optional.
+
+### WP10 — FEA: tet meshing and native linear solver (`fea.tet_mesh`, `fea.solve_linear`)
+- **`tet_mesh`:** run fTetWild (MPL-2.0, run as a process):
+  `FloatTetwild_bin -i in.stl -o out.msh -l <rel_edge> -e <eps>`.
+  - Parse the Gmsh v4 `.msh` into nodes and C3D4 elements.
+  - Keep the voxel fallback, but have it emit
+    `placeholder = 0` when fTetWild ran. Then remove that node's
+    `expect_fail` from `examples/bodykit_pipeline.vrn` only if the example
+    actually runs fTetWild.
+- **`solve_linear`:** native reference solver for C3D4 and C3D10.
+  - Element stiffness from linear/quadratic tet shape functions; orthotropic
+    material via the existing material model.
+  - Assemble in CSR and solve with preconditioned conjugate gradient
+    (Jacobi or IC0). Pure Rust; `nalgebra-sparse` is acceptable.
+  - Output displacement and von Mises per element.
+- **Acceptance:**
+  - Cantilever 200×20×20 mm, E = 2 GPa, tip load 100 N, compared with
+    δ = PL³/3EI: C3D10 within 3%, C3D4 within 15%. Document that linear tets
+    are stiff.
+  - Results agree with CalculiX on the same deck within 2% (an
+    `#[ignore = "needs CalculiX"]` test that runs `ccx`).
+
+### WP11 — Flatten and performance white-box nodes
+- **`flatten.stretch_aware`:** ARAP parameterisation (Liu, Zhang, Xu, Gotsman,
+  Gortler 2008, local/global), initialised from the existing LSCM node.
+  - Report max and p95 strain, plus area distortion.
+  - Acceptance: a cylinder patch flattens with < 0.1% strain; a
+    hemisphere-like cap has lower max strain than LSCM on the same input.
+- **`perf.tuft_analysis`:**
+  - Input is a CSV of tuft positions (x, y, z mm) and measured angles, or
+    photos.
+  - Implement CSV first: classify each tuft as attached, unsteady or
+    separated by angle deviation and flutter (std-dev) thresholds, and map
+    the classes onto the surface as prim attribs.
+  - Photo input stays white-box.
+  - Report `% separated` per region.
+
+### WP12 — File formats (`vernon-io`)
+- **E57 reader (ASTM E2807):**
+  - Physical file: 1024-byte pages with CRC-32C, an XML section, then binary
+    sections.
+  - Read cartesianX/Y/Z, colours and intensity of every `data3D` scan.
+  - Apply each scan's pose.
+- **LAS 1.2–1.4 reader:**
+  - Header, point formats 0–10, scale and offset.
+  - Units from the header or a param (LAS is usually metres, so convert to mm).
+  - LAZ (compressed) is out of scope unless a pure-Rust permissive decoder
+    exists and passes the AGENTS.md dependency rules.
+- **STEP reader:** optional, faceted solids only.
+- **Formats:** add the new formats to `Format::from_path` and `extensions()`.
+- **Tests:** round-trip or golden tests on small synthetic files built in the
+  test itself.
+
+### WP13 — App and UI gaps (`app/`, `crates/vernon-render`)
+1. **Concave n-gons in the display mesh:**
+   - The display mesh uses `Geometry::triangles()` (fan) and is wrong for
+     concave n-gons.
+   - Switch both renderers to ear-clipping (`vernon-io` has `tri.rs`; move
+     the ear-clipper into `vernon-core` and reuse it).
+   - Carry the `dist`/`temp_c`/`Cd` colour modes through.
+   - Test: an L-shaped hexagon renders 4 non-overlapping triangles.
+2. **Grid depth:** draw the home grid depth-tested in the GPU pass, so
+   geometry below Z=0 is hidden by the ground plane and not vice versa.
+   Remove the 2D-underlay workaround.
+3. **vernon-render navigation and picking:** wire its nav-cube, gizmo pass
+   and GPU ID picking (currently CPU picking and app-side widgets).
+   - Merge the app `Camera` and vernon-render `OrbitCamera` into one type
+     (f64 in app state, f32 at upload).
+4. **View cube extras:** compass ring, "set current view as Front" and an
+   animated view transition (spec `ui-dcc-conventions.md`).
+5. **Hierarchy tab:**
+   - Add a part-hierarchy model: parent links, datums and pivots as prim and
+     detail attributes produced by print nodes.
+   - Show it in the Hierarchy tab; the spec lists this under "Not yet".
+6. **Keyboard and clipboard:**
+   - Bind the 24 reserved shortcut chords as their features land.
+   - Add `keymap.json` user overrides (load from the config dir; invalid
+     entries warn).
+   - Add Cut/Copy/Paste of sub-graphs: serialise the selected nodes and
+     internal wires to clipboard JSON, and paste with fresh ids and unique
+     names.
+7. **Load Demo Pipeline:** offer "replace scene" vs "add copy" instead of
+   always adding 36 more nodes.
+8. **Screenshot check:** capture the app with the example loaded and check by
+   eye that the Command Panel, time slider and status bar render. The last
+   check was cropped by DPI scaling, so use a DPI-aware capture.
+
+### WP14 — Consistency clean-ups
+- **Material tables:** verify the three material tables are now one
+  (`vernon-core` `materials`).
+  - `rg -n "101.5|hdt" crates` must show every stage reading HDT from the
+    shared table.
+  - ASA: use 0.45 MPa HDT from the table (report said 100–103 °C; the table
+    says 101.5), never a second hard-coded 100.
+- **Air state:** check the example scene passes one air state (ρ from
+  T/p/RH) to CFD, FEA and performance. Assert this in
+  `crates/vernon-cli/tests/pipeline.rs`.
+- **Metric names:** don't rename existing ones (`dev_p95_mm`, `p95_abs`,
+  `fit_p95_mm`); add aliases to `vernon_core::report::keys` instead.
+- **Tests:**
+  - Re-enable and run the 3 performance tests with
+    `cargo test --release -p vernon-nodes-clean -- --ignored`. Record the
+    timings in the crate README; they must pass.
+  - Also run `cargo test -p vernon-render -- --ignored` on a GPU machine.
+
+### WP15 — Validation against tools the user owns (golden tests)
+- **Allowed:** recording outputs of legally licensed tools on inputs we
+  created (CLEAN_ROOM.md, "Allowed sources" item 3). Do not inspect their
+  binaries or install folders.
+- **Per golden test:**
+  - Create the input with Vernon nodes and export it with `geo.file_write`.
+  - The **user** runs the reference tool and saves the output under
+    `tests/golden/<tool>/<case>/`.
+  - Add a test comparing Vernon's output within the tolerance stated in the
+    matching spec's "golden tests" section.
+- **Cases:**
+  - CloudCompare C2M distance on a scan vs mesh.
+  - OrcaSlicer slice of a 3MF from `print.package_write`: layer count and
+    filament grams within 2%.
+  - Blender/Houdini only for geometry ops (e.g. Catmull-Clark level 2 vertex
+    positions).
+- **Process:** write a `tests/golden/README.md` explaining the procedure.
+  Ask the user to run the tools; don't automate the proprietary ones.
+
+### WP16 — Release
+1. **CI:** add `.github/workflows/ci.yml` with a matrix of `windows-latest`
+   (x86_64-pc-windows-gnu with MSYS2 MinGW), `ubuntu-latest` and
+   `macos-latest`. Each runs build, test, `clippy -D warnings`, the example
+   cook and the CLI clean-room test.
+2. **Licence audit:** add `cargo-deny` (`deny.toml`) with the AGENTS.md
+   licence allow-list and a ban on `cc`/`cmake`/`bindgen` for the Windows
+   target. Run the Linux check from CLEAN_ROOM.md
+   (`cargo tree -e normal,build --target x86_64-unknown-linux-gnu -i cc`).
+3. **Packaging:** `cargo build --release -p vernon -p vernon-cli`; zip with
+   LICENSE, NOTICE, README and examples. On Windows, bundle the MinGW
+   runtime DLLs only if `vernon.exe` needs them (check with `objdump -p` for
+   `libgcc_s`/`libwinpthread`).
+4. **Changelog:** write `CHANGELOG.md` for v0.1.0-alpha.
+5. **Publishing:** do **not** create a GitHub repo, push, tag or publish
+   without the user's explicit go-ahead. Prepare everything and tell them the
+   commands.
+
+---
+
+## 2. Known traps
+
+- **Windows linker:** the GNU toolchain needs WinLibs `dlltool`. If you see
+  `error calling dlltool` or `cannot find -lshlwapi`, you skipped
+  `. .\scripts\dev-env.ps1`, or `~/.cargo/config.toml` lost its
+  `linker`/`-Cdlltool` lines (both point into
+  `%LOCALAPPDATA%\Microsoft\WinGet\Packages\BrechtSanders.WinLibs.POSIX.UCRT_*\mingw64\bin`).
+- **wgpu backends:** `app/Cargo.toml` depends on `wgpu = "25"` with default
+  features on purpose. eframe alone leaves the platform backends off, and the
+  app then panics with "No wgpu backend feature".
+- **Gates and `expect_fail`:** scenes may declare expected metric failures
+  per node (`NodeInstance::expect_fail`). The CLI and the app's toolbar and
+  Gate Dashboard both honour them; error notes are never excused. Keep the
+  two in sync (`vernon_graph::gate::report_state_expecting`).
+- **Cache purity:** cooks are cached by a parameter + upstream signature.
+  - A node that reads files must include a file stamp in its signature (see
+    how `writes_files`/file-stamp handling works in `vernon-graph/src/graph.rs`).
+  - Side-effecting nodes must be marked so they are not treated as pure.
+- **Long cooks:** cooking runs off the UI thread with cancellation. External
+  processes are killed by tree kill (`taskkill /T /F` on Windows) and have
+  time limits. New external runners must reuse
+  `vernon_core::process` rather than spawning ad hoc.
+- **Untrusted scenes:** opening a `.vrn` that would run external programs
+  shows a trust prompt. New nodes with `run` params are covered
+  automatically if they use the shared `run`/exe param conventions. Check
+  this with a test.
+- **Clean-room test:** `crates/vernon-cli/tests/clean_room.rs` fails on
+  trademarks in labels/help. Run it before every commit.
+
+## 3. Out of scope / needs the user
+- Installing OpenFOAM (WSL), COLMAP (CUDA), fTetWild, CalculiX, FreeCAD:
+  ask the user first and state what will be downloaded.
+- Legal review of the clean-room process before a public release.
+- Creating the public GitHub repository and choosing the org name.
