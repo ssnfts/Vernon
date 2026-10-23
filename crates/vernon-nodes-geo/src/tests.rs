@@ -105,7 +105,7 @@ fn registration() {
         "geo.box", "geo.grid", "geo.sphere", "geo.tube", "geo.car_panel", "geo.file_read",
         "geo.file_write", "geo.transform", "geo.merge", "geo.mirror", "geo.normals", "geo.reverse",
         "geo.triangulate", "geo.delete", "geo.group", "geo.attrib_create", "geo.measure",
-        "geo.fuse", "geo.subdivide",
+        "geo.fuse", "geo.subdivide", "geo.noise",
     ];
     assert_eq!(reg.len(), expected.len());
     let mut ids = HashSet::new();

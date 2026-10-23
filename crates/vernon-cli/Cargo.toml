@@ -5,6 +5,10 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[lib]
+name = "vernon_cli"
+path = "src/lib.rs"
+
 [[bin]]
 name = "vernon-cli"
 path = "src/main.rs"
@@ -13,5 +17,14 @@ path = "src/main.rs"
 vernon-core.workspace = true
 vernon-graph.workspace = true
 vernon-io.workspace = true
+vernon-nodes-geo = { path = "../vernon-nodes-geo" }
+vernon-nodes-capture = { path = "../vernon-nodes-capture" }
+vernon-nodes-clean = { path = "../vernon-nodes-clean" }
+vernon-nodes-surface = { path = "../vernon-nodes-surface" }
+vernon-nodes-print = { path = "../vernon-nodes-print" }
+vernon-nodes-cfd = { path = "../vernon-nodes-cfd" }
+vernon-nodes-fea = { path = "../vernon-nodes-fea" }
+vernon-nodes-solar = { path = "../vernon-nodes-solar" }
+vernon-nodes-perf = { path = "../vernon-nodes-perf" }
 anyhow.workspace = true
 serde_json.workspace = true

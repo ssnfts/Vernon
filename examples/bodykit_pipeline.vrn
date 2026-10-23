@@ -1,0 +1,67 @@
+{
+  "display": 10,
+  "nodes": {
+    "0": { "type_id": "geo.car_panel", "name": "panel", "pos": [0, 0],
+           "params": { "length": 900.0, "width": 600.0, "crown": 40.0, "flare": 60.0, "cols": 36, "rows": 24 } },
+    "1": { "type_id": "geo.measure", "name": "panel_measure", "pos": [0, 120], "inputs": [[0, 0]] },
+    "2": { "type_id": "geo.noise", "name": "scan_noise", "pos": [220, 0], "inputs": [[0, 0]],
+           "params": { "sigma": 0.05, "direction": "normal", "seed": 7 } },
+    "3": { "type_id": "geo.transform", "name": "scan_pose", "pos": [220, 120], "inputs": [[2, 0]],
+           "params": { "translate": [1.5, -1.0, 0.8], "rotate": [0.4, -0.3, 0.6] } },
+    "4": { "type_id": "capture.scan_quality", "name": "scan_quality", "pos": [220, 240], "inputs": [[3, 0]] },
+
+    "5": { "type_id": "clean.icp_align", "name": "icp_align", "pos": [440, 0], "inputs": [[3, 0], [0, 0]],
+           "params": { "metric": "point_to_plane", "max_iterations": 60 } },
+    "6": { "type_id": "clean.mesh_distance", "name": "scan_deviation", "pos": [440, 120], "inputs": [[5, 0], [0, 0]],
+           "params": { "color_limit": 0.2 } },
+    "7": { "type_id": "clean.deviation_stats", "name": "deviation_stats", "pos": [440, 240], "inputs": [[6, 0]],
+           "params": { "tolerance": 0.2, "target_fraction": 0.95 } },
+    "8": { "type_id": "clean.tolerance_gate", "name": "scan_gate", "pos": [440, 360], "inputs": [[7, 1]],
+           "params": { "tolerance": 0.2, "target_fraction": 0.95 } },
+
+    "9": { "type_id": "surface.fit_patch", "name": "fit_patch", "pos": [660, 0], "inputs": [[5, 0]],
+           "params": { "tol_mm": 0.2, "max_cp": 24 } },
+    "10": { "type_id": "surface.deviation_check", "name": "surface_deviation", "pos": [660, 120], "inputs": [[5, 0], [9, 1], [9, 0]],
+            "params": { "tol_mm": 0.5, "samples": 20000 } },
+    "11": { "type_id": "surface.thicken_shell", "name": "thicken", "pos": [660, 240], "inputs": [[9, 1], null],
+            "params": { "thickness_mm": 3.0, "side": "inward" } },
+
+    "12": { "type_id": "print.grid_partition", "name": "grid_split", "pos": [880, 0], "inputs": [[11, 0]],
+            "params": { "mode": "by_bed", "printer": "k1_max" } },
+    "13": { "type_id": "print.build_fit", "name": "bed_fit", "pos": [880, 120], "inputs": [[12, 0]],
+            "params": { "printer": "k1_max", "material": "asa" } },
+    "14": { "type_id": "print.package_write", "name": "package_3mf", "pos": [880, 240], "inputs": [[13, 0]] },
+
+    "15": { "type_id": "cfd.air_state", "name": "air", "pos": [1100, 0], "params": { "u_ms": 30.0 } },
+    "16": { "type_id": "cfd.vehicle_prep", "name": "vehicle_prep", "pos": [1100, 120], "inputs": [[11, 0], null, null] },
+    "17": { "type_id": "cfd.frontal_area", "name": "frontal_area", "pos": [1100, 240], "inputs": [[16, 0]] },
+    "18": { "type_id": "cfd.tunnel_domain", "name": "tunnel", "pos": [1100, 360], "inputs": [[16, 1]] },
+    "19": { "type_id": "cfd.refinement_plan", "name": "refinement", "pos": [1100, 480], "inputs": [[16, 1], [18, 0], null, [15, 0]] },
+    "20": { "type_id": "cfd.mesh_setup", "name": "mesh_dicts", "pos": [1100, 600], "inputs": [[19, 0], [18, 0], [16, 0]] },
+    "21": { "type_id": "cfd.case_setup", "name": "cfd_case", "pos": [1100, 720], "inputs": [[20, 0], [15, 0], null, null, [16, 1], [18, 0]] },
+
+    "22": { "type_id": "fea.material_fdm", "name": "material", "pos": [1320, 0], "params": { "preset": "asa" } },
+    "23": { "type_id": "fea.tet_mesh", "name": "tet_mesh", "pos": [1320, 120], "inputs": [[11, 0]], "params": { "edge_len_mm": 8.0 } },
+    "24": { "type_id": "fea.mount_sites", "name": "mounts", "pos": [1320, 240], "inputs": [[23, 0], null],
+            "params": { "model": "fixed_patch", "r_w_mm": 12.0, "count": 2, "site_a": [-300.0, 0.0, 0.0], "site_b": [300.0, 0.0, 0.0] } },
+    "25": { "type_id": "fea.load_aero", "name": "aero_load", "pos": [1320, 360], "inputs": [[24, 1], null, null],
+            "params": { "cla_m2": 0.1, "v_kmh": 200.0 } },
+    "26": { "type_id": "fea.load_cases", "name": "load_cases", "pos": [1320, 480], "inputs": [[25, 0], null, [24, 0]] },
+    "27": { "type_id": "fea.deck_write", "name": "fea_deck", "pos": [1320, 600], "inputs": [[24, 1], [22, 0], [24, 0], [26, 0], null],
+            "params": { "allow_linear_tet": true } },
+
+    "28": { "type_id": "solar.design_hour", "name": "design_hour", "pos": [1540, 0] },
+    "29": { "type_id": "solar.surface_balance", "name": "surface_temp", "pos": [1540, 120], "inputs": [[0, 0], [28, 0]],
+            "params": { "alpha": 0.6, "emissivity": 0.9 } },
+    "30": { "type_id": "solar.hdt_check", "name": "hdt_check", "pos": [1540, 240], "inputs": [[29, 0], null, [22, 1]],
+            "params": { "material": "ASA" } },
+
+    "31": { "type_id": "flatten.conformal_map", "name": "flatten", "pos": [1760, 0], "inputs": [[0, 0], null] },
+    "32": { "type_id": "flatten.strain_report", "name": "flatten_strain", "pos": [1760, 120], "inputs": [[31, 0], [31, 1]] },
+
+    "33": { "type_id": "perf.vehicle", "name": "vehicle", "pos": [1980, 0], "inputs": [null],
+            "params": { "mass_kg": 1400.0, "power_w": 150000.0, "cda_m2": 0.64, "cla_m2": 0.1 } },
+    "34": { "type_id": "perf.aero_loads", "name": "aero_loads", "pos": [1980, 120], "inputs": [null, [33, 0]] },
+    "35": { "type_id": "perf.top_speed", "name": "top_speed", "pos": [1980, 240], "inputs": [null, [33, 0]] }
+  }
+}

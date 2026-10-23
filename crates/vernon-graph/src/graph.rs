@@ -16,8 +16,11 @@ pub struct NodeInstance {
     pub type_id: String,
     /// Unique, user-editable name, e.g. `icp_align1`.
     pub name: String,
+    /// Missing entries take their defaults in [`Graph::normalize`].
+    #[serde(default)]
     pub params: Params,
     /// `inputs[i] = Some((upstream node, upstream output index))`.
+    #[serde(default)]
     pub inputs: Vec<Option<(NodeId, usize)>>,
     /// Pass input 0 straight through instead of cooking.
     #[serde(default)]
@@ -39,6 +42,8 @@ pub struct Graph {
     pub nodes: IndexMap<NodeId, NodeInstance>,
     /// The node whose output the viewport shows.
     pub display: Option<NodeId>,
+    /// Hand-written files may leave this out; [`Graph::normalize`] repairs it.
+    #[serde(default)]
     next_id: NodeId,
     #[serde(skip)]
     cache: HashMap<NodeId, CacheEntry>,
@@ -309,6 +314,34 @@ impl Graph {
             .join(node_name)
     }
 
+    /// Make a loaded graph cookable: order nodes by id, add parameters the
+    /// file left at their defaults, pad unconnected trailing inputs and keep
+    /// `next_id` above every id. Returns the type ids the registry does not
+    /// know (those nodes are left untouched and fail when cooked).
+    pub fn normalize(&mut self, registry: &Registry) -> Vec<String> {
+        self.nodes.sort_keys();
+        if let Some(max) = self.nodes.keys().max() {
+            self.next_id = self.next_id.max(max + 1);
+        }
+        let mut unknown = Vec::new();
+        for node in self.nodes.values_mut() {
+            let Some(info) = registry.info(&node.type_id) else {
+                unknown.push(node.type_id.clone());
+                continue;
+            };
+            for spec in &info.params {
+                if node.params.get(&spec.name).is_none() {
+                    node.params.set(&spec.name, spec.default_value());
+                }
+            }
+            if node.inputs.len() < info.inputs.len() {
+                node.inputs.resize(info.inputs.len(), None);
+            }
+        }
+        self.cache.clear();
+        unknown
+    }
+
     /// Drop all cached results.
     pub fn invalidate_all(&mut self) {
         self.cache.clear();
@@ -385,6 +418,27 @@ mod tests {
         let json = g.to_json();
         let g2 = Graph::from_json(&json).unwrap();
         assert_eq!(g2.nodes.len(), 2);
+    }
+
+    #[test]
+    fn normalize_fills_hand_written_files() {
+        let mut reg = Registry::new();
+        reg.add(BoxOp);
+        reg.add(CountOp(Arc::new(AtomicUsize::new(0))));
+        let mut g = Graph::from_json(
+            r#"{ "nodes": {
+                "3": { "type_id": "geo.count", "name": "c", "params": {}, "inputs": [] },
+                "1": { "type_id": "geo.box", "name": "b", "params": {}, "inputs": [] },
+                "2": { "type_id": "geo.nope", "name": "n", "params": {}, "inputs": [] } } }"#,
+        )
+        .unwrap();
+        assert_eq!(g.normalize(&reg), vec!["geo.nope".to_string()]);
+        assert_eq!(g.nodes.keys().copied().collect::<Vec<_>>(), vec![1, 2, 3]);
+        assert_eq!(g.nodes[&1].params.float("size").unwrap(), 10.0);
+        assert_eq!(g.nodes[&3].inputs.len(), 1);
+        g.connect(1, 0, 3, 0).unwrap();
+        assert!(g.cook(&reg, 3).is_ok());
+        assert_eq!(g.add_node(&reg, "geo.box").unwrap(), 4);
     }
 
     #[test]

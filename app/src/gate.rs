@@ -130,18 +130,18 @@ mod tests {
     #[test]
     fn gates_follow_latest_report() {
         let mut st = AppState::new(build_registry());
-        st.create("demo.box").unwrap();
-        let cut = st.create("demo.planar_cut").unwrap();
+        let part = st.create("geo.box").unwrap();
+        let fit = st.create("print.build_fit").unwrap();
         st.cook_all();
         let gates = stage_gates(&st);
         assert_eq!(gates.len(), Stage::ALL.len());
         let print = gates.iter().find(|g| g.stage == Stage::Print).unwrap();
-        assert_eq!(print.node, Some(cut));
+        assert_eq!(print.node, Some(fit));
         assert_eq!(print.state, GateState::Pass);
         let cfd = gates.iter().find(|g| g.stage == Stage::Cfd).unwrap();
         assert_eq!(cfd.state, GateState::Missing);
-        // Lower the build height below the 60 mm part: the gate fails.
-        st.set_param(cut, "build_height", ParamValue::Float(50.0), 0.0);
+        // Grow the part beyond the printer volume: the gate fails.
+        st.set_param(part, "size", ParamValue::Vec3(glam::DVec3::splat(600.0)), 0.0);
         st.cook_all();
         let gates = stage_gates(&st);
         assert_eq!(gates.iter().find(|g| g.stage == Stage::Print).unwrap().state, GateState::Fail);

@@ -3059,11 +3059,22 @@ dependencies = [
  "eframe",
  "egui_extras",
  "glam",
+ "pollster",
  "serde",
  "serde_json",
  "vernon-core",
  "vernon-graph",
  "vernon-io",
+ "vernon-nodes-capture",
+ "vernon-nodes-cfd",
+ "vernon-nodes-clean",
+ "vernon-nodes-fea",
+ "vernon-nodes-geo",
+ "vernon-nodes-perf",
+ "vernon-nodes-print",
+ "vernon-nodes-solar",
+ "vernon-nodes-surface",
+ "vernon-render",
  "wgpu",
 ]
 
@@ -3076,6 +3087,15 @@ dependencies = [
  "vernon-core",
  "vernon-graph",
  "vernon-io",
+ "vernon-nodes-capture",
+ "vernon-nodes-cfd",
+ "vernon-nodes-clean",
+ "vernon-nodes-fea",
+ "vernon-nodes-geo",
+ "vernon-nodes-perf",
+ "vernon-nodes-print",
+ "vernon-nodes-solar",
+ "vernon-nodes-surface",
 ]
 
 [[package]]

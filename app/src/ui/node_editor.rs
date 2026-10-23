@@ -348,10 +348,10 @@ mod tests {
         let reg = build_registry();
         let mut g = Graph::new();
         // Chain of 9: ranks 0..8.
-        let mut prev = g.add_node(&reg, "demo.box").unwrap();
+        let mut prev = g.add_node(&reg, "geo.box").unwrap();
         let mut chain = vec![prev];
         for _ in 0..8 {
-            let n = g.add_node(&reg, "demo.smooth").unwrap();
+            let n = g.add_node(&reg, "clean.smooth_mesh").unwrap();
             g.connect(prev, 0, n, 0).unwrap();
             chain.push(n);
             prev = n;
@@ -362,10 +362,10 @@ mod tests {
         }
         // Diamond A->B, A->C, B->D, C->D: ranks 0, 1, 1, 2.
         let mut g = Graph::new();
-        let a = g.add_node(&reg, "demo.box").unwrap();
-        let b = g.add_node(&reg, "demo.smooth").unwrap();
-        let c = g.add_node(&reg, "demo.smooth").unwrap();
-        let d = g.add_node(&reg, "demo.merge").unwrap();
+        let a = g.add_node(&reg, "geo.box").unwrap();
+        let b = g.add_node(&reg, "clean.smooth_mesh").unwrap();
+        let c = g.add_node(&reg, "clean.smooth_mesh").unwrap();
+        let d = g.add_node(&reg, "geo.merge").unwrap();
         g.connect(a, 0, b, 0).unwrap();
         g.connect(a, 0, c, 0).unwrap();
         g.connect(b, 0, d, 0).unwrap();

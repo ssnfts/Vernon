@@ -506,13 +506,13 @@ impl AppState {
     /// The node the Move/Rotate/Scale tools edit for `object`: the object
     /// itself when it is a transform, else a new transform on top of it.
     pub fn ensure_transform(&mut self, object: NodeId) -> Result<NodeId, String> {
-        if self.graph.nodes.get(&object).is_some_and(|n| n.type_id == "demo.transform") {
+        if self.graph.nodes.get(&object).is_some_and(|n| n.type_id == "geo.transform") {
             return Ok(object);
         }
         let pivot = self.geometry(object).map(|g| g.bounds()).filter(|b| !b.is_empty()).map(|b| b.center());
         let saved = std::mem::replace(&mut self.selection, vec![object]);
         self.stack_entry = None;
-        let made = self.add_modifier("demo.transform");
+        let made = self.add_modifier("geo.transform");
         let id = match made {
             Ok(id) => id,
             Err(e) => {
@@ -528,49 +528,61 @@ impl AppState {
         Ok(id)
     }
 
-    /// Build a small scan-to-performance demo covering every stage.
+    /// Add the body-kit example (`examples/bodykit_pipeline.vrn`) to the
+    /// scene: car panel > noisy scan > ICP > deviation > surface fit >
+    /// split and 3MF > CFD case > FEA deck > solar vs HDT > flatten > lap
+    /// numbers. Every new object except the example's display node starts
+    /// hidden so the viewports are not cluttered with coincident panels.
     pub fn build_demo_pipeline(&mut self) -> Result<(), String> {
-        use glam::DVec3;
-        let v3 = |x: f64, y: f64, z: f64| ParamValue::Vec3(DVec3::new(x, y, z));
-        self.clear_selection();
-        let body = self.create("demo.sphere")?;
-        self.set_param_silent(body, "radius", ParamValue::Float(250.0));
-        self.set_param_silent(body, "segments", ParamValue::Int(48));
-        self.set_param_silent(body, "rings", ParamValue::Int(24));
-        self.set_param_silent(body, "center", v3(0.0, 0.0, 0.0));
-        let cut = self.add_modifier("demo.planar_cut")?;
-        self.set_param_silent(cut, "height", ParamValue::Float(0.0));
-        self.add_modifier("demo.scan_sim")?;
-        let dev = self.add_modifier("demo.deviation")?;
-        self.connect(cut, 0, dev, 1)?;
-        // Point-to-vertex distance against a 33 mm mesh: allow half a facet.
-        self.set_param_silent(dev, "tolerance", ParamValue::Float(25.0));
-        let surf = self.add_modifier("demo.height_surface")?;
-        self.set_param_silent(surf, "max_rms", ParamValue::Float(25.0));
-        let drag = self.add_modifier("demo.drag_estimate")?;
-        let load = self.add_modifier("demo.load_check")?;
-        self.set_param_silent(load, "load", ParamValue::Float(20.0));
-        let solar = self.add_modifier("demo.solar_heat")?;
-        self.set_param_silent(solar, "ambient", ParamValue::Float(35.0));
-        self.clear_selection();
-        let flat = self.graph.add_node(&self.registry, "demo.flatten").map_err(|e| e.to_string())?;
-        self.graph.connect(surf, 0, flat, 0).map_err(|e| e.to_string())?;
-        self.place(flat, Some(surf));
-        // A projected hemisphere keeps half its area.
-        let _ = self.graph.set_param(flat, "min_ratio", ParamValue::Float(0.45));
-        if let Some(n) = self.graph.nodes.get_mut(&flat) {
-            n.pos[0] += 200.0;
+        let mut demo = Graph::from_json(crate::registry::DEMO_PIPELINE).map_err(|e| e.to_string())?;
+        let unknown = demo.normalize(&self.registry);
+        if !unknown.is_empty() {
+            return Err(format!("demo pipeline uses unknown node types: {}", unknown.join(", ")));
         }
-        let speed = self.graph.add_node(&self.registry, "demo.top_speed").map_err(|e| e.to_string())?;
-        self.graph.connect(drag, 1, speed, 0).map_err(|e| e.to_string())?;
-        self.place(speed, Some(drag));
-        if let Some(n) = self.graph.nodes.get_mut(&speed) {
-            n.pos[0] += 200.0;
+        self.checkpoint();
+        self.clear_selection();
+        let dx = self
+            .graph
+            .nodes
+            .values()
+            .map(|n| n.pos[0] + 300.0)
+            .fold(0.0_f32, f32::max);
+        let before: HashSet<NodeId> = self.objects().into_iter().collect();
+        let mut map = HashMap::new();
+        for (old, node) in &demo.nodes {
+            let id = self.graph.add_node(&self.registry, &node.type_id).map_err(|e| e.to_string())?;
+            map.insert(*old, id);
         }
-        self.set_hidden(flat, true);
-        self.select_only(solar);
+        for (old, node) in &demo.nodes {
+            let id = map[old];
+            let name_free = !self.graph.nodes.iter().any(|(k, n)| *k != id && n.name == node.name);
+            let Some(new) = self.graph.nodes.get_mut(&id) else { continue };
+            new.params = node.params.clone();
+            new.pos = [node.pos[0] + dx, node.pos[1]];
+            new.bypass = node.bypass;
+            new.inputs = node
+                .inputs
+                .iter()
+                .map(|w| w.and_then(|(src, out)| map.get(&src).map(|&s| (s, out))))
+                .collect();
+            if name_free {
+                new.name = node.name.clone();
+            }
+        }
+        let shown = demo.display.and_then(|d| map.get(&d).copied());
+        for obj in self.objects() {
+            if !before.contains(&obj) && Some(obj) != shown {
+                self.set_hidden(obj, true);
+            }
+        }
+        if let Some(s) = shown {
+            self.select_only(s);
+        }
         self.touch();
-        self.info_text("demo pipeline built: dome > scan > deviation > surface > drag > load > solar");
+        self.info_text(
+            "demo pipeline loaded: car panel > noisy scan > alignment > deviation > surface > split/3MF > \
+             CFD case > FEA deck > solar vs HDT > flatten > lap numbers",
+        );
         Ok(())
     }
 
@@ -722,12 +734,8 @@ impl AppState {
             .unwrap_or_default();
         let mut graph: Graph = serde_json::from_value(v).map_err(|e| e.to_string())?;
         graph.work_root = self.graph.work_root.clone();
-        let unknown: Vec<String> = graph
-            .nodes
-            .values()
-            .filter(|n| self.registry.info(&n.type_id).is_none())
-            .map(|n| n.type_id.clone())
-            .collect();
+        // Hand-written files (like the shipped example) may omit defaults.
+        let unknown = graph.normalize(&self.registry);
         self.new_scene();
         self.graph = graph;
         self.scene = scene;
@@ -760,10 +768,10 @@ impl AppState {
     /// Add an import node reading `path` as a new object.
     pub fn import(&mut self, path: &Path) -> Result<NodeId, String> {
         self.clear_selection();
-        let id = self.create("demo.import")?;
+        let id = self.create("geo.file_read")?;
         let _ = self
             .graph
-            .set_param(id, "file", ParamValue::Str(path.display().to_string()));
+            .set_param(id, "path", ParamValue::Str(path.display().to_string()));
         self.touch();
         Ok(id)
     }
@@ -794,16 +802,16 @@ mod tests {
     #[test]
     fn objects_and_stack() {
         let mut s = state();
-        let b = s.create("demo.box").unwrap();
+        let b = s.create("geo.box").unwrap();
         assert_eq!(s.objects(), vec![b]);
-        let sm = s.create("demo.smooth").unwrap();
+        let sm = s.create("clean.smooth_mesh").unwrap();
         // The modifier became the object and the selection followed it.
         assert_eq!(s.objects(), vec![sm]);
         assert_eq!(s.primary(), Some(sm));
         assert_eq!(s.primary_stack(), vec![b, sm]);
         // Insert above the base entry: box -> transform -> smooth.
         s.stack_entry = Some(b);
-        let t = s.add_modifier("demo.transform").unwrap();
+        let t = s.add_modifier("geo.transform").unwrap();
         assert_eq!(s.primary_stack(), vec![b, t, sm]);
         assert_eq!(s.primary(), Some(sm));
         assert_eq!(s.object_of(b), sm);
@@ -812,9 +820,9 @@ mod tests {
     #[test]
     fn delete_reconnects_and_undo_restores() {
         let mut s = state();
-        let b = s.create("demo.box").unwrap();
-        let t = s.create("demo.transform").unwrap();
-        let sm = s.create("demo.smooth").unwrap();
+        let b = s.create("geo.box").unwrap();
+        let t = s.create("geo.transform").unwrap();
+        let sm = s.create("clean.smooth_mesh").unwrap();
         s.delete(&[t]);
         assert_eq!(s.graph.stack(sm), vec![b, sm]);
         assert!(s.undo());
@@ -830,7 +838,7 @@ mod tests {
     #[test]
     fn param_edits_coalesce() {
         let mut s = state();
-        let b = s.create("demo.box").unwrap();
+        let b = s.create("geo.box").unwrap();
         let before = s.undo.len();
         for i in 0..10 {
             s.set_param(b, "center", ParamValue::Vec3(glam::DVec3::new(i as f64, 0.0, 0.0)), i as f64 * 0.1);
@@ -845,10 +853,10 @@ mod tests {
     #[test]
     fn cook_reports_errors_and_reports() {
         let mut s = state();
-        let b = s.create("demo.box").unwrap();
-        let c = s.create("demo.planar_cut").unwrap();
+        let b = s.create("geo.box").unwrap();
+        let c = s.create("print.plane_cut").unwrap();
         s.clear_selection();
-        let i = s.create("demo.import").unwrap();
+        let i = s.create("geo.file_read").unwrap();
         s.cook_all();
         assert!(s.error_of(i).is_some());
         assert!(s.geometry(b).is_some());
@@ -862,8 +870,8 @@ mod tests {
     #[test]
     fn show_end_result_off_displays_entry() {
         let mut s = state();
-        let b = s.create("demo.box").unwrap();
-        let c = s.create("demo.planar_cut").unwrap();
+        let b = s.create("geo.box").unwrap();
+        let c = s.create("print.plane_cut").unwrap();
         s.stack_entry = Some(b);
         assert_eq!(s.display_node(c), c);
         s.show_end_result = false;
@@ -873,7 +881,7 @@ mod tests {
     #[test]
     fn vrn_round_trip_keeps_colours() {
         let mut s = state();
-        let b = s.create("demo.box").unwrap();
+        let b = s.create("geo.box").unwrap();
         s.set_color(b, [1, 2, 3]);
         s.set_hidden(b, true);
         let text = s.to_vrn().unwrap();
@@ -901,20 +909,35 @@ mod tests {
             .filter(|g| g.state == crate::gate::GateState::Missing)
             .map(|g| g.stage)
             .collect();
-        assert_eq!(missing, vec![Stage::Geometry]);
+        assert_eq!(missing, Vec::<Stage>::new());
         let failing: Vec<String> = gates
             .iter()
             .filter(|g| matches!(g.state, crate::gate::GateState::Fail | crate::gate::GateState::Error))
             .map(|g| format!("{:?}: {:?}", g.stage, g.report.as_ref().map(|r| &r.metrics)))
             .collect();
         assert!(failing.is_empty(), "{failing:#?}");
-        assert_eq!(s.objects().len(), 3);
+        // Only the display object is visible, and it carries deviation colours.
+        let visible: Vec<NodeId> = s.objects().into_iter().filter(|o| !s.is_hidden(*o)).collect();
+        assert_eq!(visible.len(), 1);
+        assert_eq!(s.name(visible[0]), "surface_deviation");
+        assert!(s.geometry(visible[0]).unwrap().point_attribs.contains("Cd"));
+        // Loading it twice keeps names unique and adds a second copy.
+        let n = s.graph.nodes.len();
+        s.build_demo_pipeline().unwrap();
+        assert_eq!(s.graph.nodes.len(), 2 * n);
+        let names: HashSet<&str> = s.graph.nodes.values().map(|n| n.name.as_str()).collect();
+        assert_eq!(names.len(), 2 * n);
+        // Opening the example file directly works too (defaults filled in).
+        let mut t = state();
+        t.load_vrn(crate::registry::DEMO_PIPELINE).unwrap();
+        assert_eq!(t.graph.nodes.len(), n);
+        assert!(t.log.iter().all(|l| !l.error));
     }
 
     #[test]
     fn ensure_transform_adds_once() {
         let mut s = state();
-        let b = s.create("demo.box").unwrap();
+        let b = s.create("geo.box").unwrap();
         s.cook_all();
         let t = s.ensure_transform(b).unwrap();
         assert_ne!(t, b);
@@ -922,16 +945,16 @@ mod tests {
         assert_eq!(s.ensure_transform(t).unwrap(), t);
         assert_eq!(
             s.graph.nodes[&t].params.get("pivot"),
-            Some(&ParamValue::Vec3(glam::DVec3::new(0.0, 0.0, 50.0)))
+            Some(&ParamValue::Vec3(glam::DVec3::ZERO))
         );
     }
 
     #[test]
     fn rename_rejects_duplicates() {
         let mut s = state();
-        let a = s.create("demo.box").unwrap();
+        let a = s.create("geo.box").unwrap();
         s.clear_selection();
-        let b = s.create("demo.box").unwrap();
+        let b = s.create("geo.box").unwrap();
         let taken = s.name(a).to_string();
         assert!(s.rename(b, &taken, 0.0).is_err());
         assert!(s.rename(b, "body", 0.0).is_ok());

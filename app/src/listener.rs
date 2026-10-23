@@ -65,7 +65,7 @@ pub fn run(st: &mut AppState, line: &str) -> Result<String, String> {
     }
 }
 
-/// Resolve a type by exact id, `demo.` shorthand, id suffix or label.
+/// Resolve a type by exact id, id suffix (`box` for `geo.box`) or label.
 pub fn resolve_type(st: &AppState, s: &str) -> Result<String, String> {
     let s = s.trim();
     if st.registry.info(s).is_some() {
@@ -114,9 +114,10 @@ mod tests {
     #[test]
     fn resolves_type_names() {
         let st = AppState::new(build_registry());
-        assert_eq!(resolve_type(&st, "demo.box").unwrap(), "demo.box");
-        assert_eq!(resolve_type(&st, "sphere").unwrap(), "demo.sphere");
-        assert_eq!(resolve_type(&st, "drag estimate").unwrap(), "demo.drag_estimate");
+        assert_eq!(resolve_type(&st, "geo.box").unwrap(), "geo.box");
+        assert_eq!(resolve_type(&st, "sphere").unwrap(), "geo.sphere");
+        assert_eq!(resolve_type(&st, "icp align").unwrap(), "clean.icp_align");
+        assert!(resolve_type(&st, "aero_loads").unwrap_err().contains("ambiguous"));
         assert!(resolve_type(&st, "warp drive").is_err());
     }
 }

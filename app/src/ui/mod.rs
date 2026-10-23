@@ -20,6 +20,7 @@ use crate::hotkeys::{self, Action, Chord};
 use crate::registry::build_registry;
 use crate::state::AppState;
 use crate::timeline::{Playback, TimeConfig};
+use crate::viewport::gpu::GpuBackend;
 use crate::viewport::painter::PainterBackend;
 use crate::viewport::{ColorBy, Shading, ViewKind, ViewportBackend};
 
@@ -127,7 +128,7 @@ impl VernonApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         crate::theme::apply(&cc.egui_ctx);
         let mut st = AppState::new(build_registry());
-        st.info_text("Vernon ready. Try Pipeline > Load Demo Pipeline, or type 'add box' below.");
+        st.info_text("Vernon ready. Try Pipeline > Load Demo Pipeline (the body-kit example), or type 'add box' below.");
         // Command line: `--demo` loads the demo pipeline, a `.vrn` path opens it.
         let mut fit = false;
         for arg in std::env::args().skip(1) {
@@ -145,10 +146,19 @@ impl VernonApp {
         if fit {
             vp.request_fit();
         }
+        // GPU renderer when eframe runs on wgpu; VERNON_RENDERER=cpu forces
+        // the painter fallback.
+        let force_cpu = std::env::var("VERNON_RENDERER").is_ok_and(|v| v.eq_ignore_ascii_case("cpu"));
+        let backend: Box<dyn ViewportBackend> = match (&cc.wgpu_render_state, force_cpu) {
+            (Some(rs), false) => Box::new(GpuBackend::new(rs.clone())),
+            _ => Box::new(PainterBackend),
+        };
+        eprintln!("vernon: viewport renderer: {}", backend.name());
+        st.info_text(format!("viewport renderer: {}", backend.name()));
         Self {
             st,
             vp,
-            backend: Box::new(PainterBackend),
+            backend,
             tool: Tool::Select,
             snap: false,
             angle_snap: false,
@@ -164,7 +174,9 @@ impl VernonApp {
             explorer_filter: String::new(),
             time: TimeConfig::default(),
             play: Playback::default(),
-            color_by: ColorBy::Object,
+            // Cd when the geometry carries it (deviation, temperature
+            // maps), the object colour otherwise.
+            color_by: ColorBy::Cd,
             utility: None,
             file_dialog: None,
             name_buf: (None, String::new()),

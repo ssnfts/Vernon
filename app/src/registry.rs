@@ -1,13 +1,23 @@
-//! The node registry the app runs with. Today it holds the local demo nodes;
-//! the stage crates' `register` functions are added here when integrated.
+//! The node registry the app runs with: every stage crate's node types.
 
 use vernon_graph::Registry;
 
 pub fn build_registry() -> Registry {
     let mut reg = Registry::new();
-    crate::demo_nodes::register(&mut reg);
+    vernon_nodes_geo::register(&mut reg);
+    vernon_nodes_capture::register(&mut reg);
+    vernon_nodes_clean::register(&mut reg);
+    vernon_nodes_surface::register(&mut reg);
+    vernon_nodes_print::register(&mut reg);
+    vernon_nodes_cfd::register(&mut reg);
+    vernon_nodes_fea::register(&mut reg);
+    vernon_nodes_solar::register(&mut reg);
+    vernon_nodes_perf::register(&mut reg);
     reg
 }
+
+/// The body-kit example graph, shipped as `Pipeline > Load Demo Pipeline`.
+pub const DEMO_PIPELINE: &str = include_str!("../../examples/bodykit_pipeline.vrn");
 
 /// Vendor names that must never reach a user-visible string (CLEAN_ROOM.md).
 #[cfg(test)]
@@ -34,7 +44,10 @@ mod tests {
         for stage in Stage::ALL {
             assert!(!reg.by_stage(stage).is_empty(), "{stage:?} has no node");
         }
-        assert!(reg.types().all(|i| i.id.starts_with("demo.")));
+        let prefixes = ["geo.", "capture.", "clean.", "surface.", "print.", "cfd.", "fea.", "solar.", "flatten.", "perf."];
+        for i in reg.types() {
+            assert!(prefixes.iter().any(|p| i.id.starts_with(p)), "{}", i.id);
+        }
     }
 
     #[test]

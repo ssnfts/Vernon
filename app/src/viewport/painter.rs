@@ -202,7 +202,7 @@ impl ViewportBackend for PainterBackend {
 }
 
 /// White corner brackets around a selected object's bounding box.
-fn brackets(out: &mut Vec<Shape>, cam: &super::Camera, rect: Rect, size: DVec2, min: DVec3, max: DVec3) {
+pub(crate) fn brackets(out: &mut Vec<Shape>, cam: &super::Camera, rect: Rect, size: DVec2, min: DVec3, max: DVec3) {
     let stroke = Stroke::new(1.0_f32, Color32::WHITE);
     let ext = max - min;
     for i in 0..8 {

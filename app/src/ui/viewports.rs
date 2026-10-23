@@ -804,3 +804,42 @@ fn tools(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::registry::build_registry;
+
+    /// Spec golden 12: scene undo (Ctrl+Z) and viewport undo (Shift+Z) are
+    /// separate histories.
+    #[test]
+    fn golden_undo_split() {
+        let mut st = AppState::new(build_registry());
+        let b = st.create("geo.box").unwrap();
+        let t = st.ensure_transform(b).unwrap();
+        let moved = |st: &AppState| st.graph.nodes[&t].params.vec3("translate").unwrap();
+        let mut vp = Viewports::default();
+        let cam0 = vp.tiles[3].cam;
+
+        // Move the object (scene history), then orbit the perspective tile.
+        let offset = DVec3::new(10.0, 0.0, 0.0);
+        st.set_param(t, "translate", ParamValue::Vec3(offset), 100.0);
+        vp.tiles[3].remember();
+        vp.tiles[3].cam.orbit_turntable(DVec2::new(40.0, 10.0), DVec3::ZERO);
+        let cam1 = vp.tiles[3].cam;
+        assert_ne!(cam0, cam1);
+
+        // Ctrl+Z reverts the move and leaves the camera.
+        assert!(st.undo());
+        assert_eq!(moved(&st), DVec3::ZERO);
+        assert_eq!(vp.tiles[3].cam, cam1);
+
+        // Shift+Z reverts the orbit and leaves the object.
+        assert!(st.redo());
+        vp.view_undo(3);
+        assert_eq!(vp.tiles[3].cam, cam0);
+        assert_eq!(moved(&st), offset);
+        vp.view_redo(3);
+        assert_eq!(vp.tiles[3].cam, cam1);
+    }
+}

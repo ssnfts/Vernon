@@ -6,6 +6,7 @@
 //! fallback that draws through egui's painter.
 
 pub mod camera;
+pub mod gpu;
 pub mod grid;
 pub mod layout;
 pub mod mesh;

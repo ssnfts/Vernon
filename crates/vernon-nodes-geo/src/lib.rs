@@ -1,4 +1,4 @@
-﻿//! General geometry: primitives, transform, merge, mirror, normals, file
+//! General geometry: primitives, transform, merge, mirror, normals, file
 //! read/write, selection, measurement and topology clean-up.
 //!
 //! Every node here is a real implementation (no white-box stubs) and
@@ -8,6 +8,7 @@
 
 pub mod file;
 pub mod measure;
+pub mod noise;
 pub mod primitives;
 pub mod select;
 pub mod topology;
@@ -37,6 +38,7 @@ pub fn register(reg: &mut Registry) {
     reg.add(measure::MeasureNode);
     reg.add(topology::FuseNode);
     reg.add(topology::SubdivideNode);
+    reg.add(noise::NoiseNode);
 }
 
 #[cfg(test)]

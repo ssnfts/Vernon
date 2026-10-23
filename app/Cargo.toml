@@ -9,6 +9,16 @@ license.workspace = true
 vernon-core.workspace = true
 vernon-graph.workspace = true
 vernon-io.workspace = true
+vernon-render = { path = "../crates/vernon-render" }
+vernon-nodes-geo = { path = "../crates/vernon-nodes-geo" }
+vernon-nodes-capture = { path = "../crates/vernon-nodes-capture" }
+vernon-nodes-clean = { path = "../crates/vernon-nodes-clean" }
+vernon-nodes-surface = { path = "../crates/vernon-nodes-surface" }
+vernon-nodes-print = { path = "../crates/vernon-nodes-print" }
+vernon-nodes-cfd = { path = "../crates/vernon-nodes-cfd" }
+vernon-nodes-fea = { path = "../crates/vernon-nodes-fea" }
+vernon-nodes-solar = { path = "../crates/vernon-nodes-solar" }
+vernon-nodes-perf = { path = "../crates/vernon-nodes-perf" }
 eframe = { version = "0.32", default-features = false, features = ["wgpu", "default_fonts", "accesskit"] }
 egui_extras = { version = "0.32" }
 # Default features enable the platform backends (DX12/Vulkan/Metal) eframe leaves off.
@@ -17,3 +27,6 @@ glam.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 anyhow.workspace = true
+
+[dev-dependencies]
+pollster = "0.4"
