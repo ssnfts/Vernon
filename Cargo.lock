@@ -3179,6 +3179,7 @@ name = "vernon-nodes-perf"
 version = "0.1.0"
 dependencies = [
  "glam",
+ "rayon",
  "serde",
  "serde_json",
  "vernon-core",
@@ -3202,6 +3203,7 @@ name = "vernon-nodes-solar"
 version = "0.1.0"
 dependencies = [
  "glam",
+ "rayon",
  "serde",
  "serde_json",
  "vernon-core",

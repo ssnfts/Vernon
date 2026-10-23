@@ -623,7 +623,7 @@ mod tests {
             hist_info,
             hist_cook,
             vec![geo(dev_geo(vals))],
-            &[("bins", i(10)), ("range_mode", s("manual")), ("range_min", f(0.0)), ("range_max", f(1.0))],
+            &[("bins", i(10)), ("range_mode", s("manual")), ("range_min", f(0.0)), ("range_max", f(1.0)), ("csv_name", s("golden13.csv"))],
         )
         .unwrap();
         let h = out_json(&out[0]);

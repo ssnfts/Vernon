@@ -1,15 +1,30 @@
+//! Vernon desktop app: a DCC-style workspace (menu bar, toolbar, stage
+//! ribbon, quad viewports, command panel, time slider) over the Vernon node
+//! graph. Non-GUI logic lives in `state`, `listener`, `gate`, `timeline` and
+//! `viewport` and is unit-tested; `ui` draws it with egui.
+
+mod demo_nodes;
+mod gate;
+mod hotkeys;
+mod listener;
+mod registry;
+mod state;
+mod theme;
+mod timeline;
+mod ui;
+mod viewport;
+
 fn main() -> eframe::Result<()> {
+    let options = eframe::NativeOptions {
+        viewport: eframe::egui::ViewportBuilder::default()
+            .with_title("Vernon")
+            .with_inner_size([1600.0, 960.0])
+            .with_min_inner_size([960.0, 600.0]),
+        ..Default::default()
+    };
     eframe::run_native(
         "Vernon",
-        eframe::NativeOptions::default(),
-        Box::new(|_cc| Ok(Box::new(App))),
+        options,
+        Box::new(|cc| Ok(Box::new(ui::VernonApp::new(cc)))),
     )
-}
-
-struct App;
-
-impl eframe::App for App {
-    fn update(&mut self, ctx: &eframe::egui::Context, _frame: &mut eframe::Frame) {
-        eframe::egui::CentralPanel::default().show(ctx, |ui| ui.label("Vernon"));
-    }
 }

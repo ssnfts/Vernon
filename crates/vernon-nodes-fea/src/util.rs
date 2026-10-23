@@ -40,3 +40,18 @@ pub fn sanitize(s: &str) -> String {
         t
     }
 }
+
+/// Helpers shared by the node tests.
+#[cfg(test)]
+pub mod testing {
+    use vernon_graph::{CookContext, NodeOp, Params};
+
+    pub fn ctx(tag: &str) -> CookContext {
+        let d = std::env::temp_dir().join(format!("vernon_fea_{tag}_{}", std::process::id()));
+        CookContext { node_name: tag.into(), work_dir: d, frame: 0.0 }
+    }
+
+    pub fn defaults(op: &dyn NodeOp) -> Params {
+        Params::from_specs(&op.info().params)
+    }
+}

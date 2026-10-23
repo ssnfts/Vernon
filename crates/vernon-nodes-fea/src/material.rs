@@ -450,7 +450,7 @@ pub fn dma_anchor_table(a: &DmaAnchors, floor: f64) -> RetentionTable {
     ];
     let mut points: Vec<(f64, f64)> = Vec::new();
     for (t, r) in raw {
-        if points.last().map_or(true, |p| t > p.0) {
+        if points.last().is_none_or(|p| t > p.0) {
             points.push((t, r.clamp(floor, 1.0)));
         }
     }
@@ -458,7 +458,7 @@ pub fn dma_anchor_table(a: &DmaAnchors, floor: f64) -> RetentionTable {
 }
 
 /// Retention table from a measured `T, E'` curve, normalised at 23 degC.
-pub fn dma_csv_table(text: &str, n: usize, floor: f64) -> Result<RetentionTable, String> {
+pub fn dma_csv_table(text: &str, _n: usize, floor: f64) -> Result<RetentionTable, String> {
     let mut rows: Vec<(f64, f64)> = Vec::new();
     for line in text.lines() {
         let cells: Vec<&str> = line.split([',', ';', '\t']).map(str::trim).collect();

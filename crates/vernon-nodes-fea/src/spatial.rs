@@ -139,7 +139,7 @@ impl TriGrid {
                             let t = &self.tris[ti as usize];
                             let (q, bary) = closest_point_on_triangle(p, t[0], t[1], t[2]);
                             let d = (q - p).length();
-                            if best.map_or(true, |b| d < b.dist) {
+                            if best.is_none_or(|b| d < b.dist) {
                                 best = Some(Nearest { tri: ti as usize, point: q, bary, dist: d });
                             }
                         }

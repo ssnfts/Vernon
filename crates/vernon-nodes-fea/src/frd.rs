@@ -58,8 +58,7 @@ fn parse_row(line: &str) -> Result<(Option<u32>, Vec<f64>), String> {
     } else {
         None
     };
-    let vals = body[w..]
-        .as_bytes()
+    let vals = body.as_bytes()[w..]
         .chunks(12)
         .map(|c| {
             let t = std::str::from_utf8(c).unwrap_or("").trim();

@@ -222,7 +222,7 @@ pub fn through_wall_ratio(mesh: &Geometry, faces: &[BFace], samples: usize) -> O
         let p = corner_points(mesh, f.elem);
         let edge = [(0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3)].iter().map(|&(a, b)| (p[a] - p[b]).length()).fold(f64::INFINITY, f64::min);
         let ratio = hit / edge.max(1e-12);
-        if best.map_or(true, |b| ratio < b.0) {
+        if best.is_none_or(|b| ratio < b.0) {
             best = Some((ratio, hit));
         }
     }
@@ -452,7 +452,7 @@ mod tests {
     fn g3_mesh_check_flags_one_element_through_the_depth() {
         let c = ctx();
         let one = box_tets(DVec3::new(100.0, 10.0, 10.0), [10, 1, 1]);
-        let four = box_tets(DVec3::new(100.0, 10.0, 10.0), [20, 4, 4]);
+        let four = box_tets(DVec3::new(100.0, 10.0, 10.0), [40, 4, 4]);
         let p = defaults(&MeshCheck);
         let r1 = MeshCheck.cook(&c, &[Some(Data::geometry(tet4_to_tet10(&one).unwrap()))], &p).unwrap();
         let r4 = MeshCheck.cook(&c, &[Some(Data::geometry(tet4_to_tet10(&four).unwrap()))], &p).unwrap();

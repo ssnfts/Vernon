@@ -153,6 +153,10 @@ impl OrientationCard {
     }
 }
 
+fn one() -> f64 {
+    1.0
+}
+
 /// One deck written for one load case.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DeckEntry {
@@ -160,6 +164,9 @@ pub struct DeckEntry {
     pub job: String,
     pub file: String,
     pub hash: String,
+    /// Speed relative to the design speed of the case (1 = design speed).
+    #[serde(default = "one")]
+    pub speed_factor: f64,
 }
 
 /// What `fea.deck_write` tells the later nodes.
@@ -173,6 +180,52 @@ pub struct DeckManifest {
     pub element_count: usize,
     /// Node-set names of the mounts, in deck order.
     pub mount_sets: Vec<String>,
+}
+
+/// One solver run (or one reference-solver run) of one load case.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RunEntry {
+    pub case: String,
+    pub job: String,
+    /// `solved`, `reused`, `not_run`, `solver_missing`.
+    pub status: String,
+    /// Result files relative to `SolveManifest::dir` (empty when absent).
+    pub frd: String,
+    pub dat: String,
+    pub log: String,
+    pub hash: String,
+    #[serde(default = "one")]
+    pub speed_factor: f64,
+}
+
+/// What `fea.solve_external` and `fea.solve_linear` tell `fea.result_read`.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct SolveManifest {
+    pub dir: String,
+    /// `external` (the open-source solver) or `reference_linear` (the built-in white-box solver).
+    pub solver: String,
+    pub element_type: String,
+    pub mount_sets: Vec<String>,
+    pub runs: Vec<RunEntry>,
+}
+
+/// Totals of one load case read from the result files.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct CaseResult {
+    pub name: String,
+    pub speed_factor: f64,
+    pub summary: ResultSummary,
+}
+
+/// Everything `fea.result_read` found; the field data itself travels as
+/// attributes on the solid mesh (`disp_<case>`, `sig_n_<case>`, `sig_s_<case>`).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ResultSet {
+    /// `external` or `reference_linear`.
+    pub source: String,
+    /// Frame of the stored stresses: `global` or `material`.
+    pub frame: String,
+    pub cases: Vec<CaseResult>,
 }
 
 /// Totals read back from the solver text output.

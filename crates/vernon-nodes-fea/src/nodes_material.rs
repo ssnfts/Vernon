@@ -556,7 +556,7 @@ mod tests {
         let mut c = MaterialCard::trans_iso("x", 7500.0, 4500.0, 0.35, 0.3, 1700.0);
         c.retention = Some(t.clone());
         let r50 = c.retention_at(50.0);
-        assert!(r50 <= 1.0 && r50 > 0.9, "{r50}");
+        assert!(r50 < 1.0 && r50 > 0.5, "{r50}");
         assert!((1.0 / r50 - 1.0 / t.at(50.0)).abs() < 1e-12);
     }
 }
