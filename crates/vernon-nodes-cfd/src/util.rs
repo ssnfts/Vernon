@@ -118,8 +118,13 @@ pub(crate) mod testutil {
     use vernon_core::{DVec3, Geometry};
     use vernon_graph::CookContext;
 
+    static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+    /// A context with a fresh, empty work directory (unique per call, so
+    /// parallel tests never share or wipe each other's files).
     pub fn ctx(name: &str) -> CookContext {
-        let dir = std::env::temp_dir().join(format!("vernon-cfd-{}-{}", std::process::id(), name));
+        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("vernon-cfd-{}-{}-{}", std::process::id(), name, n));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         CookContext {

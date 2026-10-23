@@ -210,13 +210,13 @@ pub fn grid_split(
     })
 }
 
-fn grid_params(info: NodeTypeInfo) -> NodeTypeInfo {
+pub(crate) fn grid_params(info: NodeTypeInfo) -> NodeTypeInfo {
     info.param(ParamSpec::choice("printer", "Printer preset", "k1_max", &PRINTER_IDS).help("Build volume preset; custom uses the bed size below."))
         .param(ParamSpec::vec3("bed", "Custom bed size", DVec3::new(256.0, 256.0, 256.0)).unit("mm").help("Used when the preset is custom."))
         .param(ParamSpec::float("margin", "Bed margin", 2.0, 0.0, 20.0).unit("mm").help("Clearance kept free on every side of the bed."))
 }
 
-fn read_bed(p: &Params) -> CookResult<DVec3> {
+pub(crate) fn read_bed(p: &Params) -> CookResult<DVec3> {
     Ok(printer_bed(p.str("printer")?, p.vec3("bed")?))
 }
 
@@ -239,7 +239,7 @@ pub struct GridPartition;
 impl NodeOp for GridPartition {
     fn info(&self) -> NodeTypeInfo {
         grid_params(
-            info("split.grid_partition", "Grid Split", "Cut a body into a grid of capped parts that each fit the printer bed.")
+            info("print.grid_partition", "Grid Split", "Cut a body into a grid of capped parts that each fit the printer bed.")
                 .emulates("multi-part grid split of body panels to fit a bed")
                 .implemented()
                 .input(PortSpec::new("mesh", DataKind::Geometry))
@@ -282,7 +282,7 @@ pub struct SmartPartition;
 impl NodeOp for SmartPartition {
     fn info(&self) -> NodeTypeInfo {
         grid_params(
-            info("split.smart_partition", "Smart Partition", "Search for a split with few parts, small seams and hidden seam lines.")
+            info("print.smart_partition", "Smart Partition", "Search for a split with few parts, small seams and hidden seam lines.")
                 .emulates("optimised partitioning of large models for printing")
                 .input(PortSpec::new("mesh", DataKind::Geometry))
                 .input(PortSpec::optional("guide", DataKind::Geometry))
@@ -432,7 +432,7 @@ pub struct Connectivity;
 
 impl NodeOp for Connectivity {
     fn info(&self) -> NodeTypeInfo {
-        info("split.connectivity", "Split by Connectivity", "Give every connected piece of a mesh its own part id.")
+        info("print.connectivity", "Split by Connectivity", "Give every connected piece of a mesh its own part id.")
             .emulates("separate loose parts of a mesh")
             .implemented()
             .input(PortSpec::new("mesh", DataKind::Geometry))
@@ -458,7 +458,7 @@ pub struct ByAttribute;
 
 impl NodeOp for ByAttribute {
     fn info(&self) -> NodeTypeInfo {
-        info("split.by_attribute", "Split by Attribute", "Number parts by the value of an integer attribute.")
+        info("print.by_attribute", "Split by Attribute", "Number parts by the value of an integer attribute.")
             .emulates("split a mesh by a key attribute")
             .implemented()
             .input(PortSpec::new("mesh", DataKind::Geometry))
@@ -533,7 +533,7 @@ pub struct PartExtract;
 
 impl NodeOp for PartExtract {
     fn info(&self) -> NodeTypeInfo {
-        info("split.part_extract", "Extract Part", "Take one part out of a multi-part mesh.")
+        info("print.part_extract", "Extract Part", "Take one part out of a multi-part mesh.")
             .emulates("select one separated part")
             .implemented()
             .input(PortSpec::new("parts", DataKind::Geometry))
@@ -561,7 +561,7 @@ pub struct PartLabel;
 
 impl NodeOp for PartLabel {
     fn info(&self) -> NodeTypeInfo {
-        info("split.part_label", "Label Parts", "Give every part a printable label such as P01, kept in the label attribute.")
+        info("print.part_label", "Label Parts", "Give every part a printable label such as P01, kept in the label attribute.")
             .emulates("part labelling for assembly of split bodies")
             .implemented()
             .input(PortSpec::new("parts", DataKind::Geometry))

@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use rayon::prelude::*;
 use vernon_core::{AttribArray, DMat4, DVec3, Geometry, Metric, Report, Severity};
 use vernon_graph::node::inputs;
-use vernon_graph::{CookContext, CookError, CookResult, Data, DataKind, NodeTypeInfo, ParamSpec, Params, PortSpec, Registry, Stage};
+use vernon_graph::{CookContext, CookResult, Data, DataKind, NodeTypeInfo, ParamSpec, Params, PortSpec, Registry, Stage};
 
 use crate::types::RefGeom;
 use crate::util::FnNode;
@@ -639,6 +639,7 @@ pub(crate) fn register(reg: &mut Registry) {
 mod tests {
     use super::*;
     use crate::util::testutil::*;
+    use vernon_graph::CookError;
 
     fn uv_sphere(r: f64, nlat: usize, nlon: usize) -> Geometry {
         let mut pts = vec![DVec3::new(0.0, 0.0, r), DVec3::new(0.0, 0.0, -r)];

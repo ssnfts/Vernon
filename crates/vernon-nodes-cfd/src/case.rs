@@ -1,7 +1,5 @@
 //! Solver case writer and steady-solver runner.
 
-use std::path::Path;
-
 use serde_json::json;
 use vernon_core::{Metric, Report, Severity};
 use vernon_graph::{CookContext, CookError, CookResult, Data, DataKind, NodeTypeInfo, ParamSpec, Params, PortSpec, Registry, Stage};
@@ -235,10 +233,6 @@ fn solve_cook(ctx: &CookContext, ins: &[Option<Data>], p: &Params) -> CookResult
     Ok(vec![Data::File(case), Data::json(series.to_json()), Data::report(report)])
 }
 
-pub(crate) fn case_exists(p: &Path) -> bool {
-    p.join("system/controlDict").exists()
-}
-
 pub(crate) fn register(reg: &mut Registry) {
     reg.add(FnNode::new(setup_info, setup_cook));
     reg.add(FnNode::new(solve_info, solve_cook));
@@ -248,6 +242,7 @@ pub(crate) fn register(reg: &mut Registry) {
 mod tests {
     use super::*;
     use crate::util::testutil::*;
+    use std::path::Path;
     use vernon_graph::ParamValue;
 
     fn read(case: &Path, rel: &str) -> String {
@@ -296,7 +291,7 @@ mod tests {
             }
             let ctl = read(&case, "system/controlDict");
             assert_eq!(ctl.contains("foamRun"), f.uses_foam_run(), "{fl}");
-            assert_eq!(ctl.contains("libs            (forces)") || ctl.contains("libs            (\"libforces.so\")"), true);
+            assert!(ctl.contains("libs            (forces)") || ctl.contains("libs            (\"libforces.so\")"), "{fl}");
         }
     }
 
@@ -390,7 +385,7 @@ mod tests {
     fn solve_reads_existing_results_and_fails_closed_without() {
         let (case, _) = setup(&[], &[], "solve");
         let p = Params::from_specs(&solve_info().params);
-        let out = solve_cook(&ctx("solve"), &[Some(Data::File(case.clone()))], &p).unwrap();
+        let out = solve_cook(&ctx("solve-run"), &[Some(Data::File(case.clone()))], &p).unwrap();
         let r = out[2].as_report().unwrap();
         assert!(!r.passes());
         assert!(r.notes.iter().any(|(_, t)| t.starts_with("white-box placeholder:")));
@@ -403,7 +398,7 @@ mod tests {
             dat += &format!("{i} {} {}\n", 0.3 + 1e-4 * f64::from(i % 3), -0.2);
         }
         std::fs::write(dir.join("coefficient.dat"), dat).unwrap();
-        let out = solve_cook(&ctx("solve"), &[Some(Data::File(case.clone()))], &p).unwrap();
+        let out = solve_cook(&ctx("solve-run"), &[Some(Data::File(case.clone()))], &p).unwrap();
         let r = out[2].as_report().unwrap();
         assert!(r.passes(), "{r:?}");
         let s = crate::types::Series::from_json(out[1].as_json().unwrap()).unwrap();
@@ -413,8 +408,8 @@ mod tests {
         let mut p2 = p.clone();
         p2.set("run", ParamValue::Bool(true));
         p2.set("bin_dir", ParamValue::Str(case.join("nowhere").display().to_string()));
-        let out = solve_cook(&ctx("solve"), &[Some(Data::File(case))], &p2).unwrap();
+        let out = solve_cook(&ctx("solve-run"), &[Some(Data::File(case))], &p2).unwrap();
         assert!(out[2].as_report().unwrap().notes.iter().any(|(s, _)| *s == Severity::Error));
-        assert!(solve_cook(&ctx("solve"), &[], &p).is_err());
+        assert!(solve_cook(&ctx("solve-run"), &[], &p).is_err());
     }
 }

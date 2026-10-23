@@ -477,8 +477,11 @@ pub fn align_points(
     Ok(finish(sim, flags))
 }
 
+/// Two marker lists paired one to one, with the shared names.
+pub type PairedPoints = (Vec<DVec3>, Vec<DVec3>, Vec<String>);
+
 /// Pair two marker clouds by `id` (when both have ids) or by index.
-pub fn pair_points(a: &Geometry, b: &Geometry) -> Result<(Vec<DVec3>, Vec<DVec3>, Vec<String>), String> {
+pub fn pair_points(a: &Geometry, b: &Geometry) -> Result<PairedPoints, String> {
     if util::has_ids(a) && util::has_ids(b) {
         let ia = util::point_ids(a);
         let ib = util::point_ids(b);
@@ -607,7 +610,7 @@ mod tests {
     fn golden_8_three_bars() {
         let bars = [bar(500.25, 500.0), bar(1000.5, 1000.0), bar(2001.0, 2000.0)];
         let sol = solve_scale(&bars, Weighting::Equal, 0.05, 1).unwrap();
-        assert!((sol.scale - 5_252_625.0 / 5_255_251.3125).abs() < 1e-12);
+        assert!((sol.scale - 5_252_625.0 / 5_255_251.312_5).abs() < 1e-12);
         assert!((sol.scale - 0.999_500_25).abs() < 1e-7);
         assert!(sol.residual_mm.iter().all(|r| r.abs() < 1e-3));
         assert!(sol.used.iter().all(|u| *u));

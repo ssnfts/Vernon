@@ -112,6 +112,7 @@ pub fn header(class: &str, location: &str, object: &str) -> String {
 
 /// Minimal syntax check: FoamFile header first, balanced braces/parentheses,
 /// every statement terminated. `#` directive lines are skipped.
+#[cfg(test)]
 pub fn check_syntax(text: &str) -> Result<(), String> {
     let mut toks: Vec<String> = Vec::new();
     let chars: Vec<char> = text.chars().collect();

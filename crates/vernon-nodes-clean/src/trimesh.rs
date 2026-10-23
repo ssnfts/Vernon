@@ -198,7 +198,7 @@ impl TriMesh {
             }
         }
         topo.signed_volume = vol;
-        for (_, (_, cnt, fwd)) in edges.iter() {
+        for (_, cnt, fwd) in edges.values() {
             match *cnt {
                 1 => topo.open_edges += 1,
                 2 => {

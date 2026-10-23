@@ -347,7 +347,7 @@ fn cloud_cook(ctx: &CookContext, inp: &[Option<Data>], p: &Params) -> CookResult
 
 // ----------------------------------------------------------- mesh distance
 
-fn mesh_info() -> NodeTypeInfo {
+pub(crate) fn mesh_info() -> NodeTypeInfo {
     NodeTypeInfo::new("clean.mesh_distance", "Surface Distance", Stage::Clean)
         .input(PortSpec::new("compared", DataKind::Geometry))
         .input(PortSpec::new("reference", DataKind::Geometry))
@@ -365,7 +365,7 @@ fn mesh_info() -> NodeTypeInfo {
         .implemented()
 }
 
-fn mesh_cook(ctx: &CookContext, inp: &[Option<Data>], p: &Params) -> CookResult<Vec<Data>> {
+pub(crate) fn mesh_cook(ctx: &CookContext, inp: &[Option<Data>], p: &Params) -> CookResult<Vec<Data>> {
     let cmp = inputs::geometry(inp, 0)?;
     let rf = inputs::geometry(inp, 1)?;
     ensure_metric(ctx, &cmp)?;

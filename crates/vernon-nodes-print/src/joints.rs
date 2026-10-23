@@ -330,6 +330,8 @@ fn depth_clear(tris: &[[DVec3; 3]], pts: &[DVec3], dir: DVec3, need: f64) -> boo
 struct Add {
     /// Base ring in 3D, counter-clockwise about the host's outward normal.
     base: Vec<DVec3>,
+    /// End outline in the cap plane (same vertex count as `base`); it is displaced by `top_off`.
+    top: Vec<DVec3>,
     top_off: DVec3,
     tag: i64,
 }
@@ -351,7 +353,7 @@ fn push_tri(g: &mut Geometry, ids: [u32; 3], part: i64, cap: i64, joint: i64) {
 fn add_prism(g: &mut Geometry, a: &Add, part: i64) -> Vec<u32> {
     let n = a.base.len();
     let b: Vec<u32> = a.base.iter().map(|&p| g.add_point(p)).collect();
-    let t: Vec<u32> = a.base.iter().map(|&p| g.add_point(p + a.top_off)).collect();
+    let t: Vec<u32> = a.top.iter().map(|&p| g.add_point(p + a.top_off)).collect();
     for i in 0..n {
         let j = (i + 1) % n;
         push_tri(g, [b[i], b[j], t[j]], part, 0, a.tag);
@@ -426,11 +428,13 @@ pub fn apply_joints(geo: &Geometry, spec: &JointSpec) -> JointOutcome {
                         (ib, rb.normal, &shape.b, shape.b_kind, true),
                     ] {
                         let mut ring: Vec<DVec3> = prism.base.iter().map(|&q| frame.p3(q)).collect();
+                        let mut top: Vec<DVec3> = prism.top.iter().map(|&q| frame.p3(q)).collect();
                         if reverse {
                             ring.reverse();
+                            top.reverse();
                         }
                         let sign = if kind == Kind::Protrude { 1.0 } else { -1.0 };
-                        adds.entry(idx).or_default().push(Add { base: ring, top_off: host_n * (sign * prism.depth), tag });
+                        adds.entry(idx).or_default().push(Add { base: ring, top, top_off: host_n * (sign * prism.depth), tag });
                     }
                     if let Some((r, len)) = shape.pin {
                         let mut pin = cylinder_mesh(frame.p3(cand.c), ra.normal, r, len, spec.pin_sides.max(8));
@@ -645,7 +649,7 @@ mod tests {
         let out = apply_joints(&g, &spec);
         assert_eq!(out.joints, 1);
         let tail_v = (w + w_free) / 2.0 * d * len;
-        assert!((part_volume(&out.geo, 0) - v0 - tail_v).abs() < 1e-6);
+        assert!((part_volume(&out.geo, 0) - v0 - tail_v).abs() < 1e-6, "dv {} tail {}", part_volume(&out.geo, 0) - v0, tail_v);
         let hw0 = w / 2.0 + t / a.to_radians().cos();
         let groove_v = (2.0 * hw0 + 2.0 * hw0 + 2.0 * (d + t) * ta) / 2.0 * (d + t) * (len + 2.0 * t);
         assert!((part_volume(&out.geo, 1) - v1 + groove_v).abs() < 1e-6);

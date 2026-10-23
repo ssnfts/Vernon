@@ -265,8 +265,8 @@ fn hist_info() -> NodeTypeInfo {
         .param(ParamSpec::int("bins", "Bins", 100, 4, 2000).help("Number of equal-width bins."))
         .param(ParamSpec::choice("range_mode", "Range", "symmetric", &["symmetric", "auto", "manual"]).help("symmetric: minus to plus the limit. auto: data minimum to maximum. manual: the two values below."))
         .param(ParamSpec::float("limit", "Symmetric limit", 0.5, 0.001, 1000.0).unit("mm").help("Half-width in symmetric mode."))
-        .param(ParamSpec::float("range_min", "Manual minimum", -0.5, -100000.0, 100000.0).unit("mm"))
-        .param(ParamSpec::float("range_max", "Manual maximum", 0.5, -100000.0, 100000.0).unit("mm"))
+        .param(ParamSpec::float("range_min", "Manual minimum", -0.5, -100000.0, 100000.0).unit("mm").help("Lower end of the range in manual mode."))
+        .param(ParamSpec::float("range_max", "Manual maximum", 0.5, -100000.0, 100000.0).unit("mm").help("Upper end of the range in manual mode."))
         .param(ParamSpec::string("csv_name", "CSV file name", "deviation_histogram.csv").help("Written into the node's work folder."))
         .help("Histogram of the deviation with counts, percentages and cumulative percentages per bin, as JSON and as a CSV file. Values outside the range are counted separately.")
         .emulates("deviation histogram with cumulative readout")
@@ -338,9 +338,9 @@ fn colors_info() -> NodeTypeInfo {
         .output(geo_in_out())
         .param(ParamSpec::string("attrib", "Attribute", "dist").help("Float point attribute holding the deviation in mm."))
         .param(ParamSpec::choice("range_mode", "Range", "symmetric", &["symmetric", "auto", "manual"]).help("symmetric: minus to plus the limit, zero in the middle. auto: data minimum to maximum. manual: the two values below."))
-        .param(ParamSpec::float("limit", "Symmetric limit", 0.5, 0.001, 1000.0).unit("mm"))
-        .param(ParamSpec::float("range_min", "Manual minimum", -0.5, -100000.0, 100000.0).unit("mm"))
-        .param(ParamSpec::float("range_max", "Manual maximum", 0.5, -100000.0, 100000.0).unit("mm"))
+        .param(ParamSpec::float("limit", "Symmetric limit", 0.5, 0.001, 1000.0).unit("mm").help("Half-width of the range in symmetric mode."))
+        .param(ParamSpec::float("range_min", "Manual minimum", -0.5, -100000.0, 100000.0).unit("mm").help("Lower end of the range in manual mode."))
+        .param(ParamSpec::float("range_max", "Manual maximum", 0.5, -100000.0, 100000.0).unit("mm").help("Upper end of the range in manual mode."))
         .param(ParamSpec::choice("scale", "Colour scale", "diverging", &["diverging", "spectrum", "grey"]).help("diverging: blue, cyan, green, yellow, red with zero on green."))
         .param(ParamSpec::int("steps", "Steps", 0, 0, 32).help("0 = smooth. Otherwise the range is split into this many flat colour bands."))
         .param(ParamSpec::vec3("invalid_color", "Invalid colour", DVec3::splat(0.5)).help("Colour of points without a valid deviation."))
@@ -696,7 +696,7 @@ mod tests {
             vec![vec![0, 1, 2], vec![0, 2, 3]],
         );
         let scan = Geometry::from_points((0..400).map(|i| DVec3::new((i % 20) as f64 * 9.0 - 90.0, (i / 20) as f64 * 9.0 - 90.0, 0.3)).collect());
-        let d = run(crate::distance::mesh_info_for_tests, crate::distance::mesh_cook_for_tests, vec![geo(scan), geo(reference)], &[]).unwrap();
+        let d = run(crate::distance::mesh_info, crate::distance::mesh_cook, vec![geo(scan), geo(reference)], &[]).unwrap();
         let st = run(stats_info, stats_cook, vec![d[0].clone().into()], &[]).unwrap();
         let r = out_report(&st[0]);
         assert!((r.metrics["mean_dev"].value - 0.3).abs() < 1e-9);

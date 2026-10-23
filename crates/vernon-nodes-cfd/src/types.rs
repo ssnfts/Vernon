@@ -137,6 +137,7 @@ impl Domain {
     }
 
     /// Patch names of the background mesh.
+    #[cfg(test)]
     pub fn patch_names(&self) -> Vec<&'static str> {
         if self.half_model {
             vec!["inlet", "outlet", "top", "side", "ground", "symmetry"]
@@ -181,20 +182,6 @@ pub struct BcSet {
 }
 
 impl BcSet {
-    pub fn default_moving(u: f64) -> Self {
-        Self {
-            ground_mode: "moving".into(),
-            wheel_mode: "rotating".into(),
-            u_ms: u,
-            omega_rad_s: 0.0,
-            r_dyn_m: 0.0,
-            axis: [0.0, 1.0, 0.0],
-            wheel_width_m: 0.25,
-            belt_start_x_m: None,
-            wheels: vec![],
-        }
-    }
-
     pub fn from_json(v: &Value) -> CookResult<Self> {
         serde_json::from_value(v.clone()).map_err(|e| CookError::Other(format!("not a ground/wheel set: {e}")))
     }

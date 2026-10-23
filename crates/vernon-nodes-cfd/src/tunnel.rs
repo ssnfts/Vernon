@@ -99,7 +99,7 @@ pub fn wheel_omega(u: f64, r_dyn: f64, axis: DVec3) -> Option<f64> {
     Some(-u / (a.y * r_dyn))
 }
 
-fn gw_info() -> NodeTypeInfo {
+pub(crate) fn gw_info() -> NodeTypeInfo {
     NodeTypeInfo::new("cfd.ground_wheels", "Ground and Wheels", Stage::Cfd)
         .input(PortSpec::optional("domain", DataKind::Json))
         .input(PortSpec::optional("reference", DataKind::Json))
@@ -120,7 +120,7 @@ fn gw_info() -> NodeTypeInfo {
         .implemented()
 }
 
-fn gw_cook(ctx: &CookContext, ins: &[Option<Data>], p: &Params) -> CookResult<Vec<Data>> {
+pub(crate) fn gw_cook(ctx: &CookContext, ins: &[Option<Data>], p: &Params) -> CookResult<Vec<Data>> {
     let (rf, _) = ref_in(ins, 1)?;
     let _domain = domain_in(ins, 0, &rf)?;
     let air = air_in(ins, 2)?;
@@ -138,7 +138,7 @@ fn gw_cook(ctx: &CookContext, ins: &[Option<Data>], p: &Params) -> CookResult<Ve
     } else {
         rf.wheel_centres_m.iter().map(|(n, c)| WheelBc { name: n.clone(), centre_m: *c }).collect()
     };
-    let belt = p.bool("belt_start")?.then(|| rf.nose_x_m + p.float("belt_start_l")? * rf.length_m);
+    let belt = if p.bool("belt_start")? { Some(rf.nose_x_m + p.float("belt_start_l")? * rf.length_m) } else { None };
     let bc = BcSet {
         ground_mode: ground.clone(),
         wheel_mode: wheel.clone(),
@@ -269,6 +269,16 @@ fn porous_cook(ctx: &CookContext, ins: &[Option<Data>], p: &Params) -> CookResul
         .metric("d_lateral_per_m2", Metric::new(d_flow * k, "1/m2"))
         .metric("zone_count", Metric::new(zones.len() as f64, "count"));
     Ok(vec![Data::json(json!({ "zones": zones })), Data::report(r)])
+}
+
+/// A one-zone porous hand-off for the case-writer tests: a 100 x 400 x 300 mm core.
+#[cfg(test)]
+pub(crate) fn porous_cook_for_case_tests() -> serde_json::Value {
+    let mut core = Geometry::make_box(DVec3::new(100.0, 400.0, 300.0));
+    core.transform(DMat4::from_translation(DVec3::new(250.0, 300.0, 350.0)));
+    let ctx = crate::util::testutil::ctx("porous-helper");
+    let out = porous_cook(&ctx, &[Some(Data::geometry(core))], &Params::from_specs(&porous_info().params)).unwrap();
+    out[0].as_json().unwrap().as_ref().clone()
 }
 
 // -------------------------------------------------------- refinement plan

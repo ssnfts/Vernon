@@ -26,7 +26,7 @@ use crate::registration::principal_frame;
 use crate::util::{self, base, set_metric_flag};
 
 /// Environment variable naming the executable.
-pub const ENV_EXE: &str = "VERNON_COLMAP";
+pub const ENV_EXE: &str = "VERNON_PHOTOGRAMMETRY_EXE";
 /// Image extensions counted in the image folder.
 pub const IMAGE_EXTENSIONS: &[&str] = &["jpg", "jpeg", "png", "tif", "tiff", "bmp"];
 /// Seconds of sparse reconstruction per image in the anchor project
@@ -495,7 +495,7 @@ pub fn cuda_hint() -> bool {
 fn tool_params() -> Vec<ParamSpec> {
     vec![
         ParamSpec::bool("run", "Run", false).help("Start the program. Off by default: the commands are only written to commands.txt."),
-        ParamSpec::path("executable", "Executable", &[], false).help("Path to the photogrammetry program. Empty searches the VERNON_COLMAP variable and the system path."),
+        ParamSpec::path("executable", "Executable", &[], false).help("Path to the photogrammetry program. Empty searches the VERNON_PHOTOGRAMMETRY_EXE variable and the system path."),
         ParamSpec::bool("overwrite", "Overwrite database", false).help("Remove this node's own database file before running. Nothing else is ever deleted."),
     ]
 }
@@ -775,7 +775,7 @@ impl NodeOp for MvsDense {
         for p in tool_params() {
             info = info.param(p);
         }
-        info.help("Turns a sparse model into a dense point cloud (undistort, depth maps, fusion) by driving an external open-source photogrammetry program. Needs a CUDA graphics card for the depth-map step.")
+        info.help("Turns a sparse model into a dense point cloud (undistort, depth maps, merge) by driving an external open-source photogrammetry program. Needs a CUDA graphics card for the depth-map step.")
             .emulates("multi-view stereo dense reconstruction")
             .external("COLMAP")
     }
@@ -1124,7 +1124,7 @@ mod tests {
         assert!(err.contains("definitely-not-a-flag") && err.contains("failed"));
         assert!(run_tool(Path::new("no-such-program-xyz"), &[], &work, &log).is_err());
         // Option resolution against a real help text.
-        let help = help_text(&exe, "--help").unwrap();
+        let help = help_text(&exe, "--nocapture").unwrap();
         assert_eq!(resolve_option(Some(&help), &["--no-such-option", "--test-threads"]), "--test-threads");
         assert_eq!(resolve_option(None, &["a", "b"]), "a");
     }

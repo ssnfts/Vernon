@@ -42,9 +42,8 @@ fn num(field: &str, line: usize, what: &str) -> Result<f64, String> {
 }
 
 fn opt_num(f: Option<&&str>, line: usize, what: &str) -> Result<Option<f64>, String> {
-    match f {
-        None => Ok(None),
-        Some(s) if s.is_empty() => Ok(None),
+    match f.copied() {
+        None | Some("") => Ok(None),
         Some(s) => num(s, line, what).map(Some),
     }
 }

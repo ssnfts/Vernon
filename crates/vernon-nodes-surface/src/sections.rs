@@ -69,8 +69,7 @@ pub fn section_mesh(geo: &Geometry, origin: DVec3, normal: DVec3) -> Vec<Loop> {
     let walk = |start: usize, used: &mut Vec<bool>| -> Vec<usize> {
         let mut seq = vec![start];
         let mut cur = start;
-        loop {
-            let Some(&si) = at[cur].iter().find(|&&s| !used[s]) else { break };
+        while let Some(&si) = at[cur].iter().find(|&&s| !used[s]) {
             used[si] = true;
             let (a, b) = segments[si];
             cur = if a == cur { b } else { a };

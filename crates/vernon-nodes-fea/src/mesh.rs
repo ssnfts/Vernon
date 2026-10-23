@@ -95,6 +95,7 @@ pub fn tet4_to_tet10(g: &Geometry) -> Result<Geometry, String> {
     }
     let n = out.points.len();
     out.point_attribs.resize_all(n);
+    out.detail_attribs.set("elem_type", AttribArray::Str(vec!["C3D10".into()]));
     Ok(out)
 }
 
@@ -419,7 +420,7 @@ pub fn solid_from_tets(points: Vec<DVec3>, tets: &[[u32; 4]]) -> Geometry {
 pub fn box_tets(size: DVec3, n: [usize; 3]) -> Geometry {
     let tris = box_tris(size);
     let h = (size.x / n[0] as f64).max(size.y / n[1] as f64).max(size.z / n[2] as f64);
-    let (p, t) = voxel_tets(&tris, h * 0.999, usize::MAX).expect("box meshes");
+    let (p, t) = voxel_tets(&tris, h * 1.001, usize::MAX).expect("box meshes");
     solid_from_tets(p, &t)
 }
 

@@ -89,7 +89,7 @@ pub struct PlaneCut;
 impl NodeOp for PlaneCut {
     fn info(&self) -> NodeTypeInfo {
         cut_outputs(cut_params(
-            info("split.plane_cut", "Planar Cut", "Cut a closed mesh by one or more planes and cap the cuts; every piece gets a part id.")
+            info("print.plane_cut", "Planar Cut", "Cut a closed mesh by one or more planes and cap the cuts; every piece gets a part id.")
                 .emulates("planar cut tool of common slicers, extended to many parts")
                 .implemented()
                 .input(PortSpec::new("mesh", DataKind::Geometry))
@@ -159,7 +159,7 @@ pub struct PolylineCut;
 impl NodeOp for PolylineCut {
     fn info(&self) -> NodeTypeInfo {
         cut_outputs(cut_params(
-            info("split.polyline_cut", "Body Line Cut", "Cut along a polyline seen from a view direction, so seams follow body lines.")
+            info("print.polyline_cut", "Body Line Cut", "Cut along a polyline seen from a view direction, so seams follow body lines.")
                 .emulates("projected-curve split of CAD tools")
                 .input(PortSpec::new("mesh", DataKind::Geometry))
                 .input(PortSpec::new("guide", DataKind::Geometry))
@@ -195,7 +195,7 @@ pub struct CutRegionSelect;
 impl NodeOp for CutRegionSelect {
     fn info(&self) -> NodeTypeInfo {
         info(
-            "split.cut_region_select",
+            "print.cut_region_select",
             "Cut Region Select",
             "Choose which islands of a multi-island cut plane are cut and which stay joined.",
         )

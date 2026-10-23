@@ -306,7 +306,7 @@ fn prepare(p: &[DVec3], q: &[DVec3], w: Option<&[f64]>) -> Result<(DVec3, DVec3,
     let (pc, qc, ws) = centroids(p, q, w);
     let pcs: Vec<DVec3> = p.iter().map(|x| *x - pc).collect();
     let qcs: Vec<DVec3> = q.iter().map(|x| *x - qc).collect();
-    if !(ws > 0.0) || !rank_ok(&pcs, w, ws) || !rank_ok(&qcs, w, ws) {
+    if (ws.is_nan() || ws <= 0.0) || !rank_ok(&pcs, w, ws) || !rank_ok(&qcs, w, ws) {
         return Err(FitError::Degenerate);
     }
     Ok((pc, qc, ws, pcs, qcs))

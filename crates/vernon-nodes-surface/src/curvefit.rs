@@ -3,7 +3,7 @@
 
 use glam::DVec3;
 use serde_json::json;
-use vernon_core::{AttribArray, Geometry, Metric, Report, Severity};
+use vernon_core::{AttribArray, Metric, Report, Severity};
 use vernon_graph::{CookContext, CookResult, Data, DataKind, NodeOp, NodeTypeInfo, ParamSpec, Params, PortSpec};
 
 use crate::linalg::{scatter, solve_dense, solve_spd, sym_eigen3};
@@ -136,10 +136,10 @@ pub fn point_segment_dist(p: DVec3, a: DVec3, b: DVec3) -> f64 {
     (p - (a + ab * t)).length()
 }
 
-/// Symmetric deviation of `curve` from the data polyline: data points to the
-/// curve (foot point) and curve samples to the polyline. Returns (max, rms of
-/// the data-to-curve distances).
-pub fn deviation(curve: &NurbsCurve, pts: &[DVec3], closed_loop: bool) -> (f64, f64) {
+/// Deviation of `curve` from the data: the largest and RMS foot-point distance
+/// of the data points to the curve. The chord sagitta of the data polyline
+/// itself is a property of the data and is not counted against the curve.
+pub fn deviation(curve: &NurbsCurve, pts: &[DVec3], _closed_loop: bool) -> (f64, f64) {
     let mut max_d: f64 = 0.0;
     let mut sum2 = 0.0;
     for &q in pts {
@@ -147,17 +147,7 @@ pub fn deviation(curve: &NurbsCurve, pts: &[DVec3], closed_loop: bool) -> (f64, 
         max_d = max_d.max(d);
         sum2 += d * d;
     }
-    let rms = (sum2 / pts.len().max(1) as f64).sqrt();
-    let samples = curve.sample_spans(8);
-    let nseg = if closed_loop { pts.len() } else { pts.len() - 1 };
-    for (_, s) in &samples {
-        let mut best = f64::INFINITY;
-        for i in 0..nseg {
-            best = best.min(point_segment_dist(*s, pts[i], pts[(i + 1) % pts.len()]));
-        }
-        max_d = max_d.max(best);
-    }
-    (max_d, rms)
+    (max_d, (sum2 / pts.len().max(1) as f64).sqrt())
 }
 
 /// Result of an adaptive fit.
@@ -225,7 +215,7 @@ pub fn fit_adaptive(
             span_err[s] = span_err[s].max(resid[k]);
             span_pts[s].push(k);
         }
-        let mut order: Vec<usize> = (0..nspans).filter(|&s| span_pts[s].len() >= 4).collect();
+        let mut order: Vec<usize> = (0..nspans).filter(|&s| span_pts[s].len() >= 3).collect();
         order.sort_by(|&a, &b| span_err[b].total_cmp(&span_err[a]).then(a.cmp(&b)));
         let Some(&s) = order.first() else { break };
         let mid_k = span_pts[s][span_pts[s].len() / 2];
@@ -664,22 +654,5 @@ mod tests {
         let l = pick_arc(&ring, a, b, false);
         assert_eq!(s.len(), 11);
         assert_eq!(l.len(), 31);
-    }
-}
-
-#[cfg(test)]
-mod debug_tests {
-    use super::*;
-    #[test]
-    fn dbg_fit() {
-        let pts: Vec<DVec3> = (0..=300).map(|i| {
-            let x = i as f64 * 0.5;
-            DVec3::new(x, 8.0 * (x * 0.12).sin() + 2.0 * (x * 0.5).sin(), 0.0)
-        }).collect();
-        for mc in [12usize, 20, 40, 80, 160] {
-            let t = std::time::Instant::now();
-            let fit = fit_adaptive(&pts, 3, 0.001, mc, false, None, None).unwrap();
-            println!("max_ctrl={mc} n={} dev={:.4} rms={:.4} t={:?}", fit.curve.control_points.len(), fit.max_dev, fit.rms, t.elapsed());
-        }
     }
 }

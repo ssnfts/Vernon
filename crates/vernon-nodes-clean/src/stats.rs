@@ -178,7 +178,7 @@ pub fn histogram(values: &[f64], lo: f64, hi: f64, bins: usize) -> (Vec<u64>, u6
     let mut counts = vec![0u64; bins];
     let (mut below, mut above) = (0u64, 0u64);
     let span = hi - lo;
-    if bins == 0 || !(span > 0.0) {
+    if bins == 0 || (span.is_nan() || span <= 0.0) {
         return (counts, 0, 0);
     }
     for &v in values {

@@ -348,8 +348,7 @@ pub fn boundary_loops(faces: &[Vec<u32>]) -> Vec<Vec<u32>> {
             }
             let mut ring = vec![s];
             let mut cur = s;
-            loop {
-                let Some(nx) = next.get_mut(&cur).and_then(|l| l.pop()) else { break };
+            while let Some(nx) = next.get_mut(&cur).and_then(|l| l.pop()) {
                 if nx == s {
                     break;
                 }
