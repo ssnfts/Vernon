@@ -43,7 +43,7 @@ impl Grid {
         for dx in -span..=span {
             for dy in -span..=span {
                 for dz in -span..=span {
-                    if let Some(v) = self.cells.get(&[k[0] + dx, k[1] + dy, k[2] + dz]) {
+                    if let Some(v) = self.cells.get(&[k[0].wrapping_add(dx), k[1].wrapping_add(dy), k[2].wrapping_add(dz)]) {
                         for &i in v {
                             if (points[i as usize] - p).length_squared() <= r2 {
                                 out.push(i);
@@ -64,7 +64,7 @@ impl Grid {
         for dx in -span..=span {
             for dy in -span..=span {
                 for dz in -span..=span {
-                    if let Some(v) = self.cells.get(&[k[0] + dx, k[1] + dy, k[2] + dz]) {
+                    if let Some(v) = self.cells.get(&[k[0].wrapping_add(dx), k[1].wrapping_add(dy), k[2].wrapping_add(dz)]) {
                         for &i in v {
                             let d2 = (points[i as usize] - p).length_squared();
                             if d2 <= limit && (best.is_none() || d2 < limit) {

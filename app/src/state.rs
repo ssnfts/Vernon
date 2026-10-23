@@ -6,11 +6,13 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
 use vernon_core::{Geometry, Report};
-use vernon_graph::{Data, DataKind, Graph, NodeId, NodeTypeInfo, ParamValue, Registry};
+use vernon_graph::{CookResult, Data, DataKind, Graph, NodeId, NodeTypeInfo, ParamKind, ParamValue, Registry};
 
 pub const UNDO_LIMIT: usize = 200;
 const SCHEMA_VERSION: u32 = 1;
@@ -48,6 +50,58 @@ const PALETTE: [[u8; 3]; 8] = [
     [0xD0, 0xD0, 0xD0],
 ];
 
+/// What a background cook is doing, shared with its thread.
+#[derive(Debug, Clone, Default)]
+pub struct CookProgress {
+    /// Nodes cooked so far (cache hits are not counted).
+    pub cooked: usize,
+    /// The node being cooked now.
+    pub current: Option<String>,
+}
+
+/// Cook state for the status bar.
+#[derive(Debug, Clone, Default)]
+pub struct CookStatus {
+    pub busy: bool,
+    /// The results shown are older than the scene.
+    pub stale: bool,
+    /// The user stopped the cook; nothing restarts it until the next edit.
+    pub stopped: bool,
+    pub progress: CookProgress,
+    pub seconds: f64,
+}
+
+type CookOutput = (Graph, Vec<(NodeId, CookResult<Vec<Data>>)>);
+
+/// A cook running on its own thread over a copy of the graph.
+struct CookJob {
+    revision: u64,
+    epoch: u64,
+    cancel: Arc<AtomicBool>,
+    progress: Arc<Mutex<CookProgress>>,
+    started: Instant,
+    handle: std::thread::JoinHandle<CookOutput>,
+}
+
+/// Folder of a scene file, made absolute: relative file parameters of the
+/// scene resolve against it.
+pub fn scene_dir(path: &Path) -> Option<PathBuf> {
+    std::path::absolute(path).ok()?.parent().map(Path::to_path_buf)
+}
+
+/// Scratch folder of a saved scene: `<file>.work` next to it.
+pub fn scene_work_root(path: &Path) -> PathBuf {
+    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "scene".into());
+    path.with_file_name(format!("{name}.work"))
+}
+
+/// Scratch folder of an unsaved scene, unique per scene and process.
+fn untitled_work_root() -> PathBuf {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let n = NEXT.fetch_add(1, Ordering::Relaxed);
+    std::env::temp_dir().join("vernon").join(format!("untitled-{}-{n}", std::process::id()))
+}
+
 pub struct AppState {
     pub registry: Registry,
     pub graph: Graph,
@@ -65,15 +119,52 @@ pub struct AppState {
     last_checkpoint: Option<(String, f64)>,
     pub results: HashMap<NodeId, NodeResult>,
     revision: u64,
+    /// Count of scene edits (parameter, wiring, node changes); unlike
+    /// `revision` it does not move when a held-back write or a changed input
+    /// file triggers a cook.
+    edits: u64,
     cooked_revision: u64,
     pub log: Vec<LogLine>,
+    /// Copy of the registry for cook threads.
+    shared_registry: Arc<Registry>,
+    job: Option<CookJob>,
+    /// Bumped when every cached result is dropped, so a cook that was
+    /// already running cannot bring them back.
+    cache_epoch: u64,
+    /// The revision whose cook the user stopped.
+    stopped_revision: Option<u64>,
+    /// False for a scene read from a file until the user trusts it: its
+    /// actions (external programs, uploads) are refused and nodes writing
+    /// files at paths the scene chose are held.
+    pub trusted: bool,
+    /// Ask the user whether to trust the scene.
+    pub trust_prompt: bool,
+    /// When a parameter was last changed by a drag or a keystroke. While
+    /// edits keep coming (see [`EDIT_SETTLE`]), nodes that write files keep
+    /// their last result instead of writing on every change.
+    last_edit: Option<Instant>,
+    /// A cook held writer nodes back; cook again once the edit settles.
+    writes_pending: bool,
+    /// Size and time stamps of the files the scene reads, and when they
+    /// were last looked at: a changed file cooks its readers again.
+    files_stamp: u64,
+    files_checked: Option<Instant>,
 }
+
+/// How long after the last parameter edit file writes stay deferred.
+pub const EDIT_SETTLE: std::time::Duration = std::time::Duration::from_millis(400);
+
+/// How often the files a scene reads are checked for changes.
+const FILES_POLL: std::time::Duration = std::time::Duration::from_secs(1);
 
 impl AppState {
     pub fn new(registry: Registry) -> Self {
+        let mut graph = Graph::new();
+        graph.work_root = Some(untitled_work_root());
         Self {
+            shared_registry: Arc::new(registry.clone()),
             registry,
-            graph: Graph::new(),
+            graph,
             selection: Vec::new(),
             stack_entry: None,
             show_end_result: true,
@@ -88,14 +179,35 @@ impl AppState {
             last_checkpoint: None,
             results: HashMap::new(),
             revision: 1,
+            edits: 0,
             cooked_revision: 0,
             log: Vec::new(),
+            job: None,
+            cache_epoch: 0,
+            stopped_revision: None,
+            trusted: true,
+            trust_prompt: false,
+            last_edit: None,
+            writes_pending: false,
+            files_stamp: 0,
+            files_checked: None,
         }
     }
 
     fn touch(&mut self) {
         self.revision += 1;
+        self.edits += 1;
         self.dirty = true;
+    }
+
+    /// Number of scene edits so far (see the `edits` field).
+    pub fn edit_count(&self) -> u64 {
+        self.edits
+    }
+
+    /// True when the last cook is current and nothing is cooking.
+    pub fn cooked(&self) -> bool {
+        self.job.is_none() && self.cooked_revision == self.revision
     }
 
     pub fn info_text(&mut self, text: impl Into<String>) {
@@ -164,8 +276,11 @@ impl AppState {
         match Graph::from_json(json) {
             Ok(mut g) => {
                 g.work_root = self.graph.work_root.clone();
-                self.graph = g;
-                self.results.clear();
+                g.scene_dir = self.graph.scene_dir.clone();
+                // Nodes the undo did not touch keep their cooked results
+                // (and an action that ran is not started again).
+                let old = std::mem::replace(&mut self.graph, g);
+                self.graph.absorb_cache(old);
                 self.last_checkpoint = None;
                 self.prune();
                 self.touch();
@@ -391,7 +506,7 @@ impl AppState {
 
         self.checkpoint();
         let id = self.graph.add_node(&self.registry, type_id).map_err(|e| e.to_string())?;
-        if let Err(e) = self.graph.connect(base, out, id, 0) {
+        if let Err(e) = self.graph.connect_checked(&self.registry, base, out, id, 0) {
             self.graph.remove_node(id);
             self.undo.pop();
             return Err(e.to_string());
@@ -399,7 +514,7 @@ impl AppState {
         if let Some(next) = next {
             let kind = self.info(next).and_then(|i| i.inputs.first()).map(|p| p.kind);
             if let Some(o) = kind.and_then(|k| self.compatible_output(id, k)) {
-                let _ = self.graph.connect(id, o, next, 0);
+                let _ = self.graph.connect_checked(&self.registry, id, o, next, 0);
             }
         }
         self.place(id, Some(base));
@@ -441,7 +556,7 @@ impl AppState {
                 };
                 match (fits, src) {
                     (true, Some((s, o))) if !ids.contains(&s) => {
-                        let _ = self.graph.connect(s, o, *c, *slot);
+                        let _ = self.graph.connect_checked(&self.registry, s, o, *c, *slot);
                     }
                     _ => self.graph.disconnect(*c, *slot),
                 }
@@ -468,7 +583,8 @@ impl AppState {
 
     pub fn connect(&mut self, from: NodeId, out: usize, to: NodeId, input: usize) -> Result<(), String> {
         let snapshot = self.graph.to_json();
-        self.graph.connect(from, out, to, input).map_err(|e| e.to_string())?;
+        // A refused wire leaves the graph (and any wire already there) as it was.
+        self.graph.connect_checked(&self.registry, from, out, to, input).map_err(|e| e.to_string())?;
         self.undo.push(snapshot);
         self.redo.clear();
         self.last_checkpoint = None;
@@ -492,6 +608,7 @@ impl AppState {
         }
         self.checkpoint_coalesced(&format!("param:{id}:{name}"), now);
         let _ = self.graph.set_param(id, name, value);
+        self.last_edit = Some(Instant::now());
         self.touch();
     }
 
@@ -499,6 +616,7 @@ impl AppState {
     /// at the start of a viewport drag).
     pub fn set_param_silent(&mut self, id: NodeId, name: &str, value: ParamValue) {
         if self.graph.set_param(id, name, value).is_ok() {
+            self.last_edit = Some(Instant::now());
             self.touch();
         }
     }
@@ -560,6 +678,7 @@ impl AppState {
             new.params = node.params.clone();
             new.pos = [node.pos[0] + dx, node.pos[1]];
             new.bypass = node.bypass;
+            new.expect_fail = node.expect_fail.clone();
             new.inputs = node
                 .inputs
                 .iter()
@@ -605,9 +724,7 @@ impl AppState {
 
     pub fn rename(&mut self, id: NodeId, name: &str, now: f64) -> Result<(), String> {
         let name = name.trim();
-        if name.is_empty() {
-            return Err("name cannot be empty".into());
-        }
+        vernon_graph::validate_node_name(name)?;
         if self.graph.find(name).is_some_and(|other| other != id) {
             return Err(format!("'{name}' is already used"));
         }
@@ -627,10 +744,10 @@ impl AppState {
         }
     }
 
+    /// Display only: no re-cook.
     pub fn set_color(&mut self, id: NodeId, rgb: [u8; 3]) {
         self.scene.colors.insert(id, rgb);
         self.dirty = true;
-        self.revision += 1;
     }
 
     pub fn set_hidden(&mut self, id: NodeId, hidden: bool) {
@@ -640,33 +757,297 @@ impl AppState {
             self.scene.hidden.remove(&id);
         }
         self.dirty = true;
-        self.revision += 1;
     }
 
     // ------------------------------------------------------------ cooking
 
-    /// Cook every node when anything changed since the last cook.
+    /// Cook every node when anything changed since the last cook, waiting
+    /// for the result (tests, export, scripts). The UI uses
+    /// [`cook_step`](Self::cook_step) instead.
     pub fn cook_all(&mut self) {
+        if let Some(job) = &self.job {
+            if job.revision != self.revision {
+                job.cancel.store(true, Ordering::Relaxed);
+            }
+        }
+        self.finish_job(true);
         if self.cooked_revision == self.revision {
             return;
         }
-        let ids: Vec<NodeId> = self.graph.nodes.keys().copied().collect();
-        self.results.clear();
-        for id in ids {
-            let r = match self.graph.cook(&self.registry, id) {
-                Ok(d) => NodeResult::Ok(d),
-                Err(e) => NodeResult::Err(e.to_string()),
-            };
-            self.results.insert(id, r);
-        }
+        let mut graph = self.job_graph();
+        let ids: Vec<NodeId> = graph.nodes.keys().copied().collect();
+        let results = graph.cook_many(&self.registry, &ids, None, &mut |_| {});
+        self.graph.absorb_cache(graph);
+        self.apply_results(results);
         self.cooked_revision = self.revision;
+        self.stopped_revision = None;
     }
 
-    /// Drop every cached result and cook again.
+    /// Advance the background cook; call once per frame. Collects a
+    /// finished cook, cancels one the scene has moved past and starts a new
+    /// one when the results are out of date. Returns true while a cook runs.
+    pub fn cook_step(&mut self) -> bool {
+        self.finish_job(false);
+        if let Some(job) = &self.job {
+            if job.revision != self.revision {
+                job.cancel.store(true, Ordering::Relaxed);
+            }
+            return true;
+        }
+        // Writers held back during an edit write once it settles.
+        let editing = self.editing();
+        if self.writes_pending && !editing {
+            self.writes_pending = false;
+            self.revision += 1;
+        }
+        // A file the scene reads changed on disk: cook its readers again
+        // (their signatures include the files' size and time stamp).
+        if self.files_checked.is_none_or(|t| t.elapsed() >= FILES_POLL) {
+            self.files_checked = Some(Instant::now());
+            if self.graph.read_files_stamp(&self.registry) != self.files_stamp {
+                self.revision += 1;
+            }
+        }
+        if self.cooked_revision == self.revision || self.stopped_revision == Some(self.revision) {
+            return false;
+        }
+        let mut graph = self.job_graph();
+        graph.defer_writes = editing;
+        self.files_stamp = graph.read_files_stamp(&self.registry);
+        let ids: Vec<NodeId> = graph.nodes.keys().copied().collect();
+        let registry = self.shared_registry.clone();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let progress = Arc::new(Mutex::new(CookProgress::default()));
+        let (stop, shared) = (cancel.clone(), progress.clone());
+        let spawned = std::thread::Builder::new().name("vernon-cook".into()).spawn(move || {
+            let mut graph = graph;
+            let names: HashMap<NodeId, String> = graph.nodes.iter().map(|(id, n)| (*id, n.name.clone())).collect();
+            // Stopping the cook also stops a program a node is running.
+            let results = vernon_core::process::with_cancel(stop.clone(), || {
+                graph.cook_many(&registry, &ids, Some(&stop), &mut |id| {
+                    if let Ok(mut p) = shared.lock() {
+                        p.cooked += 1;
+                        p.current = names.get(&id).cloned();
+                    }
+                })
+            });
+            (graph, results)
+        });
+        match spawned {
+            Ok(handle) => {
+                self.job = Some(CookJob {
+                    revision: self.revision,
+                    epoch: self.cache_epoch,
+                    cancel,
+                    progress,
+                    started: Instant::now(),
+                    handle,
+                });
+                true
+            }
+            Err(e) => {
+                self.error_text(format!("cannot start a cook thread ({e}); cooking here"));
+                self.cook_all();
+                false
+            }
+        }
+    }
+
+    /// True while parameter edits keep coming (a drag or typing): file
+    /// writes wait until [`EDIT_SETTLE`] has passed since the last one.
+    pub fn editing(&self) -> bool {
+        self.last_edit.is_some_and(|t| t.elapsed() < EDIT_SETTLE)
+    }
+
+    /// When the UI should run [`cook_step`](Self::cook_step) again although
+    /// nothing happens on screen: to write files held back during an edit,
+    /// and to notice changed input files.
+    pub fn wake_after(&self) -> std::time::Duration {
+        if self.writes_pending {
+            EDIT_SETTLE
+        } else {
+            FILES_POLL
+        }
+    }
+
+    /// Stop the running cook after the node it is on; the results stay out
+    /// of date until the next edit.
+    pub fn stop_cook(&mut self) {
+        if let Some(job) = &self.job {
+            job.cancel.store(true, Ordering::Relaxed);
+            self.stopped_revision = Some(self.revision);
+            self.info_text("cook stopped; results are out of date until the next change");
+        }
+    }
+
+    /// `None` when the results are current and nothing is cooking.
+    pub fn cook_status(&self) -> Option<CookStatus> {
+        let stale = self.cooked_revision != self.revision;
+        if self.job.is_none() && !stale {
+            return None;
+        }
+        Some(CookStatus {
+            busy: self.job.is_some(),
+            stale,
+            stopped: self.stopped_revision == Some(self.revision),
+            progress: self
+                .job
+                .as_ref()
+                .and_then(|j| j.progress.lock().ok().map(|p| p.clone()))
+                .unwrap_or_default(),
+            seconds: self.job.as_ref().map_or(0.0, |j| j.started.elapsed().as_secs_f64()),
+        })
+    }
+
+    /// Collect the background cook if it finished (or wait for it).
+    fn finish_job(&mut self, wait: bool) {
+        let Some(job) = self.job.take() else { return };
+        if !wait && !job.handle.is_finished() {
+            self.job = Some(job);
+            return;
+        }
+        let cancelled = job.cancel.load(Ordering::Relaxed);
+        match job.handle.join() {
+            Ok((graph, results)) => {
+                if !cancelled && graph.deferred_writes() > 0 {
+                    self.writes_pending = true;
+                }
+                if job.epoch == self.cache_epoch {
+                    self.graph.absorb_cache(graph);
+                }
+                if !cancelled {
+                    // Newer than what is shown even when the scene moved on.
+                    self.apply_results(results);
+                    if job.revision == self.revision {
+                        self.cooked_revision = job.revision;
+                    }
+                }
+            }
+            Err(_) => self.error_text("the cook thread stopped unexpectedly"),
+        }
+    }
+
+    /// Forget a running cook without waiting (the scene it cooks is gone).
+    /// Its thread ends after the node it is on.
+    fn discard_job(&mut self) {
+        if let Some(job) = self.job.take() {
+            job.cancel.store(true, Ordering::Relaxed);
+        }
+    }
+
+    fn apply_results(&mut self, results: Vec<(NodeId, CookResult<Vec<Data>>)>) {
+        self.results = results
+            .into_iter()
+            .map(|(id, r)| {
+                let r = match r {
+                    Ok(d) => NodeResult::Ok(d),
+                    Err(e) => NodeResult::Err(e.to_string()),
+                };
+                (id, r)
+            })
+            .collect();
+    }
+
+    /// The copy of the graph a cook works on. Action parameters the user
+    /// switched on are switched off in the scene and stay on in the copy
+    /// only, so no later cook, undo or save can start them again; in an
+    /// untrusted scene they are refused, and nodes writing files at paths
+    /// the scene chose are held.
+    fn job_graph(&mut self) -> Graph {
+        let mut started = Vec::new();
+        for (id, node) in self.graph.nodes.iter_mut() {
+            let Some(info) = self.registry.info(&node.type_id) else { continue };
+            for spec in info.params.iter().filter(|s| s.action) {
+                if matches!(node.params.get(&spec.name), Some(ParamValue::Bool(true))) {
+                    node.params.set(&spec.name, ParamValue::Bool(false));
+                    started.push((*id, spec.name.clone(), spec.label.clone(), node.name.clone()));
+                }
+            }
+        }
+        let mut job = self.graph.clone();
+        for (id, param, label, name) in started {
+            if self.trusted {
+                let _ = job.set_param(id, &param, ParamValue::Bool(true));
+                // Start it even when these inputs ran before.
+                job.invalidate(id);
+                self.info_text(format!("{name}: {label} started"));
+            } else {
+                self.trust_prompt = true;
+                self.error_text(format!(
+                    "{name}: {label} refused because this scene is not trusted yet (File > Trust Scene)"
+                ));
+            }
+        }
+        if !self.trusted {
+            for (id, path) in self.outside_writes() {
+                job.held.insert(
+                    id,
+                    format!("held: writes '{path}', a path chosen by the opened file; trust the scene to allow it"),
+                );
+            }
+        }
+        job
+    }
+
+    /// Nodes writing a file at a path the scene sets (save-path parameters
+    /// that are not empty), with the path.
+    fn outside_writes(&self) -> Vec<(NodeId, String)> {
+        let mut out = Vec::new();
+        for (id, node) in &self.graph.nodes {
+            let Some(info) = self.registry.info(&node.type_id) else { continue };
+            for spec in &info.params {
+                if let (ParamKind::Path { save: true, .. }, Some(ParamValue::Str(s))) = (&spec.kind, node.params.get(&spec.name)) {
+                    if !s.trim().is_empty() {
+                        out.push((*id, s.clone()));
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// What this scene would start or write, one line each, for the trust
+    /// prompt: the programs and settings of every node with an action, and
+    /// every file it writes at a path of its own choosing.
+    pub fn trust_findings(&self) -> Vec<String> {
+        let mut lines = Vec::new();
+        for node in self.graph.nodes.values() {
+            let Some(info) = self.registry.info(&node.type_id) else { continue };
+            if !info.params.iter().any(|s| s.action) {
+                continue;
+            }
+            for spec in &info.params {
+                let Some(ParamValue::Str(v)) = node.params.get(&spec.name) else { continue };
+                let shown = match &spec.kind {
+                    ParamKind::Path { save: false, .. } => true,
+                    ParamKind::Str { .. } => !["key", "token", "password"].iter().any(|k| spec.name.contains(k)),
+                    ParamKind::Enum { default, .. } => v != default,
+                    _ => false,
+                };
+                if shown && !v.trim().is_empty() {
+                    lines.push(format!("{} ({}): {} = {v}", node.name, info.label, spec.label));
+                }
+            }
+        }
+        for (id, path) in self.outside_writes() {
+            lines.push(format!("{}: writes {path}", self.name(id)));
+        }
+        lines
+    }
+
+    /// The user trusts the scene: allow its actions and writes.
+    pub fn trust_scene(&mut self) {
+        self.trusted = true;
+        self.trust_prompt = false;
+        self.revision += 1;
+        self.info_text("scene trusted: its programs may be started and its files written");
+    }
+
+    /// Drop every cached result and cook again (in the background).
     pub fn recook(&mut self) {
         self.graph.invalidate_all();
+        self.cache_epoch += 1;
         self.revision += 1;
-        self.cook_all();
     }
 
     pub fn error_of(&self, id: NodeId) -> Option<&str> {
@@ -699,9 +1080,12 @@ impl AppState {
     // ------------------------------------------------------------ files
 
     pub fn new_scene(&mut self) {
-        let work_root = self.graph.work_root.clone();
+        self.discard_job();
         self.graph = Graph::new();
-        self.graph.work_root = work_root;
+        self.graph.work_root = Some(untitled_work_root());
+        self.trusted = true;
+        self.trust_prompt = false;
+        self.stopped_revision = None;
         self.scene = SceneUi {
             schema_version: SCHEMA_VERSION,
             ..Default::default()
@@ -717,7 +1101,17 @@ impl AppState {
     }
 
     pub fn to_vrn(&self) -> Result<String, String> {
-        let mut v = serde_json::to_value(&self.graph).map_err(|e| e.to_string())?;
+        // Actions are never saved switched on.
+        let mut graph = self.graph.clone();
+        for node in graph.nodes.values_mut() {
+            let Some(info) = self.registry.info(&node.type_id) else { continue };
+            for spec in info.params.iter().filter(|s| s.action) {
+                if node.params.get(&spec.name).is_some() {
+                    node.params.set(&spec.name, ParamValue::Bool(false));
+                }
+            }
+        }
+        let mut v = serde_json::to_value(&graph).map_err(|e| e.to_string())?;
         let ui = serde_json::to_value(&self.scene).map_err(|e| e.to_string())?;
         if let Some(obj) = v.as_object_mut() {
             obj.insert("ui".into(), ui);
@@ -733,15 +1127,52 @@ impl AppState {
             .and_then(|u| serde_json::from_value::<SceneUi>(u).ok())
             .unwrap_or_default();
         let mut graph: Graph = serde_json::from_value(v).map_err(|e| e.to_string())?;
-        graph.work_root = self.graph.work_root.clone();
-        // Hand-written files (like the shipped example) may omit defaults.
+        // Hand-written files (like the shipped example) may omit defaults;
+        // names are made valid and unique.
         let unknown = graph.normalize(&self.registry);
+        // Values a hand-edited file put outside a parameter's range are
+        // clamped when cooked; say which.
+        let mut clamped = Vec::new();
+        for node in graph.nodes.values() {
+            let Some(info) = self.registry.info(&node.type_id) else { continue };
+            for name in vernon_graph::param::out_of_range(&info.params, &node.params) {
+                clamped.push(format!("{}.{name}", node.name));
+            }
+        }
+        // A file is active content: it never starts a program by itself.
+        let mut switched_off = 0;
+        for node in graph.nodes.values_mut() {
+            let Some(info) = self.registry.info(&node.type_id) else { continue };
+            for spec in info.params.iter().filter(|s| s.action) {
+                if matches!(node.params.get(&spec.name), Some(ParamValue::Bool(true))) {
+                    node.params.set(&spec.name, ParamValue::Bool(false));
+                    switched_off += 1;
+                }
+            }
+        }
         self.new_scene();
+        graph.work_root = self.graph.work_root.clone();
         self.graph = graph;
         self.scene = scene;
         self.prune();
         if !unknown.is_empty() {
             self.error_text(format!("unknown node types in file: {}", unknown.join(", ")));
+        }
+        if !clamped.is_empty() {
+            self.error_text(format!(
+                "{} parameter value(s) outside their range are clamped when cooked: {}",
+                clamped.len(),
+                clamped.join(", ")
+            ));
+        }
+        if switched_off > 0 {
+            self.info_text(format!("{switched_off} run switch(es) saved on were turned off; press Run to start them"));
+        }
+        // Until the user agrees, the scene's programs are not started and
+        // files it would write at its own paths are held.
+        if !self.trust_findings().is_empty() {
+            self.trusted = false;
+            self.trust_prompt = true;
         }
         self.touch();
         self.dirty = false;
@@ -750,17 +1181,43 @@ impl AppState {
 
     pub fn save(&mut self, path: &Path) -> Result<(), String> {
         let text = self.to_vrn()?;
-        std::fs::write(path, text).map_err(|e| format!("{}: {e}", path.display()))?;
+        write_atomic(path, text.as_bytes())?;
+        // the crash-recovery copy is stale once the scene itself is on disk
+        let _ = std::fs::remove_file(self.autosave_path());
         self.path = Some(path.to_path_buf());
+        let _ = std::fs::remove_file(self.autosave_path());
+        // Node scratch files live next to the scene from now on, and
+        // relative file parameters resolve against its folder.
+        self.graph.work_root = Some(scene_work_root(path));
+        self.graph.scene_dir = scene_dir(path);
         self.dirty = false;
         self.info_text(format!("saved {}", path.display()));
         Ok(())
+    }
+
+    /// Where the crash-recovery copy goes: next to the scene
+    /// (`scene.vrn.autosave`), or the temp folder for an untitled scene.
+    pub fn autosave_path(&self) -> PathBuf {
+        match &self.path {
+            Some(p) => p.with_extension("vrn.autosave"),
+            None => std::env::temp_dir().join("vernon-untitled.vrn.autosave"),
+        }
+    }
+
+    /// Write the crash-recovery copy. The scene path and the unsaved flag are
+    /// left alone: the user's own file is only written by Save.
+    pub fn autosave(&self) -> Result<PathBuf, String> {
+        let p = self.autosave_path();
+        write_atomic(&p, self.to_vrn()?.as_bytes())?;
+        Ok(p)
     }
 
     pub fn open(&mut self, path: &Path) -> Result<(), String> {
         let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
         self.load_vrn(&text)?;
         self.path = Some(path.to_path_buf());
+        self.graph.work_root = Some(scene_work_root(path));
+        self.graph.scene_dir = scene_dir(path);
         self.info_text(format!("opened {}", path.display()));
         Ok(())
     }
@@ -779,6 +1236,9 @@ impl AppState {
     /// Write the primary selection's displayed geometry.
     pub fn export(&mut self, path: &Path) -> Result<(), String> {
         let id = self.primary().ok_or("select an object to export")?;
+        if self.job.is_some() {
+            return Err("still cooking; export when the status bar shows the cook has finished".into());
+        }
         self.cook_all();
         let geo = self
             .geometry(self.display_node(id))
@@ -787,6 +1247,23 @@ impl AppState {
         self.info_text(format!("exported {} to {}", self.name(id), path.display()));
         Ok(())
     }
+}
+
+/// Write `bytes` to a temporary file in the target's folder and rename it over
+/// the target, so a crash mid-write never leaves a half-written scene.
+pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    use std::io::Write;
+    let name = path.file_name().ok_or_else(|| format!("{}: not a file path", path.display()))?;
+    let dir = path.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(Path::new("."));
+    let tmp = dir.join(format!(".{}.{}.tmp", name.to_string_lossy(), std::process::id()));
+    let res = std::fs::File::create(&tmp)
+        .and_then(|mut f| f.write_all(bytes).and_then(|()| f.sync_all()))
+        .and_then(|()| std::fs::rename(&tmp, path));
+    if let Err(e) = res {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(format!("{}: {e}", path.display()));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -910,12 +1387,28 @@ mod tests {
             .map(|g| g.stage)
             .collect();
         assert_eq!(missing, Vec::<Stage>::new());
-        let failing: Vec<String> = gates
+        // The demo has no wheels on its body and no FEA solver, so these two
+        // gates fail on purpose; the dashboard must show them (every report
+        // node of a stage counts, not just the newest one).
+        let nodes = &s.graph.nodes;
+        let mut failing: Vec<String> = gates
             .iter()
-            .filter(|g| matches!(g.state, crate::gate::GateState::Fail | crate::gate::GateState::Error))
-            .map(|g| format!("{:?}: {:?}", g.stage, g.report.as_ref().map(|r| &r.metrics)))
+            .flat_map(|g| {
+                g.failing_metrics()
+                    .into_iter()
+                    .map(move |(n, m)| format!("{:?}: {} {m}", g.stage, nodes[&n].type_id))
+            })
             .collect();
-        assert!(failing.is_empty(), "{failing:#?}");
+        failing.sort();
+        assert_eq!(
+            failing,
+            vec!["Cfd: cfd.vehicle_prep wheels_found".to_string(), "Fea: fea.tet_mesh placeholder".to_string()],
+        );
+        let state_of = |st: Stage| gates.iter().find(|g| g.stage == st).unwrap().state;
+        assert_eq!(state_of(Stage::Cfd), crate::gate::GateState::Fail);
+        assert_eq!(state_of(Stage::Fea), crate::gate::GateState::Fail);
+        assert!(gates.iter().all(|g| g.state != crate::gate::GateState::Error));
+        assert_eq!(crate::gate::overall(&gates), crate::gate::GateState::Fail);
         // Only the display object is visible, and it carries deviation colours.
         let visible: Vec<NodeId> = s.objects().into_iter().filter(|o| !s.is_hidden(*o)).collect();
         assert_eq!(visible.len(), 1);
@@ -960,5 +1453,217 @@ mod tests {
         assert!(s.rename(b, "body", 0.0).is_ok());
         assert!(s.select_by_name("body"));
         assert_eq!(s.primary(), Some(b));
+        for bad in ["../../escaped_dir", "C:\\x", "a/b", "what?", "x."] {
+            assert!(s.rename(b, bad, 0.0).is_err(), "{bad}");
+        }
+        assert_eq!(s.name(b), "body");
+    }
+
+    /// Counts its cooks, for checking what re-cooks.
+    struct CountOp(Arc<std::sync::atomic::AtomicUsize>);
+    impl vernon_graph::NodeOp for CountOp {
+        fn info(&self) -> NodeTypeInfo {
+            NodeTypeInfo::new("test.count", "Count", Stage::Geometry)
+                .output(vernon_graph::PortSpec::new("geo", DataKind::Geometry))
+                .param(vernon_graph::ParamSpec::float("size", "Size", 1.0, 0.0, 10.0))
+        }
+        fn cook(&self, _: &vernon_graph::CookContext, _: &[Option<Data>], p: &vernon_graph::Params) -> vernon_graph::CookResult<Vec<Data>> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Ok(vec![Data::geometry(Geometry::make_box(glam::DVec3::splat(p.float("size")?)))])
+        }
+    }
+
+    #[test]
+    fn cooks_in_the_background_and_undo_keeps_untouched_results() {
+        let cooks = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut reg = build_registry();
+        reg.add(CountOp(cooks.clone()));
+        let mut s = AppState::new(reg);
+        let counted = s.create("test.count").unwrap();
+        s.clear_selection();
+        let b = s.create("geo.box").unwrap();
+        let wait = |s: &mut AppState| {
+            let start = Instant::now();
+            while s.cook_step() {
+                assert!(start.elapsed().as_secs() < 60, "cook did not finish");
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+        };
+        assert!(s.cook_step(), "a cook starts on its own thread");
+        assert!(s.cook_status().is_some_and(|st| st.busy && st.stale));
+        wait(&mut s);
+        assert!(s.cook_status().is_none());
+        assert!(s.geometry(b).is_some() && s.geometry(counted).is_some());
+        assert_eq!(cooks.load(Ordering::SeqCst), 1);
+        // Edit the other node, then undo: the counting node is not cooked again.
+        s.set_param(b, "size", ParamValue::Vec3(glam::DVec3::splat(5.0)), 0.0);
+        wait(&mut s);
+        assert!(s.undo());
+        wait(&mut s);
+        assert_eq!(cooks.load(Ordering::SeqCst), 1);
+        // Colour and visibility are display only.
+        s.set_hidden(b, true);
+        s.set_color(b, [1, 2, 3]);
+        assert!(!s.cook_step());
+    }
+
+    /// Passes its input on, counting cooks; has a save path, so it is a writer.
+    struct WriteOp(Arc<std::sync::atomic::AtomicUsize>);
+    impl vernon_graph::NodeOp for WriteOp {
+        fn info(&self) -> NodeTypeInfo {
+            NodeTypeInfo::new("test.write", "Write", Stage::Geometry)
+                .input(vernon_graph::PortSpec::new("geo", DataKind::Geometry))
+                .output(vernon_graph::PortSpec::new("geo", DataKind::Geometry))
+                .param(vernon_graph::ParamSpec::path("file", "File", &["txt"], true))
+        }
+        fn cook(&self, _: &vernon_graph::CookContext, ins: &[Option<Data>], _: &vernon_graph::Params) -> vernon_graph::CookResult<Vec<Data>> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Ok(vec![Data::Geometry(vernon_graph::node::inputs::geometry(ins, 0)?)])
+        }
+    }
+
+    #[test]
+    fn writes_wait_for_the_edit_and_refused_wires_keep_the_old_one() {
+        let writes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut reg = build_registry();
+        reg.add(WriteOp(writes.clone()));
+        let mut s = AppState::new(reg);
+        let b = s.create("geo.box").unwrap();
+        s.clear_selection();
+        let w = s.create("test.write").unwrap();
+        s.connect(b, 0, w, 0).unwrap();
+        let wait = |s: &mut AppState| {
+            let start = Instant::now();
+            while s.cook_step() {
+                assert!(start.elapsed().as_secs() < 60, "cook did not finish");
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+        };
+        let settle = |s: &mut AppState| {
+            std::thread::sleep(EDIT_SETTLE + std::time::Duration::from_millis(50));
+            wait(s);
+        };
+        wait(&mut s);
+        assert_eq!(writes.load(Ordering::SeqCst), 1, "no edit running: the writer cooks");
+        // A drag: every frame changes the box, the writer keeps its result.
+        for size in [20.0, 30.0, 40.0] {
+            s.set_param_silent(b, "size", ParamValue::Vec3(glam::DVec3::splat(size)));
+            wait(&mut s);
+            assert!(s.editing() && s.outputs(w).is_some());
+        }
+        assert_eq!(writes.load(Ordering::SeqCst), 1, "nothing written during the drag");
+        settle(&mut s);
+        assert_eq!(writes.load(Ordering::SeqCst), 2, "written once the drag settled");
+        assert!((s.geometry(w).unwrap().bounds().size().x - 40.0).abs() < 1e-9);
+
+        // A refused wire (a loop) keeps the existing one and adds no undo step.
+        let undo = s.undo.len();
+        assert!(s.connect(w, 0, w, 0).is_err());
+        assert!(s.connect(w, 0, b, 0).is_err(), "the box has no input");
+        assert_eq!(s.graph.nodes[&w].inputs, vec![Some((b, 0))]);
+        assert_eq!(s.undo.len(), undo);
+    }
+
+    #[test]
+    fn run_switches_are_one_shot_and_never_saved_on() {
+        let mut s = state();
+        let solve = s.create("cfd.solve_steady").unwrap();
+        s.set_param(solve, "run", ParamValue::Bool(true), 0.0);
+        s.cook_all();
+        assert_eq!(s.graph.nodes[&solve].params.get("run"), Some(&ParamValue::Bool(false)));
+        assert!(s.log.iter().any(|l| l.text.contains("Run now started")));
+        // Saved on by hand: the file opens with it off.
+        s.graph.nodes.get_mut(&solve).unwrap().params.set("run", ParamValue::Bool(true));
+        let text = s.to_vrn().unwrap();
+        assert!(!text.contains("\"run\": true"), "{text}");
+        let mut t = state();
+        let text = text.replace("\"run\": false", "\"run\": true");
+        // Defaults only: nothing chosen by the file, so it is trusted.
+        t.load_vrn(&text).unwrap();
+        assert!(t.trusted);
+        let id = t.graph.find(s.name(solve)).unwrap();
+        assert_eq!(t.graph.nodes[&id].params.get("run"), Some(&ParamValue::Bool(false)));
+        // The file names where the programs live: not trusted, so Run is refused.
+        t.load_vrn(&text.replace("\"bin_dir\": \"\"", "\"bin_dir\": \"C:/elsewhere/bin\"")).unwrap();
+        assert!(!t.trusted && t.trust_prompt);
+        assert!(t.trust_findings().iter().any(|l| l.contains("C:/elsewhere/bin")), "{:?}", t.trust_findings());
+        t.set_param(id, "run", ParamValue::Bool(true), 0.0);
+        t.cook_all();
+        assert!(t.log.last().is_some_and(|l| l.error && l.text.contains("not trusted")));
+        assert_eq!(t.graph.nodes[&id].params.get("run"), Some(&ParamValue::Bool(false)));
+    }
+
+    #[test]
+    fn save_is_atomic_and_autosave_leaves_the_scene_alone() {
+        let dir = std::env::temp_dir().join(format!("vernon-atomic-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("kit.vrn");
+        let mut s = state();
+        s.create("geo.box").unwrap();
+        s.save(&path).unwrap();
+        let saved = std::fs::read_to_string(&path).unwrap();
+        // no temporary file is left behind
+        let names: Vec<String> = std::fs::read_dir(&dir).unwrap().flatten().filter(|e| e.path().is_file()).map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+        assert_eq!(names, vec!["kit.vrn".to_string()]);
+        // an autosave of later edits goes next to the scene, not into it
+        s.create("geo.box").unwrap();
+        assert!(s.dirty);
+        let auto = s.autosave().unwrap();
+        assert_eq!(auto, dir.join("kit.vrn.autosave"));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), saved);
+        assert!(s.dirty && s.path.as_deref() == Some(path.as_path()));
+        // saving replaces the file in place and clears the recovery copy
+        s.save(&path).unwrap();
+        assert!(!auto.exists());
+        assert_ne!(std::fs::read_to_string(&path).unwrap(), saved);
+        // a failed write keeps the old file and reports the path
+        assert!(write_atomic(&dir.join("missing").join("x.vrn"), b"x").is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn untrusted_scene_holds_writes_until_trusted() {
+        let out = std::env::temp_dir().join(format!("vernon-trust-{}.stl", std::process::id()));
+        let _ = std::fs::remove_file(&out);
+        let path = serde_json::to_string(&out.display().to_string()).unwrap();
+        let text = format!(
+            r#"{{ "nodes": {{
+                "0": {{ "type_id": "geo.box", "name": "b" }},
+                "1": {{ "type_id": "geo.file_write", "name": "w", "inputs": [[0, 0]], "params": {{ "path": {path} }} }} }} }}"#
+        );
+        let mut s = state();
+        s.load_vrn(&text).unwrap();
+        assert!(!s.trusted && s.trust_prompt);
+        assert!(s.trust_findings().iter().any(|l| l.contains("vernon-trust-")), "{:?}", s.trust_findings());
+        s.cook_all();
+        assert!(s.error_of(1).is_some_and(|e| e.contains("trust")), "{:?}", s.error_of(1));
+        assert!(s.error_of(0).is_none());
+        assert!(!out.exists());
+        s.trust_scene();
+        s.cook_all();
+        assert!(s.error_of(1).is_none(), "{:?}", s.error_of(1));
+        assert!(out.exists());
+        let _ = std::fs::remove_file(&out);
+    }
+
+    #[test]
+    fn work_root_is_per_scene_and_follows_the_file() {
+        let a = state();
+        let b = state();
+        let ra = a.graph.work_root.clone().unwrap();
+        assert_ne!(Some(ra.clone()), b.graph.work_root);
+        assert!(ra.starts_with(std::env::temp_dir()));
+        let dir = std::env::temp_dir().join(format!("vernon-scene-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("panel.vrn");
+        let mut s = state();
+        s.create("geo.box").unwrap();
+        s.save(&file).unwrap();
+        assert_eq!(s.graph.work_root, Some(dir.join("panel.vrn.work")));
+        let mut t = state();
+        t.open(&file).unwrap();
+        assert_eq!(t.graph.work_root, Some(dir.join("panel.vrn.work")));
+        assert!(t.trusted, "a scene with nothing to start or write is trusted");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

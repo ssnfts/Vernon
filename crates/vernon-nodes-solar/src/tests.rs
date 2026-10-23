@@ -1307,6 +1307,34 @@ fn hdt_verdicts_match_the_goldens() {
     assert_eq!(geo(&out[0]).prim_attribs.ints("hdt_verdict").unwrap()[0], 0);
     assert!((m(&rep(&out[1]), "min_margin_k") - 15.3).abs() < 1e-9);
     assert_eq!(builtin_materials().len(), 8);
+    // the printable rows are the shared table the print and structural stages read
+    for s in &vernon_core::materials::PRINT_MATERIALS {
+        let row = builtin_materials().into_iter().find(|r| r.name == s.name).unwrap();
+        assert_eq!(row.hdt_eff(false, false), Some(s.hdt(false)), "{}", s.name);
+        assert_eq!(row.hdt_eff(true, false), Some(s.hdt(true)), "{}", s.name);
+    }
+    // the structural-stage material report names it hdt_045_c: still used
+    let mut fea = Report::new("material");
+    fea.metric("hdt_045_c", vernon_core::Metric::new(101.5, "degC"));
+    let out = cook(
+        "solar.hdt_check",
+        &[Some(with_temp(50.0)), None, Some(Data::report(fea))],
+        &[("material", s("ASA"))],
+    )
+    .unwrap();
+    let r = rep(&out[1]);
+    assert_eq!(m(&r, "hdt_c"), 101.5);
+    assert!(r.notes.iter().any(|(_, t)| t.contains("(hdt_045_c)")));
+    // a connected report without any heat-deflection metric is flagged
+    let out = cook(
+        "solar.hdt_check",
+        &[Some(with_temp(50.0)), None, Some(Data::report(Report::new("empty")))],
+        &[("material", s("ASA"))],
+    )
+    .unwrap();
+    let r = rep(&out[1]);
+    assert_eq!(m(&r, "hdt_c"), 100.0);
+    assert!(r.notes.iter().any(|(sev, t)| *sev == vernon_core::Severity::Warning && t.contains("no heat-deflection metric")));
 }
 
 #[test]

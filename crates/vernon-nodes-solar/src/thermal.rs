@@ -3,7 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use vernon_core::{AttribArray, Geometry, Metric, Report, Severity};
+use vernon_core::{keys, AttribArray, Geometry, Metric, Report, Severity};
 use vernon_graph::node::inputs;
 use vernon_graph::{
     CookContext, CookError, CookResult, Data, DataKind, NodeOp, NodeTypeInfo, ParamSpec, Params,
@@ -143,55 +143,29 @@ fn mat(
     }
 }
 
-/// Datasheet heat-deflection figures at 0.45 MPa from the project report.
+/// Heat-deflection figures at 0.45 MPa: the printable materials come from the
+/// shared table (`vernon_core::materials`, also read by the print and
+/// structural stages); two report-only rows follow.
 pub fn builtin_materials() -> Vec<Material> {
-    vec![
-        mat(
-            "PLA",
-            Some(57.0),
-            None,
-            None,
-            None,
-            None,
-            "below every dark or mid-grey panel temperature",
-        ),
-        mat(
-            "PETG",
-            Some(69.0),
-            None,
-            None,
-            None,
-            None,
-            "69 to 72 degC; the low end is used",
-        ),
-        mat(
-            "ASA",
-            Some(100.0),
-            None,
-            None,
-            None,
-            None,
-            "100 to 103 degC; the low end is used; marginal on black",
-        ),
-        mat("PET-CF", Some(205.0), None, None, None, Some(0.37), ""),
-        mat(
-            "PAHT-CF",
-            Some(194.0),
-            Some(84.8),
-            Some(190.7),
-            None,
-            None,
-            "value is conditional on a post-print anneal",
-        ),
-        mat(
-            "PPA-CF",
-            Some(227.0),
-            None,
-            None,
-            None,
-            None,
-            "196 degC at 1.8 MPa",
-        ),
+    let mut rows: Vec<Material> = vernon_core::materials::PRINT_MATERIALS
+        .iter()
+        .map(|m| {
+            let mut note = m.hdt_basis.to_string();
+            if let Some(w) = m.water_abs_pct {
+                note += &format!("; water uptake {w}% ({})", m.water_source.label());
+            }
+            mat(
+                m.name,
+                Some(m.hdt_vendor_c.unwrap_or(m.hdt_045_c)),
+                m.hdt_045_annealed_c.map(|_| m.hdt_045_c),
+                m.hdt_045_annealed_c,
+                None,
+                m.water_abs_pct,
+                &note,
+            )
+        })
+        .collect();
+    rows.extend([
         mat(
             "PA6-CF",
             None,
@@ -210,7 +184,8 @@ pub fn builtin_materials() -> Vec<Material> {
             None,
             "measured glass transition of a failed part; test the real spool",
         ),
-    ]
+    ]);
+    rows
 }
 
 impl Material {
@@ -586,8 +561,10 @@ impl NodeOp for HdtCheckNode {
             Some(v) => materials_from_json(&v).map_err(|e| ctx.fail(e))?,
             None => builtin_materials(),
         };
-        let override_hdt =
-            inputs::opt_report(ins, 2).and_then(|r| r.metrics.get("hdt_c").map(|m| m.value));
+        // Material nodes of other stages name it hdt_045_c / hdt_18_c.
+        let material_report = inputs::opt_report(ins, 2);
+        let found = material_report.as_ref().and_then(|r| r.first_metric(&keys::HDT_ALIASES));
+        let override_hdt = found.map(|(_, v)| v);
         let annealed = p.bool("annealed")?;
         let use_tg = p.bool("use_tg_cap")?;
         let warn = p.float("margin_warn_k")?;
@@ -658,14 +635,23 @@ impl NodeOp for HdtCheckNode {
             "max_temp_c",
             Metric::new(temps.iter().cloned().fold(f64::MIN, f64::max), "degC"),
         );
-        if let Some(h) = override_hdt {
-            r.metric("hdt_c", Metric::new(h, "degC"));
+        if let Some((key, h)) = found {
+            r.metric(keys::HDT_C, Metric::new(h, "degC"));
             r.note(
                 Severity::Info,
-                "heat-deflection temperature taken from the connected material report",
+                format!("heat-deflection temperature taken from the connected material report ({key})"),
             );
         } else if let Some(&h) = hdt_used.iter().find(|h| **h != 0.0) {
-            r.metric("hdt_c", Metric::new(h, "degC"));
+            r.metric(keys::HDT_C, Metric::new(h, "degC"));
+        }
+        if material_report.is_some() && found.is_none() {
+            r.note(
+                Severity::Warning,
+                format!(
+                    "the connected material report has no heat-deflection metric ({}); the material table was used",
+                    keys::HDT_ALIASES.join(", ")
+                ),
+            );
         }
         if min_margin < 0.0 {
             r.note(

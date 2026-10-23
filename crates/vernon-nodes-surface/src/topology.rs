@@ -31,7 +31,7 @@ pub fn weld(geo: &Geometry, tol: f64) -> Welded {
         'search: for dx in -1..=1 {
             for dy in -1..=1 {
                 for dz in -1..=1 {
-                    if let Some(v) = grid.get(&(cx + dx, cy + dy, cz + dz)) {
+                    if let Some(v) = grid.get(&(cx.wrapping_add(dx), cy.wrapping_add(dy), cz.wrapping_add(dz))) {
                         for &i in v {
                             if (points[i as usize] - p).length() <= tol {
                                 found = Some(i);

@@ -56,7 +56,7 @@ pub fn fuse_points(geo: &Geometry, tol: f64, average: bool, remove_degenerate: b
             for dx in -1..=1 {
                 for dy in -1..=1 {
                     for dz in -1..=1 {
-                        if let Some(list) = grid.get(&(cx + dx, cy + dy, cz + dz)) {
+                        if let Some(list) = grid.get(&(cx.wrapping_add(dx), cy.wrapping_add(dy), cz.wrapping_add(dz))) {
                             for &j in list {
                                 if geo.points[j as usize].distance_squared(p) <= tol2 {
                                     let (ri, rj) = (find(&mut parent, i as u32), find(&mut parent, j));
@@ -589,14 +589,28 @@ impl NodeOp for SubdivideNode {
             .implemented()
     }
 
-    fn cook(&self, _: &CookContext, ins: &[Option<Data>], params: &Params) -> CookResult<Vec<Data>> {
+    fn cook(&self, ctx: &CookContext, ins: &[Option<Data>], params: &Params) -> CookResult<Vec<Data>> {
         let g = inputs::geometry(ins, 0)?;
         let iters = int_clamped(params, "iterations", 0, 8)?;
         let tq = params.bool("tris_to_quads")?;
+        // Every pass splits a face into at most four: refuse before
+        // spending minutes and gigabytes on a result nobody can use.
+        let faces = g.prims.len() as f64 * 4f64.powi(iters as i32);
+        if faces > MAX_SUBDIVIDED_FACES {
+            return Err(ctx.fail(format!(
+                "{iters} passes would make about {faces:.0} faces (limit {MAX_SUBDIVIDED_FACES:.0}); use fewer passes"
+            )));
+        }
         let mut out = (*g).clone();
         for _ in 0..iters {
+            if vernon_core::process::cancel_requested() {
+                return Err(ctx.fail("cancelled"));
+            }
             out = subdivide_linear(&out, tq);
         }
         Ok(vec![Data::geometry(out)])
     }
 }
+
+/// Most faces `geo.subdivide` may produce (about 4^passes times the input).
+pub const MAX_SUBDIVIDED_FACES: f64 = 4_000_000.0;

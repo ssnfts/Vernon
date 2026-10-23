@@ -330,6 +330,10 @@ fn split_faces(points: &[DVec3], faces: &[Vec<u32>], n: usize) -> (Vec<DVec3>, V
     (pts, out)
 }
 
+/// Most quads `surface.quad_remesh` makes; beyond it a cook would run for
+/// minutes on the cook thread.
+pub const MAX_QUADS: f64 = 2_000_000.0;
+
 /// `surface.quad_remesh`
 pub struct QuadRemeshNode;
 
@@ -371,6 +375,9 @@ impl NodeOp for QuadRemeshNode {
         } else {
             params.int("target_quads")?.max(1) as f64
         };
+        if target > MAX_QUADS {
+            return Err(ctx.fail(format!("about {target:.0} quads asked for (limit {MAX_QUADS:.0}); lower the count or raise the edge length")));
+        }
         let hard_cos = if params.bool("detect_hard_edges")? { params.float("hard_edge_angle_deg")?.to_radians().cos() } else { -1.0 };
         let tris: Vec<[u32; 3]> = w.faces.iter().flat_map(|f| crate::util::triangulate_ring(&w.points, f)).collect();
         let (paired, left) = pair_triangles(&w.points, &tris, hard_cos);
@@ -522,5 +529,16 @@ mod tests {
         let creases = g.prims.iter().filter(|p| !p.closed).count();
         assert_eq!(creases, 12 * 4, "12 cube edges, 4 segments each");
         assert!(cook("surface.quad_remesh", &[some(&Geometry::new()), None], &[]).is_err());
+    }
+
+    #[test]
+    fn runaway_quad_counts_are_refused() {
+        let cube = triangulated(&Geometry::make_box(DVec3::splat(100.0)));
+        let t0 = std::time::Instant::now();
+        let err = cook("surface.quad_remesh", &[some(&cube), None], &[("target_quads", i(5_000_000))]).unwrap_err().to_string();
+        assert!(err.contains("limit"), "{err}");
+        let err = cook("surface.quad_remesh", &[some(&cube), None], &[("size_mode", s("edge")), ("target_edge", f(0.01))]).unwrap_err().to_string();
+        assert!(err.contains("limit"), "{err}");
+        assert!(t0.elapsed().as_secs() < 5);
     }
 }

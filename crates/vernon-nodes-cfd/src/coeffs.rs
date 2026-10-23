@@ -340,8 +340,10 @@ pub fn coefficient_from_force(force_n: f64, q_pa: f64, aref_m2: f64) -> f64 {
 }
 
 /// Split the vertical force over the axles from the pitch moment about
-/// `x_c`: `Ff + Fr = Fz` and `Ff (xf - xc) + Fr (xr - xc) = -My`
-/// (`My = -sum x_i F_i`). `None` when the axles coincide.
+/// `x_c` of the VERTICAL forces alone: `Ff + Fr = Fz` and
+/// `Ff (xf - xc) + Fr (xr - xc) = -My` (`My = -sum (x_i - xc) Fz_i`).
+/// A solver moment also holds the drag term; remove it first with
+/// [`vertical_pitch_moment`]. `None` when the axles coincide.
 pub fn axle_split(fz: f64, my: f64, x_c: f64, x_f: f64, x_r: f64) -> Option<(f64, f64)> {
     let det = x_f - x_r;
     if det.abs() < 1e-9 {
@@ -349,6 +351,14 @@ pub fn axle_split(fz: f64, my: f64, x_c: f64, x_f: f64, x_r: f64) -> Option<(f64
     }
     let ff = (-my - fz * (x_r - x_c)) / det;
     Some((ff, fz - ff))
+}
+
+/// Pitch moment of the vertical forces alone. The solver's `My` about the
+/// centre of rotation `(xc, ., zc)` is `sum (z_i - zc) Fx_i - sum (x_i - xc) Fz_i`
+/// (the y part of r x F); with the drag acting along a line at height
+/// `z_drag` the first sum is `(z_drag - zc) Fx`.
+pub fn vertical_pitch_moment(my: f64, fx: f64, z_drag: f64, z_c: f64) -> f64 {
+    my - (z_drag - z_c) * fx
 }
 
 /// Front share of the vertical load in percent; `None` when the axle forces
@@ -393,6 +403,11 @@ pub struct ForceResult {
     pub window: usize,
     pub samples: usize,
     pub last_iter: f64,
+    /// Mesh, ground/wheel, yaw and turbulence settings of the run, when known.
+    pub recipe: Option<crate::types::Recipe>,
+    /// Grid-convergence index of this (fine-grid) result in percent, set by
+    /// the mesh study.
+    pub mesh_gci_pct: Option<f64>,
 }
 
 impl ForceResult {
@@ -435,6 +450,10 @@ pub struct ForceSpec<'a> {
     pub u_param: f64,
     /// Centre of rotation override for the axle split.
     pub cofr_x: Option<f64>,
+    /// Height (solver frame, m) of the drag's line of action, whose pitch
+    /// moment is removed before the axle split. `None`: mid-height of the
+    /// vehicle reference (lowest point + height / 2).
+    pub drag_z: Option<f64>,
 }
 
 /// Result plus the notes the node should show.
@@ -535,10 +554,20 @@ pub fn compute_forces(series: &Series, s: &ForceSpec) -> Result<Computed, String
 
     // axle split
     let x_c = s.cofr_x.or_else(|| series.meta.get("CofR_x").copied()).unwrap_or_else(|| s.rf.mid_wheelbase_x());
-    if let (Some(fz), Some(my)) = (series.col("Fz"), series.col("My")) {
+    let z_c = series.meta.get("CofR_z").copied().unwrap_or(0.0);
+    let z_drag = s.drag_z.or_else(|| (s.rf.height_m > 0.0).then_some(s.rf.z_min_m + 0.5 * s.rf.height_m));
+    if let (Some(fz), Some(my), Some(fx)) = (series.col("Fz"), series.col("My"), series.col("Fx")) {
+        match z_drag {
+            Some(z) => notes.push((
+                Severity::Info,
+                format!("drag pitch moment removed with the drag acting at z = {z:.3} m (centre of rotation z = {z_c:.3} m); the balance is the split of the vertical aero force"),
+            )),
+            None => notes.push((Severity::Warning, "vehicle height unknown: the axle split still holds the drag's pitch moment".into())),
+        }
         let (mut ff_v, mut fr_v, mut bal_v) = (Vec::new(), Vec::new(), Vec::new());
-        for (fz_i, my_i) in tail(fz, w).iter().zip(tail(my, w)) {
-            if let Some((ff, fr)) = axle_split(scale * fz_i, scale * my_i, x_c, s.rf.x_front_axle_m, s.rf.x_rear_axle_m) {
+        for ((fz_i, my_i), fx_i) in tail(fz, w).iter().zip(tail(my, w)).zip(tail(fx, w)) {
+            let my_v = z_drag.map_or(*my_i, |z| vertical_pitch_moment(*my_i, *fx_i, z, z_c));
+            if let Some((ff, fr)) = axle_split(scale * fz_i, scale * my_v, x_c, s.rf.x_front_axle_m, s.rf.x_rear_axle_m) {
                 ff_v.push(ff);
                 fr_v.push(fr);
                 if let Some(b) = balance_front_pct(ff, fr) {
@@ -560,7 +589,7 @@ pub fn compute_forces(series: &Series, s: &ForceSpec) -> Result<Computed, String
     } else if let (Some(f), Some(r)) = (series.col("Cl(f)"), series.col("Cl(r)")) {
         if let (Some(fs), Some(rs)) = (window_stats(tail(f, w)), window_stats(tail(r, w))) {
             res.balance_front_pct = balance_front_pct(fs.mean, rs.mean);
-            notes.push((Severity::Info, "axle split taken from the solver's front/rear lift coefficients".into()));
+            notes.push((Severity::Info, "axle split taken from the solver's front/rear lift coefficients (these hold the drag's pitch moment about the centre of rotation)".into()));
         }
     }
     Ok(Computed { result: res, notes, aref_mismatch_pct })
@@ -594,6 +623,8 @@ fn force_info() -> NodeTypeInfo {
         .param(ParamSpec::float("u_ms", "Speed of the run", 30.0, 10.0, 100.0).unit("m/s").help("Overridden by a wired air state; otherwise the speed recorded in the history is used"))
         .param(ParamSpec::bool("custom_cofr", "Custom centre of rotation", false).help("Off: the centre of rotation recorded by the solver, else mid-wheelbase"))
         .param(ParamSpec::float("cofr_x_m", "Centre of rotation x", 0.0, -10.0, 20.0).unit("m"))
+        .param(ParamSpec::bool("custom_drag_height", "Custom drag height", false).help("Off: the drag acts at mid-height of the vehicle (lowest point + height / 2)"))
+        .param(ParamSpec::float("drag_height_m", "Drag line height", 0.45, -1.0, 5.0).unit("m").help("Height of the drag's line of action in the solver frame; its pitch moment is removed before the axle split"))
         .help("Drag and lift coefficients, CdA and ClA, front/rear axle split and aero balance with their iteration spread, from the solver's force histories. Checks the reference area so a half-car run can never be normalised by the full area.")
         .emulates("automotive wind-tunnel service: drag and lift coefficients")
         .emulates("cloud CFD service: force post-processing")
@@ -645,9 +676,11 @@ fn force_cook(ctx: &CookContext, ins: &[Option<Data>], p: &Params) -> CookResult
         u_wire: air.u,
         u_param: p.float("u_ms")?,
         cofr_x: p.bool("custom_cofr")?.then(|| p.float("cofr_x_m")).transpose()?,
+        drag_z: p.bool("custom_drag_height")?.then(|| p.float("drag_height_m")).transpose()?,
     };
     match compute_forces(&series, &spec) {
-        Ok(c) => {
+        Ok(mut c) => {
+            c.result.recipe = series.recipe.clone();
             fin(ctx, "CdA", c.result.cda)?;
             fin(ctx, "ClA", c.result.cla)?;
             Ok(vec![Data::json(c.result.to_json()), Data::report(force_report(&c))])
@@ -886,6 +919,31 @@ mod tests {
         let (ff, fr) = axle_split(-856.5, 0.0, 0.0, 1.35, -1.35).unwrap();
         assert!((ff + 428.2).abs() < 0.1 && (fr + 428.2).abs() < 0.1);
         assert!(axle_split(-1.0, 0.0, 0.0, 1.0, 1.0).is_none());
+        // Golden with drag: the toolchain example (rho 1.11, 200 km/h,
+        // CdA 0.64 -> Fx = 1096 N) acting 0.45 m above a ground-level
+        // centre of rotation adds 493 N m to the solver's pitch moment.
+        let fx = 0.5 * 1.11 * (200.0f64 / 3.6).powi(2) * 0.64;
+        assert!((fx - 1096.3).abs() < 0.2, "{fx}");
+        let my_solver = 193.7 + 0.45 * fx;
+        let (ff, fr) = axle_split(-856.5, vertical_pitch_moment(my_solver, fx, 0.45, 0.0), 0.0, 1.35, -1.35).unwrap();
+        assert!((balance_front_pct(ff, fr).unwrap() - 58.4).abs() < 0.1);
+        // Without the correction the balance reads about 80 % front.
+        let (ff, fr) = axle_split(-856.5, my_solver, 0.0, 1.35, -1.35).unwrap();
+        assert!(balance_front_pct(ff, fr).unwrap() > 75.0);
+        // The same through compute_forces (full car, CofR z = 0).
+        let mut rf = RefGeom::reference_car();
+        rf.x_front_axle_m = 1.35;
+        rf.x_rear_axle_m = -1.35;
+        let mut s = Series { time: (1..=10).map(f64::from).collect(), ..Series::default() };
+        s.columns.insert("Fx".into(), vec![fx; 10]);
+        s.columns.insert("Fz".into(), vec![-856.5; 10]);
+        s.columns.insert("My".into(), vec![my_solver; 10]);
+        s.meta.insert("CofR_x".into(), 0.0);
+        s.meta.insert("CofR_z".into(), 0.0);
+        let spec = ForceSpec { rf: &rf, half_model: false, window: 10, rho: 1.11, u_wire: Some(200.0 / 3.6), u_param: 30.0, cofr_x: None, drag_z: Some(0.45) };
+        let c = compute_forces(&s, &spec).unwrap().result;
+        assert!((c.balance_front_pct.unwrap() - 58.4).abs() < 0.1, "{:?}", c.balance_front_pct);
+        assert!((c.front_force_n.unwrap() + 500.0).abs() < 0.3);
         assert!(balance_front_pct(-100.0, 20.0).is_none());
     }
 
@@ -901,7 +959,7 @@ mod tests {
         s.columns.insert("Cd".into(), vec![0.160; 3]);
         s.columns.insert("Cl".into(), vec![-0.1; 3]);
         s.meta.insert("Aref".into(), 2.0);
-        let spec = ForceSpec { rf: &rf, half_model: true, window: 100, rho: 1.225, u_wire: None, u_param: 30.0, cofr_x: None };
+        let spec = ForceSpec { rf: &rf, half_model: true, window: 100, rho: 1.225, u_wire: None, u_param: 30.0, cofr_x: None, drag_z: None };
         let c = compute_forces(&s, &spec).unwrap();
         assert!((c.aref_mismatch_pct - 100.0).abs() < 1e-9);
         assert!(c.notes.iter().any(|(sev, _)| *sev == Severity::Error));
@@ -930,10 +988,14 @@ mod tests {
         rf.x_rear_axle_m = -1.35;
         rf.a_front_m2 = 2.0;
         // half-model forces; q = 1713 Pa
-        let mut s = force_series(300, 548.0, -428.25, 96.85);
+        // solver moment = vertical part + drag at 0.45 m about a ground-level CofR
+        let mut s = force_series(300, 548.0, -428.25, 0.0);
+        let my: Vec<f64> = s.columns["Fx"].iter().map(|fx| 96.85 + 0.45 * fx).collect();
+        s.columns.insert("My".into(), my);
         s.meta.insert("CofR_x".into(), 0.0);
+        s.meta.insert("CofR_z".into(), 0.0);
         let q = 0.5 * 1.11 * (200.0f64 / 3.6).powi(2);
-        let spec = ForceSpec { rf: &rf, half_model: true, window: 100, rho: 1.11, u_wire: Some(200.0 / 3.6), u_param: 30.0, cofr_x: None };
+        let spec = ForceSpec { rf: &rf, half_model: true, window: 100, rho: 1.11, u_wire: Some(200.0 / 3.6), u_param: 30.0, cofr_x: None, drag_z: Some(0.45) };
         let c = compute_forces(&s, &spec).unwrap().result;
         assert!((c.q_pa - q).abs() < 1e-9);
         assert!((c.cd - 2.0 * 548.0 / (q * 2.0)).abs() < 1e-3, "{}", c.cd);

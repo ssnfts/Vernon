@@ -55,6 +55,26 @@ fn bodykit_pipeline_cooks_every_node_and_every_stage_reports() {
     assert!(metric("bed_fit", "fail_count") == 0.0);
     assert!(metric("top_speed", "v_max") > 100.0);
 
+    // One air state flows through: the airflow stage's density reaches the
+    // performance nodes, and the structural aero load uses the very same
+    // design dynamic pressure and downforce the performance table reports.
+    let rho = metric("air", "rho");
+    assert!((rho - 1.225).abs() < 0.01, "{rho}");
+    assert_eq!(metric("aero_loads", "rho"), rho);
+    assert_eq!(metric("top_speed", "rho"), rho);
+    let q = metric("aero_loads", "design_q");
+    assert!((q - 0.5 * rho * (200.0f64 / 3.6).powi(2)).abs() < 1e-6, "{q}");
+    assert_eq!(metric("aero_load", "dynamic_pressure_pa"), q);
+    let down = metric("aero_loads", "downforce_design");
+    assert!((metric("aero_load", "force_requested_n") - down).abs() < 1e-9 * down.max(1.0));
+
+    // Every gate passes except the two the example marks as expected.
+    let gates = vernon_cli::gate_failures(&outcomes, &graph);
+    let open: Vec<_> = gates.iter().filter(|g| g.expected.is_none()).collect();
+    assert!(open.is_empty(), "unexpected gate failures: {open:#?}");
+    let expected: BTreeSet<_> = gates.iter().map(|g| (g.node.as_str(), g.metric.as_deref().unwrap_or(""))).collect();
+    assert_eq!(expected, BTreeSet::from([("vehicle_prep", "wheels_found"), ("tet_mesh", "placeholder")]));
+
     // File hand-offs exist on disk.
     for node in ["package_3mf", "cfd_case", "fea_deck"] {
         let o = outcomes.iter().find(|o| o.name == node).unwrap();
@@ -131,4 +151,41 @@ fn cli_binary_lists_and_cooks() {
         .output()
         .unwrap();
     assert!(!bad.status.success());
+}
+
+/// A failing report limit gives a non-zero exit code unless the scene
+/// marks it as expected (or `--ignore-gates` is given).
+#[test]
+fn cli_exit_code_follows_the_gates() {
+    let exe = env!("CARGO_BIN_EXE_vernon-cli");
+    let dir = std::env::temp_dir().join(format!("vernon-cli-gates-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let scene = |expect: &str| {
+        format!(
+            r#"{{ "nodes": {{
+                "0": {{ "type_id": "geo.car_panel", "name": "panel" }},
+                "1": {{ "type_id": "cfd.vehicle_prep", "name": "prep", "inputs": [[0, 0], null, null]{expect} }} }} }}"#
+        )
+    };
+    let run = |text: String, extra: &[&str]| {
+        let vrn = dir.join("gates.vrn");
+        std::fs::write(&vrn, text).unwrap();
+        let out = std::process::Command::new(exe)
+            .arg("cook")
+            .arg(&vrn)
+            .arg("--work")
+            .arg(dir.join("work"))
+            .args(extra)
+            .output()
+            .unwrap();
+        (out.status.code(), String::from_utf8_lossy(&out.stdout).into_owned())
+    };
+    let (code, text) = run(scene(""), &[]);
+    assert_eq!(code, Some(3), "{text}");
+    assert!(text.contains("gates: 1 failing, 0 expected") && text.contains("[FAIL] prep / wheels_found"), "{text}");
+    assert_eq!(run(scene(""), &["--ignore-gates"]).0, Some(0));
+    let (code, text) = run(scene(r#", "expect_fail": { "wheels_found": "panel only" }"#), &[]);
+    assert_eq!(code, Some(0), "{text}");
+    assert!(text.contains("[expected] prep / wheels_found") && text.contains("panel only"), "{text}");
+    let _ = std::fs::remove_dir_all(&dir);
 }

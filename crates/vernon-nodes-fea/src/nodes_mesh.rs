@@ -114,7 +114,7 @@ impl NodeOp for TetMesh {
             .param(ParamSpec::int("order", "Element order", 2, 1, 2).help("2 adds mid-edge nodes (quadratic tetrahedra)"))
             .param(ParamSpec::float("min_dihedral_deg", "Minimum dihedral", 5.0, 0.0, 60.0).unit("deg").help("Quality gate on the smallest dihedral angle"))
             .param(ParamSpec::int("max_cells", "Maximum cells", 400000, 1000, 5000000).help("Cap on the voxel cell count of the built-in mesher"))
-            .param(ParamSpec::bool("run", "Run external mesher", false).help("Run the executable below on the written surface file and read its mesh"))
+            .param(ParamSpec::bool("run", "Run external mesher", false).help("Run the executable below once on the written surface file and read its mesh; switches itself off again").action())
             .param(ParamSpec::path("exe_path", "Mesher executable", &["exe", ""], false).help("Empty searches the program path"))
             .param(ParamSpec::float("timeout_s", "Timeout", 600.0, 1.0, 86400.0).unit("s"))
             .help("Tetrahedral mesh of a closed triangle surface. The built-in mesher fills the surface with stair-stepped voxel tetrahedra (not conformal); an external open-source mesher can be run instead on the written surface file.")

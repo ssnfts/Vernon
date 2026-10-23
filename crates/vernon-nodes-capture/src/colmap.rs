@@ -2,18 +2,20 @@
 //! builders kept in one table, option names resolved against the program's
 //! own help text (they drift between releases), workspace handling that
 //! never deletes more than the one database file it owns, run-time and
-//! pair-count estimates, and a runner that streams both output pipes into a
-//! log file and kills the child if the node is dropped.
+//! pair-count estimates, and a runner (the shared one of `vernon_core::process`)
+//! that writes the output to a log file and kills the whole process tree at
+//! the time limit or when the cook is cancelled.
 //!
 //! Nothing here needs the program to be installed: every node writes the
 //! command lines it would run to `commands.txt` and returns a report that
 //! says plainly whether anything was run.
 
-use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 use glam::DVec3;
+use vernon_core::process::{self, Exit, RunOptions};
 use vernon_core::{Geometry, Metric, Report, Severity};
 use vernon_graph::node::inputs;
 use vernon_graph::{
@@ -357,17 +359,19 @@ pub fn find_executable(explicit: &str) -> Option<PathBuf> {
     which("colmap")
 }
 
-/// Help text of a sub-command (`exe sub -h`), both pipes joined.
+/// Help text of a sub-command (`exe sub -h`), both streams joined. The
+/// program runs through the shared runner and is stopped after 30 s.
 pub fn help_text(exe: &Path, sub: &str) -> Option<String> {
-    let out = Command::new(exe)
-        .args([sub, "-h"])
-        .stdin(Stdio::null())
-        .output()
-        .ok()?;
-    let mut s = String::from_utf8_lossy(&out.stdout).into_owned();
-    s.push_str(&String::from_utf8_lossy(&out.stderr));
-    Some(s)
+    let log = std::env::temp_dir().join(format!("vernon-colmap-help-{}-{}.log", std::process::id(), RUNS.fetch_add(1, Ordering::Relaxed)));
+    let opts = RunOptions::with_timeout(Duration::from_secs(30));
+    let run = process::run_program(exe, &[sub.to_string(), "-h".to_string()], &std::env::temp_dir(), &log, &opts);
+    let text = std::fs::read(&log).map(|b| String::from_utf8_lossy(&b).into_owned());
+    let _ = std::fs::remove_file(&log);
+    run.ok()?;
+    text.ok()
 }
+
+static RUNS: AtomicU64 = AtomicU64::new(0);
 
 /// Outcome of one run.
 #[derive(Debug, Clone)]
@@ -378,69 +382,41 @@ pub struct RunOutput {
     pub tail: String,
 }
 
-struct KillOnDrop(Option<Child>);
-
-impl Drop for KillOnDrop {
-    fn drop(&mut self) {
-        if let Some(c) = self.0.as_mut() {
-            let _ = c.kill();
-            let _ = c.wait();
-        }
-    }
-}
-
-fn read_lines(r: impl std::io::Read + Send + 'static) -> std::thread::JoinHandle<Vec<String>> {
-    std::thread::spawn(move || {
-        let mut rd = BufReader::new(r);
-        let mut out = Vec::new();
-        let mut buf = Vec::new();
-        while let Ok(n) = rd.read_until(b'\n', &mut buf) {
-            if n == 0 {
-                break;
-            }
-            out.push(String::from_utf8_lossy(&buf).trim_end().to_string());
-            buf.clear();
-        }
-        out
-    })
-}
-
-/// Run a program, reading stdout and stderr on separate threads and
-/// appending a transcript to `log`.
-pub fn run_tool(exe: &Path, args: &[String], cwd: &Path, log: &Path) -> Result<RunOutput, String> {
-    let child = Command::new(exe)
-        .args(args)
-        .current_dir(cwd)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("cannot start {}: {e}", exe.display()))?;
-    let mut guard = KillOnDrop(Some(child));
-    let child = guard.0.as_mut().ok_or("child vanished")?;
-    let out_t = child.stdout.take().map(read_lines);
-    let err_t = child.stderr.take().map(read_lines);
-    let status = child.wait().map_err(|e| format!("waiting for {}: {e}", exe.display()))?;
-    guard.0 = None;
-    let stdout = out_t.map(|t| t.join().unwrap_or_default()).unwrap_or_default();
-    let stderr = err_t.map(|t| t.join().unwrap_or_default()).unwrap_or_default();
-    let mut text = format!("$ {} {}\n", exe.display(), args.join(" "));
-    text.push_str("--- stdout ---\n");
-    text.push_str(&stdout.join("\n"));
-    text.push_str("\n--- stderr ---\n");
-    text.push_str(&stderr.join("\n"));
-    text.push_str(&format!("\n--- exit: {:?} ---\n\n", status.code()));
+/// Run a program through the shared runner ([`vernon_core::process`]):
+/// a `$ command` line, the combined output and an exit line are appended
+/// to `log`. Once `timeout` has passed, or when the cook is cancelled, the
+/// whole process tree is killed.
+pub fn run_tool(exe: &Path, args: &[String], cwd: &Path, log: &Path, timeout: Duration) -> Result<RunOutput, String> {
     use std::io::Write;
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(log) {
-        let _ = f.write_all(text.as_bytes());
+    let append = |text: &str| {
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(log) {
+            let _ = f.write_all(text.as_bytes());
+        }
+    };
+    if let Some(dir) = log.parent().filter(|d| !d.as_os_str().is_empty()) {
+        let _ = std::fs::create_dir_all(dir);
     }
-    let tail: Vec<&String> = stderr.iter().chain(stdout.iter()).filter(|l| !l.is_empty()).collect();
-    let skip = tail.len().saturating_sub(12);
-    Ok(RunOutput {
-        success: status.success(),
-        code: status.code(),
-        tail: tail[skip..].iter().map(|s| s.as_str()).collect::<Vec<_>>().join("\n"),
-    })
+    append(&format!("$ {} {}\n", exe.display(), args.join(" ")));
+    let start = std::fs::metadata(log).map(|m| m.len() as usize).unwrap_or(0);
+    let opts = RunOptions { timeout: timeout.max(Duration::from_millis(1)), append: true, ..Default::default() };
+    let exit = process::run_program(exe, args, cwd, log, &opts).map_err(|e| format!("cannot start {}: {e}", exe.display()))?;
+    let bytes = std::fs::read(log).unwrap_or_default();
+    let output = String::from_utf8_lossy(&bytes[start.min(bytes.len())..]).into_owned();
+    let code = match exit {
+        Exit::Code(c) => c,
+        Exit::TimedOut => {
+            append("\n--- stopped at the time limit ---\n\n");
+            return Err(format!("{} stopped after the {} min time limit", exe.display(), timeout.as_secs() / 60));
+        }
+        Exit::Cancelled => {
+            append("\n--- stopped: cook cancelled ---\n\n");
+            return Err(format!("{} stopped: the cook was cancelled", exe.display()));
+        }
+    };
+    append(&format!("\n--- exit: {code} ---\n\n"));
+    let lines: Vec<&str> = output.lines().map(str::trim_end).filter(|l| !l.is_empty()).collect();
+    let skip = lines.len().saturating_sub(12);
+    Ok(RunOutput { success: code == 0, code: Some(code), tail: lines[skip..].join("\n") })
 }
 
 /// One planned command.
@@ -467,10 +443,10 @@ pub fn write_commands(path: &Path, exe_name: &str, steps: &[Step]) -> std::io::R
 }
 
 /// Run the steps in order, stopping at the first failure.
-pub fn run_steps(exe: &Path, steps: &[Step], cwd: &Path, log: &Path) -> Result<(), String> {
+pub fn run_steps(exe: &Path, steps: &[Step], cwd: &Path, log: &Path, timeout: std::time::Duration) -> Result<(), String> {
     for s in steps {
         let name = s.args.first().cloned().unwrap_or_default();
-        let out = run_tool(exe, &s.args, cwd, log)?;
+        let out = run_tool(exe, &s.args, cwd, log, timeout)?;
         if !out.success {
             return Err(format!(
                 "'{name}' failed (exit {:?}); see {}. Last output:\n{}",
@@ -494,7 +470,10 @@ pub fn cuda_hint() -> bool {
 
 fn tool_params() -> Vec<ParamSpec> {
     vec![
-        ParamSpec::bool("run", "Run", false).help("Start the program. Off by default: the commands are only written to commands.txt."),
+        ParamSpec::bool("run", "Run", false)
+            .help("Start the program once; it switches itself off again. Off: the commands are only written to commands.txt.")
+            .action(),
+        ParamSpec::int("timeout_min", "Time limit", 240, 1, 100_000).unit("min").help("Each command is stopped after this long."),
         ParamSpec::path("executable", "Executable", &[], false).help("Path to the photogrammetry program. Empty searches the VERNON_PHOTOGRAMMETRY_EXE variable and the system path."),
         ParamSpec::bool("overwrite", "Overwrite database", false).help("Remove this node's own database file before running. Nothing else is ever deleted."),
     ]
@@ -509,6 +488,7 @@ struct Plan<'a> {
     run: bool,
     exe: Option<PathBuf>,
     exe_arg: String,
+    timeout: std::time::Duration,
 }
 
 impl<'a> Plan<'a> {
@@ -520,6 +500,7 @@ impl<'a> Plan<'a> {
             run: params.bool("run")?,
             exe: find_executable(&exe_arg),
             exe_arg,
+            timeout: std::time::Duration::from_secs(params.int("timeout_min")?.max(1) as u64 * 60),
         })
     }
 
@@ -555,7 +536,7 @@ impl<'a> Plan<'a> {
             );
             return Ok(false);
         }
-        run_steps(exe, steps, &self.ctx.work_dir, &self.log()).map_err(|m| self.ctx.fail(m))?;
+        run_steps(exe, steps, &self.ctx.work_dir, &self.log(), self.timeout).map_err(|m| self.ctx.fail(m))?;
         rep.note(Severity::Info, format!("ran {} command(s); transcript in {}", steps.len(), self.log().display()));
         Ok(true)
     }
@@ -1109,20 +1090,21 @@ mod tests {
         let work = scratch("runner");
         let exe = std::env::current_exe().unwrap();
         let log = work.join("run.log");
-        let ok = run_tool(&exe, &["--list".to_string()], &work, &log).unwrap();
+        let hour = std::time::Duration::from_secs(3600);
+        let ok = run_tool(&exe, &["--list".to_string()], &work, &log, hour).unwrap();
         assert!(ok.success, "{ok:?}");
-        let bad = run_tool(&exe, &["--definitely-not-a-flag".to_string()], &work, &log).unwrap();
+        let bad = run_tool(&exe, &["--definitely-not-a-flag".to_string()], &work, &log, hour).unwrap();
         assert!(!bad.success);
         assert!(!bad.tail.is_empty());
         let text = std::fs::read_to_string(&log).unwrap();
-        assert!(text.contains("--- stdout ---") && text.contains("--- stderr ---"));
+        assert!(text.contains("$ ") && text.contains("--- exit: 0 ---") && text.matches("--- exit:").count() == 2, "{text}");
         let steps = [
             Step { args: vec!["--list".into()] },
             Step { args: vec!["--definitely-not-a-flag".into()] },
         ];
-        let err = run_steps(&exe, &steps, &work, &log).unwrap_err();
+        let err = run_steps(&exe, &steps, &work, &log, hour).unwrap_err();
         assert!(err.contains("definitely-not-a-flag") && err.contains("failed"));
-        assert!(run_tool(Path::new("no-such-program-xyz"), &[], &work, &log).is_err());
+        assert!(run_tool(Path::new("no-such-program-xyz"), &[], &work, &log, hour).is_err());
         // Option resolution against a real help text.
         let help = help_text(&exe, "--nocapture").unwrap();
         assert_eq!(resolve_option(Some(&help), &["--no-such-option", "--test-threads"]), "--test-threads");

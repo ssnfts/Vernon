@@ -1,18 +1,21 @@
 //! Running an external solver as a separate process: executable discovery,
 //! log files instead of pipes (no deadlock on chatty solvers) and a deadline.
 
-use std::fs::File;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
+use std::process::Command;
+use std::time::Duration;
+
+use vernon_core::process::{self, Exit, RunOptions};
 
 /// How a run ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RunStatus {
     /// The process exited with this code (-1 when killed by a signal).
     Exited(i32),
-    /// The deadline passed and the process was killed.
+    /// The deadline passed and the process tree was killed.
     TimedOut,
+    /// The cook was cancelled and the process tree was killed.
+    Cancelled,
 }
 
 /// A configured path that exists, or the first of `names` found on `PATH`.
@@ -37,41 +40,34 @@ pub fn find_executable(configured: &str, names: &[&str]) -> Option<PathBuf> {
     None
 }
 
-/// Run `exe args` in `cwd`, both output streams going to `log`. Polls until
-/// the process ends or `timeout` passes (then kills it).
+/// Run `exe args` in `cwd` through the shared runner
+/// ([`vernon_core::process`]): both output streams go to `log`, and at the
+/// deadline or when the cook is cancelled the whole process tree is killed.
 pub fn run_with_timeout(exe: &Path, args: &[String], cwd: &Path, log: &Path, timeout: Duration, envs: &[(String, String)]) -> std::io::Result<RunStatus> {
-    let out = File::create(log)?;
-    let err = out.try_clone()?;
     let mut cmd = Command::new(exe);
-    cmd.args(args).current_dir(cwd).stdin(Stdio::null()).stdout(Stdio::from(out)).stderr(Stdio::from(err));
+    cmd.args(args).current_dir(cwd);
     for (k, v) in envs {
         cmd.env(k, v);
     }
-    let mut child = cmd.spawn()?;
-    let start = Instant::now();
-    loop {
-        if let Some(status) = child.try_wait()? {
-            return Ok(RunStatus::Exited(status.code().unwrap_or(-1)));
-        }
-        if start.elapsed() >= timeout {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Ok(RunStatus::TimedOut);
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
+    // A zero timeout would mean "the default"; keep it a real deadline.
+    let opts = RunOptions::with_timeout(timeout.max(Duration::from_millis(1)));
+    Ok(match process::run(&mut cmd, log, &opts)? {
+        Exit::Code(c) => RunStatus::Exited(c),
+        Exit::TimedOut => RunStatus::TimedOut,
+        Exit::Cancelled => RunStatus::Cancelled,
+    })
 }
 
 /// Last `n` lines of a log file (empty when unreadable).
 pub fn tail(log: &Path, n: usize) -> String {
-    let text = std::fs::read_to_string(log).unwrap_or_default();
-    let lines: Vec<&str> = text.lines().collect();
-    lines[lines.len().saturating_sub(n)..].join("\n")
+    process::tail(log, n)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use std::time::Instant;
 
     fn tmp(name: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("vernon_fea_{name}_{}", std::process::id()));

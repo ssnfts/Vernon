@@ -119,7 +119,11 @@ pub fn build_card(params: &Params, table: &HashMap<String, f64>) -> Result<(Mate
     if !custom && !table.contains_key("e_xy") && params.float("e_xy").map_err(|e| e.to_string())? <= 0.0 {
         notes.push(p.note.to_string());
     }
-    notes.push(format!("strength ratio basis: {}", p.z_ratio_basis));
+    // the shared material table tags every value with its source; say which are placeholders
+    notes.push(format!("strength ratio basis ({}): {}", p.shared.z_ratio_source.label(), p.z_ratio_basis));
+    if !custom && !table.contains_key("water_abs_pct") && p.water_abs_pct.is_some() && p.shared.water_source == vernon_core::materials::Source::Assumed {
+        notes.push(format!("water uptake {}% is assumed, not measured for {}", p.water_abs_pct.unwrap_or_default(), p.name));
+    }
     c.notes = notes;
     c.check_stability().map_err(|e| format!("material constants rejected: {e}"))?;
     Ok((c, p))
@@ -174,7 +178,7 @@ impl NodeOp for MaterialFdm {
         r.metric("stiffness_delta", Metric::new(delta, ""));
         r.metric("density_t_mm3", Metric::new(card.density_t_mm3, "t/mm3"));
         if let Some(h) = card.hdt_045_c {
-            r.metric("hdt_045_c", Metric::new(h, "degC"));
+            r.metric(vernon_core::keys::HDT_045_C, Metric::new(h, "degC"));
         }
         if let Some(w) = card.water_abs_pct {
             r.metric("water_absorption_pct", Metric::new(w, "%"));
@@ -296,7 +300,7 @@ impl NodeOp for MaterialDerate {
         r.metric("creep_factor", Metric::new(card.creep_factor, ""));
         r.metric("table_points", Metric::new(table.points.len() as f64, ""));
         if let Some(h) = hdt045 {
-            r.metric("hdt_045_c", Metric::new(h, "degC"));
+            r.metric(vernon_core::keys::HDT_045_C, Metric::new(h, "degC"));
         }
         r.metric("uncalibrated", Metric::new(if table.uncalibrated { 1.0 } else { 0.0 }, "flag"));
         if table.uncalibrated {

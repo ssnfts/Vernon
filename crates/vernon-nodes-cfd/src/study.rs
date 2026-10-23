@@ -242,8 +242,17 @@ pub struct Delta {
 }
 
 /// `extra_cda` is an additional noise sd added to each run in quadrature.
+#[cfg(test)]
 pub fn compare(base: &ForceResult, kit: &ForceResult, k_sigma: f64, extra_cda: f64) -> Delta {
-    let sigma = |a: f64, b: f64| (a * a + b * b + 2.0 * extra_cda * extra_cda).sqrt();
+    compare_with_floor(base, kit, k_sigma, extra_cda, 0.0)
+}
+
+/// Kit against baseline. `extra_cda` is added to each run's spread in
+/// quadrature, `floor_cda` is a discretisation noise floor of the
+/// difference (one coarse RANS run resolves Cd only to about 0.005), added
+/// once in quadrature to the CdA and ClA sigmas.
+pub fn compare_with_floor(base: &ForceResult, kit: &ForceResult, k_sigma: f64, extra_cda: f64, floor_cda: f64) -> Delta {
+    let sigma = |a: f64, b: f64| (a * a + b * b + 2.0 * extra_cda * extra_cda + floor_cda * floor_cda).sqrt();
     let d_cda = kit.cda - base.cda;
     let d_cla = kit.cla - base.cla;
     let (s_cda, s_cla) = (sigma(base.cda_sd, kit.cda_sd), sigma(base.cla_sd, kit.cla_sd));
@@ -269,11 +278,13 @@ fn ab_info() -> NodeTypeInfo {
     NodeTypeInfo::new("cfd.compare_ab", "Baseline vs Kit", Stage::Cfd)
         .input(PortSpec::new("baseline", DataKind::Json))
         .input(PortSpec::new("kit", DataKind::Json))
+        .input(PortSpec::optional("benchmark", DataKind::Report))
         .output(PortSpec::new("delta", DataKind::Json))
         .output(PortSpec::new("report", DataKind::Report))
         .param(ParamSpec::float("k_sigma", "Significance level", 2.0, 1.0, 4.0).unit("sigma").help("A change smaller than this many combined standard deviations is inconclusive"))
-        .param(ParamSpec::float("extra_noise_cda", "Extra noise per run", 0.0, 0.0, 0.1).unit("m2").help("Added in quadrature to each run's iteration spread, e.g. a mesh-study uncertainty"))
-        .help("Kit against baseline on the same recipe: change in CdA, ClA and aero balance with a noise floor from the iteration spread. Runs with different speed, density or half/full treatment are rejected.")
+        .param(ParamSpec::float("extra_noise_cda", "Extra noise per run", 0.0, 0.0, 0.1).unit("m2").help("Added in quadrature to each run's iteration spread"))
+        .param(ParamSpec::float("mesh_noise_cd", "Mesh noise floor", 0.005, 0.0, 0.05).unit("-").help("Discretisation noise of the difference in Cd, used when neither run carries a mesh-study GCI; a street kit moves Cd by only 0.005 to 0.01"))
+        .help("Kit against baseline on the same recipe: change in CdA, ClA and aero balance with a noise floor from the iteration spread and the mesh (study GCI, else a default floor). Runs with different speed, density, half/full treatment, mesh settings, ground/wheel treatment, yaw or turbulence model are rejected. Connect the benchmark check's report to confirm the recipe was validated first.")
         .emulates("automotive wind-tunnel service: A/B comparison")
         .spec("docs/specs/automotive-cfd.md")
         .implemented()
@@ -293,14 +304,48 @@ fn ab_cook(ctx: &CookContext, ins: &[Option<Data>], p: &Params) -> CookResult<Ve
         let d = json!({"placeholder": true, "verdict": "inconclusive"});
         return Ok(vec![Data::json(d), Data::report(rep)]);
     }
-    let same = rel_diff(base.u_ms, kit.u_ms) <= 0.01 && rel_diff(base.rho, kit.rho) <= 0.01 && base.half_model == kit.half_model;
-    rep.metric("data_available", Metric::new(1.0, "-").with_limit(1.0, false))
-        .metric("same_recipe", Metric::new(f64::from(same), "-").with_limit(1.0, false));
-    if !same {
+    let same_flow = rel_diff(base.u_ms, kit.u_ms) <= 0.01 && rel_diff(base.rho, kit.rho) <= 0.01 && base.half_model == kit.half_model;
+    if !same_flow {
         rep.note(Severity::Error, "baseline and kit differ in speed, density or half/full-car treatment: the difference is not attributable to the kit");
     }
+    let mismatches = match (&base.recipe, &kit.recipe) {
+        (Some(a), Some(b)) => a.mismatches(b),
+        _ => {
+            rep.note(Severity::Warning, "mesh, ground/wheel, yaw and turbulence settings are not recorded for both runs; identical meshes cannot be confirmed");
+            vec![]
+        }
+    };
+    if !mismatches.is_empty() {
+        rep.note(Severity::Error, format!("baseline and kit differ in {}: compare only runs on identical meshes and boundary treatment", mismatches.join(", ")));
+    }
+    let same = same_flow && mismatches.is_empty();
+    rep.metric("data_available", Metric::new(1.0, "-").with_limit(1.0, false))
+        .metric("same_recipe", Metric::new(f64::from(same), "-").with_limit(1.0, false));
+    // protocol step 1: the recipe must have passed its benchmark first
+    let validated = match ins.get(2).and_then(Option::as_ref) {
+        Some(Data::Report(b)) => {
+            let ok = b.metrics.get("within_band").is_some_and(|m| m.value >= 1.0);
+            if !ok {
+                rep.note(Severity::Error, "the connected benchmark check has not passed: the recipe is not validated and kit deltas are not trustworthy");
+            }
+            rep.metric("recipe_validated", Metric::new(f64::from(ok), "-").with_limit(1.0, false));
+            ok
+        }
+        Some(_) => return Err(ctx.fail("benchmark input must be the benchmark check's report")),
+        None => {
+            rep.note(Severity::Warning, "no benchmark check connected: validate the recipe on a benchmark body before trusting kit deltas");
+            false
+        }
+    };
+    // mesh noise of the difference: the mesh-study GCI when known, else the default floor
+    let gci = base.mesh_gci_pct.into_iter().chain(kit.mesh_gci_pct).fold(None, |a: Option<f64>, g| Some(a.map_or(g, |a| a.max(g))));
+    let floor_cda = match gci {
+        Some(g) => g.abs() / 100.0 * base.cda.abs().max(kit.cda.abs()),
+        None => p.float("mesh_noise_cd")? * base.a_front_m2.max(kit.a_front_m2),
+    };
     let k = p.float("k_sigma")?;
-    let d = compare(&base, &kit, k, p.float("extra_noise_cda")?);
+    let d = compare_with_floor(&base, &kit, k, p.float("extra_noise_cda")?, floor_cda);
+    rep.metric("mesh_noise_cda", Metric::new(floor_cda, "m2"));
     fin(ctx, "dCdA", d.d_cda)?;
     let significance = if d.sigma_cda > 0.0 { d.d_cda.abs() / d.sigma_cda } else { f64::INFINITY };
     let resolved = d.verdict != "inconclusive";
@@ -322,6 +367,7 @@ fn ab_cook(ctx: &CookContext, ins: &[Option<Data>], p: &Params) -> CookResult<Ve
         "d_cda": d.d_cda, "d_cda_pct": d.d_cda_pct, "sigma_cda": d.sigma_cda, "d_cla": d.d_cla,
         "sigma_cla": d.sigma_cla, "d_balance_pts": d.d_balance_pts, "verdict": d.verdict,
         "verdict_downforce": d.verdict_downforce, "resolved": resolved, "same_recipe": same,
+        "recipe_mismatches": mismatches, "recipe_validated": validated, "mesh_noise_cda": floor_cda,
         "k_sigma": k, "cda_base": base.cda, "cda_kit": kit.cda,
     });
     Ok(vec![Data::json(out), Data::report(rep)])
@@ -615,11 +661,11 @@ mod tests {
     #[test]
     fn compare_node_gates_recipe_and_resolution() {
         let w = |r: ForceResult| Some(Data::json(r.to_json()));
-        let out = run(ab_info, ab_cook, &[w(fr(0.320, 0.0015)), w(fr(0.330, 0.0015))], &[]).unwrap();
+        let out = run(ab_info, ab_cook, &[w(fr(0.320, 0.0015)), w(fr(0.340, 0.0015))], &[]).unwrap();
         let r = out[1].as_report().unwrap();
         assert!(r.passes(), "{r:?}");
         assert_eq!(out[0].as_json().unwrap()["verdict"], "worse");
-        assert!((r.metrics["dCdA"].value - 0.02).abs() < 1e-12);
+        assert!((r.metrics["dCdA"].value - 0.04).abs() < 1e-12);
         // inconclusive fails the resolved gate
         let out = run(ab_info, ab_cook, &[w(fr(0.320, 0.006)), w(fr(0.330, 0.006))], &[]).unwrap();
         assert!(!out[1].as_report().unwrap().passes());
@@ -629,6 +675,64 @@ mod tests {
         let out = run(ab_info, ab_cook, &[w(fr(0.320, 0.0015)), w(other)], &[]).unwrap();
         assert!(!out[1].as_report().unwrap().passes());
         assert!(run(ab_info, ab_cook, &[w(fr(0.32, 0.0))], &[]).is_err());
+    }
+
+    #[test]
+    fn compare_node_applies_mesh_noise_floor() {
+        let w = |r: ForceResult| Some(Data::json(r.to_json()));
+        // a 0.005 Cd change with a tight iteration spread sits inside the default floor
+        let out = run(ab_info, ab_cook, &[w(fr(0.320, 0.0002)), w(fr(0.325, 0.0002))], &[]).unwrap();
+        assert_eq!(out[0].as_json().unwrap()["verdict"], "inconclusive");
+        assert!((out[1].as_report().unwrap().metrics["mesh_noise_cda"].value - 0.01).abs() < 1e-12);
+        // without the floor it would have resolved
+        let out = run(ab_info, ab_cook, &[w(fr(0.320, 0.0002)), w(fr(0.325, 0.0002))], &[("mesh_noise_cd", ParamValue::Float(0.0))]).unwrap();
+        assert_eq!(out[0].as_json().unwrap()["verdict"], "worse");
+        // a mesh-study GCI replaces the default floor
+        let mut base = fr(0.320, 0.0002);
+        base.mesh_gci_pct = Some(0.5);
+        let out = run(ab_info, ab_cook, &[w(base), w(fr(0.325, 0.0002))], &[]).unwrap();
+        let m = out[1].as_report().unwrap().metrics["mesh_noise_cda"].value;
+        assert!((m - 0.005 * 0.65).abs() < 1e-12, "{m}");
+        assert_eq!(out[0].as_json().unwrap()["verdict"], "worse");
+    }
+
+    #[test]
+    fn compare_node_rejects_mismatched_mesh_or_boundary_treatment() {
+        use crate::types::Recipe;
+        let w = |r: ForceResult| Some(Data::json(r.to_json()));
+        let recipe = Recipe { dx0_m: Some(0.32), base_cells: Some(1000.0), levels: Some("{\"body\":[4,5]}".into()), ground_mode: "moving".into(), wheel_mode: "rotating".into(), yaw_deg: 0.0, turbulence: "kOmegaSST".into() };
+        let (mut base, mut kit) = (fr(0.320, 0.0015), fr(0.340, 0.0015));
+        base.recipe = Some(recipe.clone());
+        kit.recipe = Some(recipe.clone());
+        let out = run(ab_info, ab_cook, &[w(base.clone()), w(kit.clone())], &[]).unwrap();
+        assert!(out[1].as_report().unwrap().passes());
+        assert_eq!(out[0].as_json().unwrap()["same_recipe"], true);
+        // a stationary-ground baseline against a moving-ground kit run is refused
+        kit.recipe = Some(Recipe { ground_mode: "stationary".into(), ..recipe.clone() });
+        let out = run(ab_info, ab_cook, &[w(base.clone()), w(kit.clone())], &[]).unwrap();
+        assert!(!out[1].as_report().unwrap().passes());
+        assert_eq!(out[0].as_json().unwrap()["recipe_mismatches"][0], "ground treatment");
+        // so is a different mesh
+        kit.recipe = Some(Recipe { levels: Some("{\"body\":[3,4]}".into()), ..recipe });
+        let out = run(ab_info, ab_cook, &[w(base), w(kit)], &[]).unwrap();
+        assert_eq!(out[0].as_json().unwrap()["recipe_mismatches"][0], "refinement levels");
+    }
+
+    #[test]
+    fn compare_node_requires_a_passed_benchmark_when_connected() {
+        let w = |r: ForceResult| Some(Data::json(r.to_json()));
+        let bench = |within: f64| {
+            let mut r = Report::new("Benchmark check");
+            r.metric("within_band", Metric::new(within, "-").with_limit(1.0, false));
+            Some(Data::report(r))
+        };
+        let out = run(ab_info, ab_cook, &[w(fr(0.320, 0.0015)), w(fr(0.340, 0.0015)), bench(1.0)], &[]).unwrap();
+        assert!(out[1].as_report().unwrap().passes());
+        assert_eq!(out[0].as_json().unwrap()["recipe_validated"], true);
+        let out = run(ab_info, ab_cook, &[w(fr(0.320, 0.0015)), w(fr(0.340, 0.0015)), bench(0.0)], &[]).unwrap();
+        let r = out[1].as_report().unwrap();
+        assert!(!r.passes());
+        assert!(r.notes.iter().any(|(s, t)| *s == Severity::Error && t.contains("not validated")));
     }
 
     #[test]

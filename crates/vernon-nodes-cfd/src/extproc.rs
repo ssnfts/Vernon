@@ -1,10 +1,11 @@
 //! Running external programs (OpenFOAM) as separate processes. Output goes to
 //! log files, never pipes, so a chatty solver cannot deadlock the node.
 
-use std::fs::File;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
+use std::process::Command;
+use std::time::Duration;
+
+use vernon_core::process::{self, Exit, RunOptions};
 
 /// Where and how the tools run.
 #[derive(Debug, Clone, Default)]
@@ -15,7 +16,7 @@ pub struct RunOpts {
     pub image: String,
     /// Directory holding the OpenFOAM executables; empty searches PATH.
     pub bin_dir: String,
-    /// 0 = no timeout.
+    /// 0 = the shared runner's default deadline (one day).
     pub timeout_min: u64,
 }
 
@@ -69,6 +70,10 @@ pub fn wrap(opts: &RunOpts, cwd: &Path, program: &str, args: &[String]) -> Resul
                 "docker".into(),
                 "run".into(),
                 "--rm".into(),
+                // Named, so a run that times out can be stopped: killing
+                // the client would leave the container running.
+                "--name".into(),
+                vernon_core::process::container_name("vernon-foam"),
                 "-v".into(),
                 format!("{}:/case", cwd.display()),
                 "-w".into(),
@@ -88,35 +93,29 @@ pub fn wrap(opts: &RunOpts, cwd: &Path, program: &str, args: &[String]) -> Resul
     }
 }
 
-/// Run `argv` in `cwd`, output appended to `log`. Returns the exit code.
-pub fn run_logged(argv: &[String], cwd: &Path, log: &Path, timeout: Option<Duration>) -> Result<i32, String> {
-    if let Some(parent) = log.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-    }
-    let out = File::create(log).map_err(|e| format!("cannot create {}: {e}", log.display()))?;
-    let err = out.try_clone().map_err(|e| e.to_string())?;
-    let mut child = Command::new(&argv[0])
-        .args(&argv[1..])
-        .current_dir(cwd)
-        .stdin(Stdio::null())
-        .stdout(Stdio::from(out))
-        .stderr(Stdio::from(err))
-        .spawn()
-        .map_err(|e| format!("cannot start {}: {e}", argv[0]))?;
-    let start = Instant::now();
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => return Ok(status.code().unwrap_or(-1)),
-            Ok(None) => {
-                if timeout.is_some_and(|t| start.elapsed() > t) {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return Err(format!("{} timed out", argv[0]));
-                }
-                std::thread::sleep(Duration::from_millis(50));
-            }
-            Err(e) => return Err(e.to_string()),
+/// `docker stop NAME` for a `docker run --name NAME ...` command line.
+fn docker_cleanup(argv: &[String]) -> Vec<String> {
+    match argv.iter().position(|a| a == "--name") {
+        Some(i) if argv.first().is_some_and(|a| a == "docker") && i + 1 < argv.len() => {
+            vec!["docker".into(), "stop".into(), "-t".into(), "2".into(), argv[i + 1].clone()]
         }
+        _ => Vec::new(),
+    }
+}
+
+/// Run `argv` in `cwd` through the shared runner, output written to `log`
+/// (started afresh). Returns the exit code. `None` uses the runner's
+/// default deadline; a timeout or a cancelled cook kills the whole process
+/// tree (and stops a docker container).
+pub fn run_logged(argv: &[String], cwd: &Path, log: &Path, timeout: Option<Duration>) -> Result<i32, String> {
+    let (exe, args) = argv.split_first().ok_or("empty command line")?;
+    let opts = RunOptions { timeout: timeout.unwrap_or(Duration::ZERO), cleanup: docker_cleanup(argv), ..Default::default() };
+    let mut cmd = Command::new(exe);
+    cmd.args(args).current_dir(cwd);
+    match process::run(&mut cmd, log, &opts).map_err(|e| format!("cannot start {exe}: {e}"))? {
+        Exit::Code(c) => Ok(c),
+        Exit::TimedOut => Err(format!("{exe} timed out")),
+        Exit::Cancelled => Err(format!("{exe} was stopped (cook cancelled)")),
     }
 }
 
@@ -184,6 +183,9 @@ mod tests {
                 assert_eq!(v[0], "docker");
                 assert!(v.contains(&"/opt/of/bin/checkMesh".to_string()));
                 assert_eq!(v.last().unwrap(), "-allGeometry");
+                let stop = docker_cleanup(&v);
+                assert_eq!(&stop[..2], ["docker", "stop"]);
+                assert!(stop.last().unwrap().starts_with("vernon-foam-"));
             }
             Err(e) => assert_eq!(e, "docker not found"),
         }

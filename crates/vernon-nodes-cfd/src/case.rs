@@ -148,12 +148,25 @@ fn setup_cook(ctx: &CookContext, ins: &[Option<Data>], p: &Params) -> CookResult
 
     // keep the manifest current
     let mut m = man.unwrap_or_else(|| json!({}));
+    let dx0 = m["dx0_m"].as_f64().filter(|d| *d > 0.0);
+    let recipe = crate::types::Recipe {
+        dx0_m: dx0,
+        base_cells: dx0.map(|d| {
+            let n = foam::base_cells(&domain, d);
+            (n[0] * n[1] * n[2]) as f64
+        }),
+        levels: m["plan"].get("levels").map(serde_json::Value::to_string),
+        ground_mode: bc.ground_mode.clone(),
+        wheel_mode: bc.wheel_mode.clone(),
+        yaw_deg: domain.yaw_deg,
+        turbulence: format!("kOmegaSST I={:.3}% nut/nu={:.1}", spec.i_pct, spec.nut_ratio),
+    };
     m["flavour"] = json!(flavour.name());
     m["np"] = json!(np);
     m["case_setup"] = json!({
         "u_ms": u, "nu": nu, "rho_inf": rho, "aref_m2": spec.aref(), "half_model": domain.half_model,
         "window": spec.window, "n_iter": spec.n_iter, "residual_target": spec.residual,
-        "reference": rf.to_json(), "has_topo": topo.is_some(),
+        "reference": rf.to_json(), "has_topo": topo.is_some(), "recipe": recipe,
     });
     write_file(&case.join("vernon_case.json"), &serde_json::to_string_pretty(&m).unwrap_or_default())?;
 
@@ -185,13 +198,13 @@ fn solve_info() -> NodeTypeInfo {
         .output(PortSpec::new("case", DataKind::File))
         .output(PortSpec::new("history", DataKind::Json))
         .output(PortSpec::new("report", DataKind::Report))
-        .param(ParamSpec::bool("run", "Run now", false).help("Off by default: a re-cook must never launch hours of CPU. Existing results in the case are always read."))
+        .param(ParamSpec::bool("run", "Run now", false).help("Starts the solver once and switches itself off again, so a re-cook never relaunches hours of CPU. Results the case holds for these exact inputs are always read.").action())
         .param(ParamSpec::int("np", "Processes", 8, 1, 512))
         .param(ParamSpec::bool("potential_init", "Initialise with a potential-flow solution", true))
         .param(ParamSpec::choice("runner", "Runner", "native", &["native", "wsl", "docker"]))
         .param(ParamSpec::string("image", "Container image", "").help("Docker runner only"))
         .param(ParamSpec::path("bin_dir", "Tool directory", &[], false).help("Folder with the OpenFOAM executables; empty searches the PATH"))
-        .param(ParamSpec::int("timeout_min", "Time limit", 0, 0, 100_000).unit("min").help("0 = none"))
+        .param(ParamSpec::int("timeout_min", "Time limit", 720, 0, 100_000).unit("min").help("The run (and every process it started) is stopped after this long; 0 = one day"))
         .help("Runs the steady solver in the case directory and reads the force-coefficient, force and residual histories back as a time series. Without the solver it reads whatever results the case already holds.")
         .emulates("automotive wind-tunnel service: solve")
         .spec("docs/specs/automotive-cfd.md")
@@ -209,16 +222,35 @@ fn solve_cook(ctx: &CookContext, ins: &[Option<Data>], p: &Params) -> CookResult
         .and_then(|m| m["flavour"].as_str().and_then(Flavour::parse))
         .unwrap_or(Flavour::Foundation(11));
     let mut report = Report::new("Steady solve");
+    let stamp = case_stamp(&case);
     if p.bool("run")? {
         let topo = case.join("system/topoSetDict").exists();
         let steps = solve_steps(flavour, p.int("np")? as u32, p.bool("potential_init")?, topo);
         let res = run_chain(&run_opts(p)?, &case, &steps);
         report.metric("steps_completed", Metric::new(res.completed.len() as f64, "count"));
-        if let Some(f) = res.failed {
-            report.note(Severity::Error, format!("solver run stopped: {f}"));
+        match res.failed {
+            Some(f) => {
+                report.note(Severity::Error, format!("solver run stopped: {f}"));
+            }
+            None => write_file(&case.join(RESULTS_STAMP), &stamp)?,
         }
     }
-    let series = load_case_series(&case);
+    let series = match std::fs::read_to_string(case.join(RESULTS_STAMP)) {
+        Ok(s) if s.trim() == stamp => load_case_series(&case),
+        Ok(_) => {
+            report.note(Severity::Warning, "the results in the case were solved for other inputs and are not read; run the solver again");
+            Default::default()
+        }
+        Err(_) => {
+            let s = load_case_series(&case);
+            if !s.is_empty() {
+                report.note(Severity::Warning, "the results in the case were not produced by a run here; check they belong to these inputs");
+            }
+            s
+        }
+    };
+    let mut series = series;
+    series.recipe = man.as_ref().and_then(|m| serde_json::from_value(m["case_setup"]["recipe"].clone()).ok());
     let done = !series.is_empty();
     if !done {
         placeholder(
@@ -231,6 +263,45 @@ fn solve_cook(ctx: &CookContext, ins: &[Option<Data>], p: &Params) -> CookResult
         .metric("solve_done", Metric::new(f64::from(done), "-").with_limit(1.0, false));
     let _ = (mesh_steps, ctx);
     Ok(vec![Data::File(case), Data::json(series.to_json()), Data::report(report)])
+}
+
+/// File in a case recording which inputs its results were solved for.
+const RESULTS_STAMP: &str = "vernon_results.stamp";
+
+/// Stable FNV-1a hash of what a solve depends on: the case manifest, the
+/// `system` dictionaries and the surface files under `constant/triSurface`
+/// (not the generated feature-edge files). Files the solver writes (time
+/// folders, `0/` after initialisation, `postProcessing`) are left out, so
+/// the stamp of a case does not change by solving it.
+fn case_stamp(case: &std::path::Path) -> String {
+    fn collect(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        if let Ok(rd) = std::fs::read_dir(dir) {
+            for e in rd.flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    collect(&p, out);
+                } else {
+                    out.push(p);
+                }
+            }
+        }
+    }
+    let mut files = vec![case.join("vernon_case.json")];
+    collect(&case.join("system"), &mut files);
+    collect(&case.join("constant").join("triSurface"), &mut files);
+    files.retain(|f| f.extension().is_none_or(|e| e != "eMesh"));
+    files.sort();
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    let mut feed = |bytes: &[u8]| {
+        for b in bytes {
+            h = (h ^ u64::from(*b)).wrapping_mul(0x0100_0000_01b3);
+        }
+    };
+    for f in &files {
+        feed(f.strip_prefix(case).unwrap_or(f).to_string_lossy().replace('\\', "/").as_bytes());
+        feed(&std::fs::read(f).unwrap_or_default());
+    }
+    format!("{h:016x}")
 }
 
 pub(crate) fn register(reg: &mut Registry) {
@@ -401,9 +472,20 @@ mod tests {
         let out = solve_cook(&ctx("solve-run"), &[Some(Data::File(case.clone()))], &p).unwrap();
         let r = out[2].as_report().unwrap();
         assert!(r.passes(), "{r:?}");
+        assert!(r.notes.iter().any(|(s, t)| *s == Severity::Warning && t.contains("not produced by a run here")));
         let s = crate::types::Series::from_json(out[1].as_json().unwrap()).unwrap();
         assert_eq!(s.len(), 50);
         assert_eq!(s.meta["Aref"], 1.08);
+        // stamped for these inputs: read without a warning
+        std::fs::write(case.join(RESULTS_STAMP), case_stamp(&case)).unwrap();
+        let out = solve_cook(&ctx("solve-run"), &[Some(Data::File(case.clone()))], &p).unwrap();
+        assert!(out[2].as_report().unwrap().notes.iter().all(|(s, _)| *s != Severity::Warning));
+        // the case is rewritten for other inputs: the old results are not read
+        let dict = read(&case, "system/controlDict");
+        std::fs::write(case.join("system/controlDict"), dict + "\n// other inputs\n").unwrap();
+        let out = solve_cook(&ctx("solve-run"), &[Some(Data::File(case.clone()))], &p).unwrap();
+        assert!(crate::types::Series::from_json(out[1].as_json().unwrap()).unwrap().is_empty());
+        assert!(out[2].as_report().unwrap().notes.iter().any(|(_, t)| t.contains("solved for other inputs")));
         // missing tool with run on: reported, never a fake success
         let mut p2 = p.clone();
         p2.set("run", ParamValue::Bool(true));

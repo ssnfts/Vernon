@@ -25,9 +25,9 @@ pub fn run(st: &mut AppState, line: &str) -> Result<String, String> {
             Ok(format!("added {} ({ty})", st.name(id)))
         }
         "cook" => {
+            // Runs in the background; the status bar shows progress.
             st.recook();
-            let errors = st.graph.nodes.keys().filter(|id| st.error_of(**id).is_some()).count();
-            Ok(format!("cooked {} node(s), {errors} error(s)", st.graph.nodes.len()))
+            Ok(format!("re-cooking {} node(s)", st.graph.nodes.len()))
         }
         "select" => {
             if arg.is_empty() {
@@ -103,7 +103,9 @@ mod tests {
         assert!(run(&mut st, "select box1").is_ok());
         assert_eq!(st.primary(), st.graph.find("box1"));
         let out = run(&mut st, "cook").unwrap();
-        assert!(out.contains("2 node(s), 0 error(s)"), "{out}");
+        assert!(out.contains("2 node(s)"), "{out}");
+        st.cook_all();
+        assert!(st.graph.nodes.keys().all(|id| st.error_of(*id).is_none()));
         assert!(run(&mut st, "select nothing_here").is_err());
         assert!(run(&mut st, "frobnicate").is_err());
         assert!(run(&mut st, "add").is_err());

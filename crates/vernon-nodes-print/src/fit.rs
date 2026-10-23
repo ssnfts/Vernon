@@ -52,7 +52,7 @@ pub struct FitResult {
 
 /// Convex hull (counter-clockwise, no repeated first point).
 pub fn convex_hull(mut pts: Vec<DVec2>) -> Vec<DVec2> {
-    pts.sort_by(|a, b| a.x.partial_cmp(&b.x).unwrap_or(std::cmp::Ordering::Equal).then(a.y.partial_cmp(&b.y).unwrap_or(std::cmp::Ordering::Equal)));
+    pts.sort_by(|a, b| a.x.total_cmp(&b.x).then(a.y.total_cmp(&b.y)));
     pts.dedup();
     if pts.len() < 3 {
         return pts;
@@ -137,7 +137,7 @@ fn spins(xy: &[DVec2], z_spin: bool) -> Vec<Spin> {
     }
     // Longest hull edges first: they carry the minimum-area rectangles.
     let mut edges: Vec<(f64, usize)> = (0..n).map(|i| ((hull[(i + 1) % n] - hull[i]).length(), i)).collect();
-    edges.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal).then(a.1.cmp(&b.1)));
+    edges.sort_by(|a, b| b.0.total_cmp(&a.0).then(a.1.cmp(&b.1)));
     for &(len, i) in edges.iter().take(48) {
         if len < 1e-12 {
             continue;

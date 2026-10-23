@@ -8,9 +8,11 @@ mod hotkeys;
 mod listener;
 mod registry;
 mod state;
+mod study;
 mod theme;
 mod timeline;
 mod ui;
+mod unsaved;
 mod viewport;
 
 fn main() -> eframe::Result<()> {

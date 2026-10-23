@@ -195,7 +195,7 @@ pub fn face_cluster_ups(tris: &Tris, max: usize) -> Vec<DVec3> {
         e.1 += n * tris.area[i];
     }
     let mut v: Vec<(Cell, (f64, DVec3))> = cells.into_iter().collect();
-    v.sort_by(|a, b| b.1 .0.partial_cmp(&a.1 .0).unwrap_or(std::cmp::Ordering::Equal).then(a.0.cmp(&b.0)));
+    v.sort_by(|a, b| b.1 .0.total_cmp(&a.1 .0).then(a.0.cmp(&b.0)));
     v.into_iter().take(max).filter_map(|(_, (_, s))| (-s).try_normalize()).collect()
 }
 
@@ -345,7 +345,8 @@ mod tests {
         assert_eq!(flat.layers, 15);
         assert_eq!(upright.layers, 500);
         assert!((flat.r_min - 1.0).abs() < 1e-12);
-        assert!((upright.r_min - 0.30).abs() < 1e-12);
+        // ASA upright strength is 29 % of flat (shared material table)
+        assert!((upright.r_min - 0.29).abs() < 1e-12);
         assert!(flat.total < upright.total);
     }
 

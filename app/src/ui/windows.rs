@@ -11,6 +11,7 @@ use super::VernonApp;
 use crate::gate::{self, metric_state};
 use crate::hotkeys;
 use crate::theme;
+use crate::unsaved::Choice;
 
 pub const CLEAN_ROOM_TEXT: &str = "Vernon is a clean-room, open-source project. Its features are re-implemented from \
 public documentation, published papers and observed behaviour only. No proprietary code, binaries, icons, \
@@ -34,6 +35,22 @@ pub struct FileDialog {
     pub extensions: Vec<String>,
     pub save: bool,
     pub dir_text: String,
+    /// Existing file a save would replace, waiting for confirmation.
+    pub overwrite: Option<PathBuf>,
+}
+
+/// The file a confirmed dialog writes: Save As adds `.vrn` to a bare name.
+pub fn save_target(mode: &FileMode, path: &Path) -> PathBuf {
+    if *mode == FileMode::SaveAs && path.extension().is_none() {
+        path.with_extension("vrn")
+    } else {
+        path.to_path_buf()
+    }
+}
+
+/// True when a save to `target` must ask before replacing an existing file.
+pub fn needs_overwrite_confirm(save: bool, target: &Path, confirmed: Option<&Path>) -> bool {
+    save && target.exists() && confirmed != Some(target)
 }
 
 impl FileDialog {
@@ -53,6 +70,7 @@ impl FileDialog {
             extensions,
             save,
             dir_text,
+            overwrite: None,
         }
     }
 
@@ -100,6 +118,8 @@ pub fn show(app: &mut VernonApp, ctx: &egui::Context) {
     gate_dashboard(app, ctx);
     report_viewer(app, ctx);
     file_dialog(app, ctx);
+    unsaved_prompt(app, ctx);
+    trust_prompt(app, ctx);
     egui::Window::new("About Vernon")
         .open(&mut app.show.about)
         .collapsible(false)
@@ -145,6 +165,45 @@ pub fn show(app: &mut VernonApp, ctx: &egui::Context) {
         });
 }
 
+/// Ask before an opened scene may start programs or write files at paths
+/// it chose; lists exactly what it would do.
+fn trust_prompt(app: &mut VernonApp, ctx: &egui::Context) {
+    if !app.st.trust_prompt || app.st.trusted {
+        app.st.trust_prompt = false;
+        return;
+    }
+    let findings = app.st.trust_findings();
+    let mut open = true;
+    let mut choice = None;
+    egui::Window::new("Trust This Scene?")
+        .open(&mut open)
+        .collapsible(false)
+        .default_width(480.0)
+        .show(ctx, |ui| {
+            ui.label("This scene came from a file. Until you trust it, Vernon will not start its external programs or uploads, and holds the nodes that write files at paths the file chose:");
+            egui::ScrollArea::vertical().max_height(260.0).show(ui, |ui| {
+                for line in &findings {
+                    ui.label(RichText::new(line).monospace().small().color(theme::TEXT));
+                }
+            });
+            ui.separator();
+            ui.horizontal(|ui| {
+                if ui.button("Trust this scene").clicked() {
+                    choice = Some(true);
+                }
+                if ui.button("Not now").clicked() {
+                    choice = Some(false);
+                }
+            });
+        });
+    match choice {
+        Some(true) => app.st.trust_scene(),
+        Some(false) => app.st.trust_prompt = false,
+        None if !open => app.st.trust_prompt = false,
+        None => {}
+    }
+}
+
 fn gate_dashboard(app: &mut VernonApp, ctx: &egui::Context) {
     let mut open = app.show.gates;
     egui::Window::new("Gate Dashboard")
@@ -160,7 +219,7 @@ fn gate_dashboard(app: &mut VernonApp, ctx: &egui::Context) {
                         .strong()
                         .color(state_color(overall)),
                 );
-                ui.label(RichText::new("· latest report per stage; click a node to select it").small().color(theme::TEXT_DIM));
+                ui.label(RichText::new("· worst gate over every report node of a stage; click a node to select it").small().color(theme::TEXT_DIM));
             });
             ui.separator();
             egui::ScrollArea::vertical().show(ui, |ui| {
@@ -170,54 +229,65 @@ fn gate_dashboard(app: &mut VernonApp, ctx: &egui::Context) {
                     }
                     ui.end_row();
                     for g in &gates {
-                        ui.label(g.stage.label());
-                        ui.label(RichText::new(format!("{} {}", g.state.glyph(), g.state.text())).color(state_color(g.state)));
-                        match g.node {
-                            Some(n) => {
-                                if ui.link(app.st.name(n).to_string()).clicked() {
-                                    let obj = app.st.object_of(n);
-                                    app.st.select_only(obj);
-                                    app.st.stack_entry = Some(n);
-                                    app.tab = super::PanelTab::Modify;
-                                }
-                            }
-                            None => {
-                                ui.label("");
-                            }
-                        }
-                        if let Some(e) = &g.error {
-                            ui.label(RichText::new(e).small().color(theme::FAIL));
+                        if g.nodes.is_empty() {
+                            ui.label(g.stage.label());
+                            ui.label(RichText::new(format!("{} {}", g.state.glyph(), g.state.text())).color(state_color(g.state)));
                             ui.end_row();
                             continue;
                         }
-                        let mut first = true;
-                        if let Some(r) = &g.report {
-                            for (name, m) in &r.metrics {
-                                if !first {
-                                    ui.label("");
-                                    ui.label("");
-                                    ui.label("");
+                        for (i, ng) in g.nodes.iter().enumerate() {
+                            // Stage name and rolled-up state on the first row only.
+                            if i == 0 {
+                                ui.label(g.stage.label());
+                                ui.label(
+                                    RichText::new(format!("{} {}", g.state.glyph(), g.state.text())).color(state_color(g.state)),
+                                );
+                            } else {
+                                ui.label("");
+                                ui.label("");
+                            }
+                            let node_text = RichText::new(format!("{} {}", ng.state.glyph(), app.st.name(ng.node)))
+                                .color(state_color(ng.state));
+                            if ui.link(node_text).clicked() {
+                                let obj = app.st.object_of(ng.node);
+                                app.st.select_only(obj);
+                                app.st.stack_entry = Some(ng.node);
+                                app.tab = super::PanelTab::Modify;
+                            }
+                            if let Some(e) = &ng.error {
+                                ui.label(RichText::new(e).small().color(theme::FAIL));
+                                ui.end_row();
+                                continue;
+                            }
+                            let mut first = true;
+                            if let Some(r) = &ng.report {
+                                for (name, m) in &r.metrics {
+                                    if !first {
+                                        ui.label("");
+                                        ui.label("");
+                                        ui.label("");
+                                    }
+                                    first = false;
+                                    let s = metric_state(m);
+                                    ui.label(RichText::new(format!("{} {name}", s.glyph())).color(state_color(s)));
+                                    ui.label(RichText::new(format!("{:.3} {}", m.value, m.unit)).monospace());
+                                    match (m.limit, gate::margin(m)) {
+                                        (Some(l), Some(mg)) => ui.label(
+                                            RichText::new(format!(
+                                                "{} {l:.3}  ({mg:+.3})",
+                                                if m.lower_is_better { "\u{2264}" } else { "\u{2265}" }
+                                            ))
+                                            .monospace()
+                                            .color(theme::TEXT_DIM),
+                                        ),
+                                        _ => ui.label(RichText::new("n/a").color(theme::TEXT_DIM)),
+                                    };
+                                    ui.end_row();
                                 }
-                                first = false;
-                                let s = metric_state(m);
-                                ui.label(RichText::new(format!("{} {name}", s.glyph())).color(state_color(s)));
-                                ui.label(RichText::new(format!("{:.3} {}", m.value, m.unit)).monospace());
-                                match (m.limit, gate::margin(m)) {
-                                    (Some(l), Some(mg)) => ui.label(
-                                        RichText::new(format!(
-                                            "{} {l:.3}  ({mg:+.3})",
-                                            if m.lower_is_better { "≤" } else { "≥" }
-                                        ))
-                                        .monospace()
-                                        .color(theme::TEXT_DIM),
-                                    ),
-                                    _ => ui.label(RichText::new("n/a").color(theme::TEXT_DIM)),
-                                };
+                            }
+                            if first {
                                 ui.end_row();
                             }
-                        }
-                        if first {
-                            ui.end_row();
                         }
                     }
                 });
@@ -329,6 +399,18 @@ fn file_dialog(app: &mut VernonApp, ctx: &egui::Context) {
                     cancel = true;
                 }
             });
+            if let Some(p) = d.overwrite.clone() {
+                ui.separator();
+                ui.label(RichText::new(format!("{} already exists. Replace it?", p.display())).color(theme::WARN));
+                ui.horizontal(|ui| {
+                    if ui.button("Replace").clicked() {
+                        chosen = Some(p.clone());
+                    }
+                    if ui.button("Keep").clicked() {
+                        d.overwrite = None;
+                    }
+                });
+            }
         });
     if let Some(path) = chosen {
         let mode = d.mode.clone();
@@ -336,10 +418,51 @@ fn file_dialog(app: &mut VernonApp, ctx: &egui::Context) {
             app.st.error_text(format!("{} does not exist", path.display()));
             return;
         }
+        let target = save_target(&mode, &path);
+        if needs_overwrite_confirm(d.save, &target, d.overwrite.as_deref()) {
+            d.overwrite = Some(target);
+            return;
+        }
         app.file_dialog = None;
         app.file_chosen(mode, path);
     } else if cancel || !open {
+        let mode = d.mode.clone();
         app.file_dialog = None;
+        app.file_dialog_cancelled(&mode);
+    }
+}
+
+/// Save / Don't Save / Cancel before New, Open or closing a modified scene.
+fn unsaved_prompt(app: &mut VernonApp, ctx: &egui::Context) {
+    let Some(action) = app.guard.prompt else { return };
+    let name = app
+        .st
+        .path
+        .as_ref()
+        .and_then(|p| p.file_name())
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "Untitled".into());
+    let mut choice = None;
+    egui::Window::new("Unsaved Changes")
+        .collapsible(false)
+        .resizable(false)
+        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .show(ctx, |ui| {
+            ui.label(format!("Save changes to {name} before {}?", action.verb()));
+            ui.horizontal(|ui| {
+                if ui.button("Save").clicked() {
+                    choice = Some(Choice::Save);
+                }
+                if ui.button("Don't Save").clicked() {
+                    choice = Some(Choice::Discard);
+                }
+                if ui.button("Cancel").clicked() {
+                    choice = Some(Choice::Cancel);
+                }
+            });
+        });
+    if let Some(c) = choice {
+        app.answer_unsaved(c);
     }
 }
 
@@ -361,6 +484,26 @@ mod tests {
             vec![("sub".to_string(), true), ("A.obj".to_string(), false), ("b.stl".to_string(), false)]
         );
         assert_eq!(list_dir(&dir, &[]).len(), 4);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn saving_over_an_existing_file_asks_first() {
+        let dir = std::env::temp_dir().join(format!("vernon_app_overwrite_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let existing = dir.join("kit.vrn");
+        std::fs::write(&existing, b"x").unwrap();
+        // a bare Save As name gets the scene extension and hits the existing file
+        let target = save_target(&FileMode::SaveAs, &dir.join("kit"));
+        assert_eq!(target, existing);
+        assert_eq!(save_target(&FileMode::Export, &dir.join("kit")), dir.join("kit"));
+        assert!(needs_overwrite_confirm(true, &target, None));
+        // confirmed for this file: no second prompt; another file asks again
+        assert!(!needs_overwrite_confirm(true, &target, Some(existing.as_path())));
+        assert!(needs_overwrite_confirm(true, &target, Some(dir.join("other.vrn").as_path())));
+        // new files and open dialogs never ask
+        assert!(!needs_overwrite_confirm(true, &dir.join("new.vrn"), None));
+        assert!(!needs_overwrite_confirm(false, &target, None));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

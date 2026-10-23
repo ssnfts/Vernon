@@ -775,3 +775,14 @@ fn closed_primitives_are_outward_euler_two() {
     let cube = make_box(DVec3::splat(10.0), DVec3::ZERO, 1);
     assert_eq!((cube.points.len(), crate::util::edge_counts(&cube).len(), cube.prims.len()), (8, 12, 6));
 }
+
+#[test]
+fn subdivide_refuses_runaway_face_counts() {
+    // 384 quads: eight passes would make 25 million faces.
+    let g = make_box(DVec3::splat(10.0), DVec3::ZERO, 8);
+    let t0 = std::time::Instant::now();
+    let err = cook("geo.subdivide", &[some(&g)], &[("iterations", i(8))]).unwrap_err().to_string();
+    assert!(err.contains("limit"), "{err}");
+    assert!(t0.elapsed().as_secs() < 5);
+    assert_eq!(cook_geo("geo.subdivide", &[some(&g)], &[("iterations", i(2))]).prims.len(), 384 * 16);
+}

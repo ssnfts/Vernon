@@ -10,13 +10,14 @@
 //! upstream node changes.
 
 pub mod data;
+pub mod gate;
 pub mod graph;
 pub mod node;
 pub mod param;
 pub mod registry;
 
 pub use data::{Data, DataKind};
-pub use graph::{Graph, NodeId, NodeInstance};
+pub use graph::{kinds_fit, validate_node_name, work_dir_name, writes_files, Graph, NodeId, NodeInstance, CANCELLED, DEFERRED};
 pub use node::{CookContext, NodeOp, NodeTypeInfo, PortSpec, Stage};
 pub use param::{ParamKind, ParamSpec, ParamValue, Params};
 pub use registry::Registry;

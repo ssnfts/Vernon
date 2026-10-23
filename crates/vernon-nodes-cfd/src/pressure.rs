@@ -109,7 +109,7 @@ impl<'a> Grid<'a> {
         for dx in -1..=1 {
             for dy in -1..=1 {
                 for dz in -1..=1 {
-                    let Some(list) = self.map.get(&(cx + dx, cy + dy, cz + dz)) else { continue };
+                    let Some(list) = self.map.get(&(cx.wrapping_add(dx), cy.wrapping_add(dy), cz.wrapping_add(dz))) else { continue };
                     for &i in list {
                         let d = self.pos[i as usize].distance(q);
                         let closer = match best {
@@ -160,6 +160,7 @@ pub fn estimate_cp(normal: DVec3) -> f64 {
 }
 
 fn percentile(sorted: &[f64], q: f64) -> f64 {
+    let q = if q.is_finite() { q.clamp(0.0, 1.0) } else { 0.5 };
     let pos = q * (sorted.len() - 1) as f64;
     let (lo, hi) = (pos.floor() as usize, pos.ceil() as usize);
     sorted[lo] + (sorted[hi] - sorted[lo]) * (pos - lo as f64)
@@ -236,7 +237,7 @@ fn cook(ctx: &CookContext, ins: &[Option<Data>], p: &Params) -> CookResult<Vec<D
         rep.note(Severity::Error, "no surface face found a pressure sample within the match distance; check units, frame and the mirror option");
         return Ok(vec![Data::geometry(out), Data::report(rep)]);
     }
-    let clip = p.float("clip_pct")? / 100.0;
+    let clip = p.float("clip_pct")?.clamp(0.0, 20.0) / 100.0;
     let (lo, hi) = (percentile(&vals, clip), percentile(&vals, 1.0 - clip));
     out.detail_attribs.set("Cp_lo", AttribArray::Float(vec![lo]));
     out.detail_attribs.set("Cp_hi", AttribArray::Float(vec![hi]));
@@ -375,6 +376,18 @@ mod tests {
         assert!((r.metrics["pressure_force_x"].value - want).abs() < 1e-6 * want, "{}", r.metrics["pressure_force_x"].value);
         assert_eq!(r.metrics["cp_max"].value, 1.0);
         assert_eq!(surf.detail_attribs.floats("Cp_hi").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn out_of_range_clip_never_indexes_out_of_bounds() {
+        let g = car_box();
+        let file = tmp("pressure-clip").join("p.raw");
+        std::fs::write(&file, face_file(&g, |n| n.x, false)).unwrap();
+        for clip in [-1.0, 1e30, 150.0, f64::NAN] {
+            let out = run(&g, Some(&file), &[("clip_pct", ParamValue::Float(clip))]).unwrap();
+            let hi = out[0].as_geometry().unwrap().detail_attribs.floats("Cp_hi").unwrap()[0];
+            assert!(hi.is_finite(), "clip {clip}: {hi}");
+        }
     }
 
     #[test]

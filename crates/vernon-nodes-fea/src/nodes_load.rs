@@ -53,7 +53,7 @@ impl NodeOp for LoadAero {
             .input(PortSpec::optional("aero_loads", DataKind::Json))
             .output(PortSpec::new("loads", DataKind::Json))
             .output(PortSpec::new("report", DataKind::Report))
-            .param(ParamSpec::choice("mode", "Mode", "net_force", &["net_force", "field"]).help("Uniform pressure on the faces that look into the load direction, or a pressure field mapped from a surface carrying the point attribute cp"))
+            .param(ParamSpec::choice("mode", "Mode", "net_force", &["net_force", "field"]).help("Uniform pressure on the faces that look into the load direction, or a pressure field mapped from a surface carrying a Cp attribute on points or faces (as the airflow stage writes it)"))
             .param(ParamSpec::string("name", "Load name", "aero").help("Name of the load set"))
             .param(ParamSpec::float("cla_m2", "Force area", 0.5, 0.0, 10.0).unit("m2").help("Downforce area ClA (or drag area CdA for a drag load); used when no aero-loads table is connected"))
             .param(ParamSpec::choice("quantity", "Table quantity", "downforce", &["downforce", "drag"]).help("Which number of a connected aero-loads table to apply; set the direction to match"))
@@ -81,7 +81,7 @@ impl NodeOp for LoadAero {
         r.metric("dynamic_pressure_pa", Metric::new(q, "Pa"));
         let mut notes: Vec<String> = Vec::new();
         let (mut ps, target, axis_dir) = if params.str("mode")? == "field" {
-            let surf = inputs::opt_geometry(inputs, 1).ok_or_else(|| ctx.fail("field mode needs a pressure surface with a point attribute cp"))?;
+            let surf = inputs::opt_geometry(inputs, 1).ok_or_else(|| ctx.fail("field mode needs a pressure surface with a Cp attribute"))?;
             let f = field_pressures(&g, &surf, q, params.float("cp_in")?, params.float("snap_mm")?).map_err(|e| ctx.fail(e))?;
             r.metric("loaded_faces", Metric::new(f.loaded_faces as f64, ""));
             r.metric("loaded_area_mm2", Metric::new(f.loaded_area_mm2, "mm2"));

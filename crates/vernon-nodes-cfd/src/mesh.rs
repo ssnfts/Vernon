@@ -252,12 +252,12 @@ fn setup_cook(ctx: &CookContext, ins: &[Option<Data>], p: &Params) -> CookResult
 
 fn run_params(prefix_default_np: i64) -> Vec<ParamSpec> {
     vec![
-        ParamSpec::bool("run", "Run now", false).help("Off by default: a re-cook must never launch hours of CPU. Turn on to run the tools."),
+        ParamSpec::bool("run", "Run now", false).help("Runs the tools once and switches itself off again, so a re-cook never relaunches hours of CPU.").action(),
         ParamSpec::int("np", "Processes", prefix_default_np, 1, 512),
         ParamSpec::choice("runner", "Runner", "native", &["native", "wsl", "docker"]),
         ParamSpec::string("image", "Container image", "").help("Docker runner only"),
         ParamSpec::path("bin_dir", "Tool directory", &[], false).help("Folder with the OpenFOAM executables; empty searches the PATH"),
-        ParamSpec::int("timeout_min", "Time limit", 0, 0, 100_000).unit("min").help("0 = none"),
+        ParamSpec::int("timeout_min", "Time limit", 720, 0, 100_000).unit("min").help("The run (and every process it started) is stopped after this long; 0 = one day"),
     ]
 }
 

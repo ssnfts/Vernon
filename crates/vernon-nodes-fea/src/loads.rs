@@ -140,7 +140,7 @@ pub fn net_force_pressures(g: &Geometry, dir: DVec3, force_n: f64, min_cos: f64)
     Ok(NetForce { pressures, p_mpa: p, projected_area_mm2: proj })
 }
 
-/// Pressure field mapped from a surface carrying a point attribute `cp`.
+/// Pressure field mapped from a surface carrying a `Cp` attribute.
 pub struct FieldLoad {
     pub pressures: Vec<FacePressure>,
     pub resultant_fe: DVec3,
@@ -149,15 +149,44 @@ pub struct FieldLoad {
     pub loaded_area_mm2: f64,
 }
 
-/// Map `cp` from `surf` onto the boundary faces of the solid within
+/// Triangle point indices and the Cp at its three corners.
+pub type CpTriangle = ([u32; 3], [f64; 3]);
+
+/// Corner Cp values of every usable triangle of a pressure surface.
+///
+/// The field is the float attribute `Cp` (or `cp`) on points, else on prims
+/// as the airflow stage writes it. Prim values are constant over the face,
+/// and faces flagged `Cp_valid == 0` (no pressure sample matched) are left
+/// out so they never load the structure.
+pub fn surface_cp_triangles(surf: &Geometry) -> Result<Vec<CpTriangle>, String> {
+    let tris = surf.triangles();
+    let point = ["Cp", "cp"].iter().find_map(|k| surf.point_attribs.floats(k).ok());
+    let out: Vec<CpTriangle> = if let Some(cp) = point {
+        tris.into_iter().map(|(_, t)| (t, t.map(|i| cp[i as usize]))).collect()
+    } else if let Some(cp) = ["Cp", "cp"].iter().find_map(|k| surf.prim_attribs.floats(k).ok()) {
+        let valid = surf.prim_attribs.ints("Cp_valid").ok();
+        tris.into_iter()
+            .filter(|(pi, _)| valid.is_none_or(|v| v.get(*pi).is_none_or(|x| *x != 0)))
+            .map(|(pi, t)| (t, [cp[pi]; 3]))
+            .collect()
+    } else {
+        return Err("the pressure surface has no float attribute 'Cp' on points or faces".into());
+    };
+    if out.iter().any(|(_, c)| c.iter().any(|x| !x.is_finite())) {
+        return Err("the pressure surface has non-finite Cp values".into());
+    }
+    Ok(out)
+}
+
+/// Map `Cp` from `surf` onto the boundary faces of the solid within
 /// `snap_mm` (nearest point, barycentric interpolation) and compare the
 /// integrals over the footprint (conservation gate).
 pub fn field_pressures(g: &Geometry, surf: &Geometry, q_pa: f64, cp_in: f64, snap_mm: f64) -> Result<FieldLoad, String> {
-    let cp = surf.point_attribs.floats("cp").map_err(|_| "the pressure surface has no point attribute 'cp'".to_string())?;
-    let tri_ids: Vec<[u32; 3]> = surf.triangles().into_iter().map(|(_, t)| t).collect();
-    if tri_ids.is_empty() {
-        return Err("the pressure surface has no triangles".into());
+    let cp_tris = surface_cp_triangles(surf)?;
+    if cp_tris.is_empty() {
+        return Err("the pressure surface has no triangles with a valid Cp".into());
     }
+    let tri_ids: Vec<[u32; 3]> = cp_tris.iter().map(|(t, _)| *t).collect();
     let sgrid = TriGrid::new(tri_ids.iter().map(|t| t.map(|i| surf.points[i as usize])).collect());
     let faces = boundary_faces(g);
     let mut pressures = Vec::new();
@@ -165,8 +194,8 @@ pub fn field_pressures(g: &Geometry, surf: &Geometry, q_pa: f64, cp_in: f64, sna
     let mut area = 0.0;
     for b in &faces {
         let Some(n) = sgrid.nearest(b.centroid, snap_mm) else { continue };
-        let t = tri_ids[n.tri];
-        let c = n.bary[0] * cp[t[0] as usize] + n.bary[1] * cp[t[1] as usize] + n.bary[2] * cp[t[2] as usize];
+        let c3 = cp_tris[n.tri].1;
+        let c = n.bary[0] * c3[0] + n.bary[1] * c3[1] + n.bary[2] * c3[2];
         let p_mpa = crate::loads::pa_to_mpa((c - cp_in) * q_pa);
         fe += -b.normal * (p_mpa * b.area);
         area += b.area;
@@ -181,7 +210,7 @@ pub fn field_pressures(g: &Geometry, surf: &Geometry, q_pa: f64, cp_in: f64, sna
             .collect(),
     );
     let mut sf = DVec3::ZERO;
-    for t in &tri_ids {
+    for (t, c3) in &cp_tris {
         let p = t.map(|i| surf.points[i as usize]);
         let cr = (p[1] - p[0]).cross(p[2] - p[0]);
         let centroid = (p[0] + p[1] + p[2]) / 3.0;
@@ -190,7 +219,7 @@ pub fn field_pressures(g: &Geometry, surf: &Geometry, q_pa: f64, cp_in: f64, sna
         if nrm.dot(faces[n.tri].normal) < 0.0 {
             nrm = -nrm;
         }
-        let cmean = (cp[t[0] as usize] + cp[t[1] as usize] + cp[t[2] as usize]) / 3.0;
+        let cmean = (c3[0] + c3[1] + c3[2]) / 3.0;
         sf += -nrm * (pa_to_mpa((cmean - cp_in) * q_pa) * 0.5 * cr.length());
     }
     if pressures.is_empty() {
@@ -328,6 +357,34 @@ mod tests {
         assert!((f.resultant_fe.z + expect).abs() < 1e-9, "{:?}", f.resultant_fe);
         assert!((f.resultant_surface.z + expect).abs() < 1e-9, "{:?}", f.resultant_surface);
         assert!(field_pressures(&g, &Geometry::make_box(DVec3::ONE), q, 0.0, 0.5).is_err());
+    }
+
+    #[test]
+    fn field_mapping_reads_prim_cp_and_skips_invalid_faces() {
+        let g = box_tets(DVec3::new(40.0, 20.0, 6.0), [8, 4, 2]);
+        // Two plates above the top face, as the airflow stage writes them:
+        // prim attribute Cp, the second face without a matched sample.
+        let pts = vec![
+            DVec3::new(-20.0, -10.0, 3.0),
+            DVec3::new(0.0, -10.0, 3.0),
+            DVec3::new(0.0, 10.0, 3.0),
+            DVec3::new(-20.0, 10.0, 3.0),
+            DVec3::new(20.0, -10.0, 3.0),
+            DVec3::new(20.0, 10.0, 3.0),
+        ];
+        let mut surf = Geometry::from_polygons(pts, vec![vec![0, 1, 2, 3], vec![1, 4, 5, 2]]);
+        surf.prim_attribs.set("Cp", vernon_core::AttribArray::Float(vec![1.0, 5.0]));
+        surf.prim_attribs.set("Cp_valid", vernon_core::AttribArray::Int(vec![1, 0]));
+        let q = dynamic_pressure_pa(1.11, 200.0);
+        let f = field_pressures(&g, &surf, q, 0.0, 0.5).unwrap();
+        // Only the valid half loads the structure, at Cp = 1.
+        assert!((f.loaded_area_mm2 - 400.0).abs() < 1e-6, "{}", f.loaded_area_mm2);
+        assert!((f.resultant_fe.z + pa_to_mpa(q) * 400.0).abs() < 1e-9, "{:?}", f.resultant_fe);
+        assert!(f.pressures.iter().all(|p| (p.p_mpa - pa_to_mpa(q)).abs() < 1e-12));
+        // No Cp at all is a clear error.
+        let mut none = surf.clone();
+        none.prim_attribs = Default::default();
+        assert!(field_pressures(&g, &none, q, 0.0, 0.5).err().unwrap().contains("Cp"));
     }
 
     #[test]

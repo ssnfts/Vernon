@@ -340,10 +340,11 @@ fn hierarchy_tab(app: &mut VernonApp, ui: &mut Ui) {
 
 fn motion_tab(app: &mut VernonApp, ui: &mut Ui) {
     ui.label(
-        RichText::new("The time slider drives study sweeps: each frame is one sample (speed, yaw, load case…).")
+        RichText::new("The time slider drives the study sweep below: each frame is one sample of a node parameter (speed, yaw, load…). The track bar marks samples solved, failed or stale.")
             .small()
             .color(theme::TEXT_DIM),
     );
+    study_rollout(app, ui);
     rollout(ui, "Time configuration", true, |ui| {
         let t = &mut app.time;
         egui::Grid::new("time_cfg").num_columns(2).show(ui, |ui| {
@@ -402,6 +403,73 @@ fn motion_tab(app: &mut VernonApp, ui: &mut Ui) {
     if f != app.play.frame {
         app.play.set_frame(&app.time, f, app.now);
     }
+}
+
+/// Sweep definition: node, numeric parameter and the values at the segment
+/// start and end.
+fn study_rollout(app: &mut VernonApp, ui: &mut Ui) {
+    rollout(ui, "Study sweep", true, |ui| {
+        let before = (app.study.enabled, app.study.node, app.study.param.clone(), app.study.v0, app.study.v1);
+        let nodes: Vec<(vernon_graph::NodeId, String)> = app.st.graph.nodes.keys().map(|id| (*id, app.st.name(*id).to_string())).collect();
+        let numeric: Vec<(String, String, f64)> = app
+            .study
+            .node
+            .and_then(|n| app.st.info(n))
+            .map(|i| {
+                i.params
+                    .iter()
+                    .filter_map(|s| match s.kind {
+                        vernon_graph::ParamKind::Float { default, .. } => Some((s.name.clone(), s.label.clone(), default)),
+                        vernon_graph::ParamKind::Int { default, .. } => Some((s.name.clone(), s.label.clone(), default as f64)),
+                        _ => None,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        ui.checkbox(&mut app.study.enabled, "Drive from the time slider");
+        egui::Grid::new("study_cfg").num_columns(2).show(ui, |ui| {
+            ui.label("Node");
+            let label = app.study.node.map(|n| app.st.name(n).to_string()).unwrap_or_else(|| "(choose)".into());
+            egui::ComboBox::from_id_salt("study_node").selected_text(label).show_ui(ui, |ui| {
+                for (id, name) in &nodes {
+                    ui.selectable_value(&mut app.study.node, Some(*id), name);
+                }
+            });
+            ui.end_row();
+            ui.label("Parameter");
+            let label = numeric.iter().find(|p| p.0 == app.study.param).map(|p| p.1.clone()).unwrap_or_else(|| "(choose)".into());
+            egui::ComboBox::from_id_salt("study_param").selected_text(label).show_ui(ui, |ui| {
+                for (name, label, default) in &numeric {
+                    if ui.selectable_label(app.study.param == *name, label).clicked() && app.study.param != *name {
+                        app.study.param = name.clone();
+                        app.study.v0 = *default;
+                        app.study.v1 = *default;
+                    }
+                }
+            });
+            ui.end_row();
+            ui.label("Value at start");
+            ui.add(egui::DragValue::new(&mut app.study.v0).speed(0.1));
+            ui.end_row();
+            ui.label("Value at end");
+            ui.add(egui::DragValue::new(&mut app.study.v1).speed(0.1));
+            ui.end_row();
+        });
+        if !numeric.iter().any(|p| p.0 == app.study.param) && !app.study.param.is_empty() {
+            app.study.param.clear();
+        }
+        if app.study.active() {
+            let f = app.play.frame;
+            ui.label(
+                RichText::new(format!("frame {f}: {} = {:.4}", app.study.param, app.study.value_at(&app.time, f)))
+                    .small()
+                    .color(theme::TEXT_DIM),
+            );
+        }
+        if before != (app.study.enabled, app.study.node, app.study.param.clone(), app.study.v0, app.study.v1) {
+            app.study.redefine();
+        }
+    });
 }
 
 fn display_tab(app: &mut VernonApp, ui: &mut Ui) {

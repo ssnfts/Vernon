@@ -29,6 +29,10 @@ pub struct GridPlan {
 }
 
 /// Plan the axis-aligned cut planes (spec A3, grid mode).
+/// Most cut planes along one axis. A plan that reaches it comes from a body
+/// or bed in the wrong units (or a non-finite point) and is refused.
+pub const MAX_GRID_PLANES: usize = 256;
+
 pub fn grid_plan(
     b: &Aabb,
     mode: GridMode,
@@ -47,10 +51,12 @@ pub fn grid_plan(
         match mode {
             GridMode::ByBed | GridMode::ByCount => {
                 let k = if mode == GridMode::ByBed {
-                    ((e / usable[i] - 1e-9).ceil() as i64).max(1)
+                    let k = (e / usable[i] - 1e-9).ceil();
+                    if k.is_finite() { (k as i64).max(1) } else { 1 }
                 } else {
                     counts[i].max(1)
-                };
+                }
+                .min(MAX_GRID_PLANES as i64 + 1);
                 planes[i] = (1..k).map(|j| lo + e * j as f64 / k as f64).collect();
             }
             GridMode::BySpacing => {
@@ -58,7 +64,7 @@ pub fn grid_plan(
                 if s > 0.0 {
                     let tol = 1e-6 * diag;
                     let mut j = 0;
-                    loop {
+                    while planes[i].len() <= MAX_GRID_PLANES && j <= 64 * MAX_GRID_PLANES {
                         let pos = lo + offset[i] + s * j as f64;
                         if pos >= hi - tol {
                             break;
@@ -102,6 +108,14 @@ pub fn grid_split(
     snap: bool,
     slack: f64,
 ) -> CookResult<GridResult> {
+    if !geo.points.iter().all(|p| p.is_finite()) {
+        return Err(ctx.fail("the body has non-finite point positions"));
+    }
+    if plan.planes.iter().any(|p| p.len() >= MAX_GRID_PLANES) {
+        return Err(ctx.fail(format!(
+            "the grid needs {MAX_GRID_PLANES} or more cuts along one axis; check the units of the body, bed and spacing"
+        )));
+    }
     let mut planes: [Vec<f64>; 3] = plan.planes.clone();
     if snap && slack > 0.0 {
         let ext = geo.bounds().size();
@@ -116,7 +130,7 @@ pub fn grid_split(
                 let mut best = (f64::INFINITY, 0.0);
                 let steps = (dmax / 0.5).floor() as i64;
                 let mut cands: Vec<f64> = (-steps..=steps).map(|s| s as f64 * 0.5).collect();
-                cands.sort_by(|a, b| a.abs().partial_cmp(&b.abs()).unwrap_or(std::cmp::Ordering::Equal));
+                cands.sort_by(|a, b| a.abs().total_cmp(&b.abs()));
                 for d in cands {
                     let mut n = DVec3::ZERO;
                     n[axis] = 1.0;
@@ -331,6 +345,8 @@ pub fn weld_map(points: &[DVec3], tol: f64) -> Vec<u32> {
         return (0..points.len() as u32).collect();
     }
     let key = |p: DVec3| ((p.x / tol).floor() as i64, (p.y / tol).floor() as i64, (p.z / tol).floor() as i64);
+    // Saturating neighbour keys: a huge coordinate maps to i64::MAX.
+    let near = |k: i64, d: i64| k.saturating_add(d);
     let mut grid: HashMap<(i64, i64, i64), Vec<u32>> = HashMap::new();
     let mut map = Vec::with_capacity(points.len());
     for (i, &p) in points.iter().enumerate() {
@@ -339,7 +355,7 @@ pub fn weld_map(points: &[DVec3], tol: f64) -> Vec<u32> {
         'search: for dx in -1..=1 {
             for dy in -1..=1 {
                 for dz in -1..=1 {
-                    if let Some(c) = grid.get(&(kx + dx, ky + dy, kz + dz)) {
+                    if let Some(c) = grid.get(&(near(kx, dx), near(ky, dy), near(kz, dz))) {
                         for &r in c {
                             if (points[r as usize] - p).length() <= tol {
                                 rep = Some(r);
@@ -578,7 +594,7 @@ impl NodeOp for PartLabel {
         let ids = mesh::part_ids(&geo);
         let parts = mesh::unique_parts(&geo);
         let prefix = p.str("prefix")?.to_string();
-        let digits = p.int("digits")?.max(1) as usize;
+        let digits = p.int("digits")?.clamp(1, 6) as usize;
         let start = p.int("start")?;
         let label_of = |part: i64| {
             let rank = parts.binary_search(&part).unwrap_or(0) as i64;
@@ -631,7 +647,7 @@ mod tests {
             .filter(|p| p["axis"] == "x")
             .map(|p| p["position_mm"].as_f64().unwrap())
             .collect();
-        xs.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        xs.sort_by(|a, b| a.total_cmp(b));
         assert_eq!(xs, vec![200.0, 400.0]);
         let g = out[0].as_geometry().unwrap();
         let total: f64 = (0..6).map(|i| mesh::signed_volume(&mesh::extract_part(g, i))).sum();
@@ -639,6 +655,35 @@ mod tests {
         for i in 0..6 {
             assert_eq!(mesh::edge_stats(&mesh::extract_part(g, i)).open, 0);
         }
+    }
+
+    #[test]
+    fn bad_coordinates_and_params_never_panic() {
+        use crate::nodes_fit::{BuildFit, OrientScoreNode};
+        let mut nan = slab();
+        nan.points[0] = DVec3::new(f64::NAN, 0.0, 0.0);
+        let mut huge = slab();
+        huge.points[0] = DVec3::splat(1e300);
+        for g in [nan, huge] {
+            let ins = [Some(Data::geometry(g))];
+            // Errors are fine; panics (NaN sorts, key overflow, giant grids) are not.
+            let _ = cook(&BuildFit, "fit", &ins, &[]);
+            let _ = cook(&OrientScoreNode, "os", &ins, &[]);
+            let _ = cook(&Connectivity, "conn", &ins, &[]);
+            let _ = cook(&GridPartition, "gp", &ins, &[]);
+        }
+        let out = cook(&PartLabel, "pl", &[Some(Data::geometry(slab()))], &[("digits", ParamValue::Int(i64::MAX))]);
+        assert!(out.is_ok());
+        let huge_plan = grid_plan(
+            &Aabb { min: DVec3::ZERO, max: DVec3::splat(1e300) },
+            GridMode::ByBed,
+            DVec3::splat(300.0),
+            0.0,
+            [1; 3],
+            DVec3::ZERO,
+            DVec3::ZERO,
+        );
+        assert!(huge_plan.planes.iter().all(|p| p.len() <= MAX_GRID_PLANES));
     }
 
     #[test]

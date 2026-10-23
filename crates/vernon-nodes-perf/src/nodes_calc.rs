@@ -165,7 +165,19 @@ fn aero_loads_cook(ctx: &CookContext, inputs: &[Option<Data>], p: &Params) -> Co
     if cla < 0.0 {
         rep.note(Severity::Warning, "net lift (ClA < 0): the downforce columns are negative");
     }
-    Ok(vec![Data::json(table_json(&cols, rows)), Data::report(rep)])
+    // The design row the structural stage's aero load reads, so one
+    // density and one dynamic pressure flow from the air state onwards.
+    let mut table = table_json(&cols, rows);
+    if let Some(obj) = table.as_object_mut() {
+        obj.insert(
+            "design".into(),
+            serde_json::json!({
+                "v_kmh": design[0], "rho": rho, "q_pa": design[2], "design_q_pa": design[2],
+                "drag_n": design[3], "downforce_n": design[4], "design_downforce_n": design[4],
+            }),
+        );
+    }
+    Ok(vec![Data::json(table), Data::report(rep)])
 }
 
 // ------------------------------------------------------------------ duct heat
@@ -304,17 +316,31 @@ fn vehicle_info() -> NodeTypeInfo {
 }
 
 /// CdA and raw ClA from an aero result: a JSON object or a report with `CdA` / `ClA` metrics.
-fn aero_from(d: &Data) -> Option<(f64, f64)> {
-    match d {
+/// A placeholder result (no solver data yet: `placeholder: true` in JSON, or
+/// a report whose `data_available` is 0) is an error, never zero drag.
+fn aero_from(d: &Data) -> Result<(f64, f64), String> {
+    const NO_DATA: &str = "the aero input is a placeholder with no solver data; run the airflow case first";
+    const NO_VALUES: &str = "the aero input holds no CdA / ClA values";
+    let (cda, cla) = match d {
         Data::Json(v) => {
+            if v.get("placeholder").and_then(|x| x.as_bool()) == Some(true) {
+                return Err(NO_DATA.into());
+            }
             let g = |keys: &[&str]| keys.iter().find_map(|k| v.get(*k).and_then(|x| x.as_f64()));
-            Some((g(&["cda_m2", "CdA", "cda"])?, g(&["cla_m2", "ClA", "cla"])?))
+            (g(&["cda_m2", "CdA", "cda"]), g(&["cla_m2", "ClA", "cla"]))
         }
         Data::Report(r) => {
+            if r.metrics.get("data_available").is_some_and(|m| m.value < 0.5) {
+                return Err(NO_DATA.into());
+            }
             let g = |keys: &[&str]| keys.iter().find_map(|k| r.metrics.get(*k).map(|m| m.value));
-            Some((g(&["CdA", "cda_m2"])?, g(&["ClA", "cla_m2"])?))
+            (g(&["CdA", "cda_m2"]), g(&["ClA", "cla_m2"]))
         }
-        _ => None,
+        _ => (None, None),
+    };
+    match (cda, cla) {
+        (Some(cda), Some(cla)) if cda.is_finite() && cla.is_finite() => Ok((cda, cla)),
+        _ => Err(NO_VALUES.into()),
     }
 }
 
@@ -347,14 +373,10 @@ fn vehicle_cook(ctx: &CookContext, inputs: &[Option<Data>], p: &Params) -> CookR
     };
     let mut rep = Report::new("Vehicle");
     if let Some(d) = inputs.first().and_then(|d| d.as_ref()) {
-        match aero_from(d) {
-            Some((cda, cla)) => {
-                v.cda_m2 = cda;
-                v.cla_m2 = if p.bool("lift_positive")? { -cla } else { cla };
-                rep.note(Severity::Info, format!("aero taken from the connected result: CdA {:.4} m2, downforce area {:.4} m2", v.cda_m2, v.cla_m2));
-            }
-            None => return Err(ctx.fail("the aero input holds no CdA / ClA values")),
-        }
+        let (cda, cla) = aero_from(d).map_err(|e| ctx.fail(e))?;
+        v.cda_m2 = cda;
+        v.cla_m2 = if p.bool("lift_positive")? { -cla } else { cla };
+        rep.note(Severity::Info, format!("aero taken from the connected result: CdA {:.4} m2, downforce area {:.4} m2", v.cda_m2, v.cla_m2));
     }
     v.validate().or_fail(ctx)?;
     rep.metric("mass", Metric::new(v.mass_kg, "kg"))
@@ -392,8 +414,8 @@ fn gg_info() -> NodeTypeInfo {
 fn gg_cook(ctx: &CookContext, inputs: &[Option<Data>], p: &Params) -> CookResult<Vec<Data>> {
     let veh = vehicle_in(ctx, inputs, 0)?.ok_or(CookError::MissingInput { index: 0, name: "vehicle".into() })?;
     let rho = env_in(ctx, inputs, 1, p)?.rho;
-    let ns = p.int("n_speeds")?.max(2) as usize;
-    let na = p.int("ay_points")?.max(3) as usize;
+    let ns = p.int("n_speeds")?.clamp(2, 200) as usize;
+    let na = p.int("ay_points")?.clamp(3, 101) as usize;
     let vmax = if p.float("v_max_ms")? > 0.0 { p.float("v_max_ms")? } else { veh.v_cap_ms };
     let cols = [
         ("v_ms", "m/s"),

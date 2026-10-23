@@ -287,16 +287,15 @@ fn candidates(
     if v.is_empty() {
         // Nothing on the coarse lattice: probe finely and take the roomiest spot.
         v = grid((spacing / 8.0).max(0.5), 60);
-        v.sort_by(|a, b| b.clearance.partial_cmp(&a.clearance).unwrap_or(std::cmp::Ordering::Equal));
+        v.sort_by(|a, b| b.clearance.total_cmp(&a.clearance));
         v.truncate(1);
         return v;
     }
     v.sort_by(|a, b| {
         b.clearance
-            .partial_cmp(&a.clearance)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then(a.c.x.partial_cmp(&b.c.x).unwrap_or(std::cmp::Ordering::Equal))
-            .then(a.c.y.partial_cmp(&b.c.y).unwrap_or(std::cmp::Ordering::Equal))
+            .total_cmp(&a.clearance)
+            .then(a.c.x.total_cmp(&b.c.x))
+            .then(a.c.y.total_cmp(&b.c.y))
     });
     v
 }

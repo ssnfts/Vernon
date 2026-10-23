@@ -3,7 +3,7 @@
 
 use glam::{DMat4, DVec3};
 use serde_json::json;
-use vernon_core::{AttribArray, AttribType, Geometry, Metric, Report, Severity};
+use vernon_core::{keys, AttribArray, AttribType, Geometry, Metric, Report, Severity};
 use vernon_graph::node::inputs;
 use vernon_graph::{CookContext, CookResult, Data, DataKind, NodeOp, NodeTypeInfo, ParamSpec, Params, PortSpec};
 
@@ -28,6 +28,13 @@ fn material_k(p: &Params) -> CookResult<(Material, f64)> {
     let m = material(p.str("material")?);
     let ko = p.float("k_override")?;
     Ok((m, if ko > 0.0 { ko } else { m.z_ratio }))
+}
+
+/// Flags a Z strength ratio that is a placeholder in the shared material table.
+fn note_assumed_z(rep: &mut Report, m: &Material, overridden: bool) {
+    if !overridden && m.shared.z_ratio_assumed() {
+        rep.note(Severity::Warning, format!("{}; measure it on coupons or set the override", m.shared.z_ratio_note()));
+    }
 }
 
 fn up_label(up: DVec3) -> String {
@@ -96,6 +103,9 @@ impl NodeOp for BuildFit {
         };
         let row = p.str("layout")? == "row";
         let mut rep = Report::new("Build volume fit");
+        if load.length() > 0.0 {
+            note_assumed_z(&mut rep, &material(p.str("material")?), false);
+        }
         let mut placed = Vec::new();
         let mut entries = Vec::new();
         let (mut min_margin, mut min_scale, mut fails) = (f64::INFINITY, 1.0f64, 0usize);
@@ -202,7 +212,7 @@ impl NodeOp for OrientScoreNode {
         let diag = tris.diagonal();
         let mut scores: Vec<orient::OrientScore> =
             orient::candidate_ups(&tris, Search::parse(p.str("search")?)).into_iter().map(|u| orient::score(&tris, diag, u, &op)).collect();
-        scores.sort_by(|a, b| a.total.partial_cmp(&b.total).unwrap_or(std::cmp::Ordering::Equal));
+        scores.sort_by(|a, b| a.total.total_cmp(&b.total));
         let best = scores[0].clone();
         let ranked: Vec<_> = scores
             .iter()
@@ -220,6 +230,7 @@ impl NodeOp for OrientScoreNode {
         oriented.transform(DMat4::from_translation(DVec3::new(0.0, 0.0, -lo.z)));
 
         let mut rep = Report::new("Orientation score");
+        note_assumed_z(&mut rep, &mat, p.float("k_override")? > 0.0);
         rep.metric("candidate_count", Metric::new(scores.len() as f64, "count"));
         rep.metric("height_mm", Metric::new(best.height, "mm"));
         rep.metric("layer_count", Metric::new(best.layers as f64, "count"));
@@ -270,6 +281,7 @@ impl NodeOp for DirectionalStrength {
         let s = orient::strength(f, sf, sigma_xy, k);
         let r = orient::load_ratio(p.vec3("load_dir")?, p.vec3("build_dir")?, k);
         let mut rep = Report::new("Directional strength");
+        note_assumed_z(&mut rep, &mat, p.float("k_override")? > 0.0);
         rep.metric("z_allowable_ratio", Metric::new(k, "ratio"));
         rep.metric("sigma_xy_mpa", Metric::new(sigma_xy, "MPa"));
         rep.metric("sigma_z_mpa", Metric::new(s.sigma_z, "MPa"));
@@ -293,7 +305,6 @@ impl NodeOp for DirectionalStrength {
 
 pub struct HeatMargin;
 
-const TEMP_KEYS: [&str; 5] = ["surface_temp_c", "max_surface_temp_c", "temp_c_max", "max_temp_c", "peak_temp_c"];
 
 impl NodeOp for HeatMargin {
     fn info(&self) -> NodeTypeInfo {
@@ -318,7 +329,11 @@ impl NodeOp for HeatMargin {
         let hdt = if p.bool("annealed")? { mat.hdt_annealed_c } else { mat.hdt_c };
         let mut rep = Report::new("Heat margin");
         let from_param = p.float("surface_temp_c")?;
-        let from_input = inputs::opt_report(inp, 0).and_then(|r| TEMP_KEYS.iter().find_map(|k| r.metrics.get(*k).map(|m| m.value)));
+        let thermal = inputs::opt_report(inp, 0);
+        let from_input = thermal.as_ref().and_then(|r| r.first_metric(&keys::SURFACE_TEMP_ALIASES)).map(|(_, v)| v);
+        if thermal.is_some() && from_input.is_none() && from_param <= 0.0 {
+            rep.note(Severity::Warning, format!("the connected report has no surface temperature ({}); the heat balance below is used", keys::SURFACE_TEMP_ALIASES.join(", ")));
+        }
         let (ts, source) = if from_param > 0.0 {
             (from_param, "parameter")
         } else if let Some(t) = from_input {
@@ -335,8 +350,8 @@ impl NodeOp for HeatMargin {
             (orient::surface_temp_c(&h), "heat balance")
         };
         let safety = p.float("safety_k")?;
-        rep.metric("surface_temp_c", Metric::new(ts, "deg C"));
-        rep.metric("hdt_c", Metric::new(hdt, "deg C"));
+        rep.metric(keys::SURFACE_TEMP_C, Metric::new(ts, "deg C"));
+        rep.metric(keys::HDT_C, Metric::new(hdt, "deg C"));
         rep.metric("raw_margin_k", Metric::new(hdt - ts, "K"));
         rep.metric("heat_margin_k", Metric::new(hdt - ts - safety, "K").with_limit(0.0, false));
         rep.note(Severity::Info, format!("surface temperature from {source}"));
@@ -480,6 +495,21 @@ mod tests {
         assert!((metric(&out[0], "required_area_inplane_mm2") - 5.952).abs() < 1e-3);
         assert!((metric(&out[0], "required_area_z_mm2") - 17.544).abs() < 1e-3);
         assert!((metric(&out[0], "area_penalty") - 2.947).abs() < 1e-3);
+    }
+
+    #[test]
+    fn strength_reads_the_shared_table_and_flags_assumed_z_ratios() {
+        let notes = |mat: &str, ko: f64| {
+            let out = cook(&DirectionalStrength, "st", &[], &[("material", ParamValue::Str(mat.into())), ("k_override", ParamValue::Float(ko))]).unwrap();
+            let r = out[0].as_report().unwrap().clone();
+            (r.metrics["z_allowable_ratio"].value, r.notes.iter().any(|(s, t)| *s == Severity::Warning && t.contains("assumed")))
+        };
+        // same Z ratio the structural stage uses (ASA 29 %), sourced, so no flag
+        assert_eq!(notes("asa", 0.0), (vernon_core::materials::ASA.z_ratio, false));
+        assert_eq!(material("asa").hdt_c, vernon_core::materials::ASA.hdt_045_c);
+        // an unsourced ratio is flagged unless overridden
+        assert_eq!(notes("pet_cf", 0.0), (0.40, true));
+        assert_eq!(notes("pet_cf", 0.5), (0.5, false));
     }
 
     fn heat(material: &str, absorptivity: f64, safety: f64, annealed: bool) -> Report {

@@ -10,11 +10,13 @@
 
 pub mod attrib;
 pub mod geometry;
+pub mod materials;
+pub mod process;
 pub mod report;
 
 pub use attrib::{AttribArray, AttribTable, AttribType};
 pub use geometry::{Aabb, Geometry, Prim};
-pub use report::{Metric, Report, Severity};
+pub use report::{keys, Metric, Report, Severity};
 
 pub use glam::{DMat4, DVec2, DVec3};
 

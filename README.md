@@ -41,7 +41,15 @@ whole chain on a synthetic fender: car panel → noisy, misplaced scan copy →
 ICP alignment → deviation report and tolerance gate → freeform patch fit and
 surface deviation → 3 mm shell → grid split, bed fit and 3MF → CFD case →
 FEA deck → solar surface temperature vs HDT → flattening strain → vehicle,
-aero loads and top speed.
+aero loads and top speed. One air state (density, design dynamic pressure)
+flows from the airflow stage into the performance table and on into the
+structural aero load.
+
+`cook` ends with a gate summary: every report metric outside its limit, with
+value, limit and margin. It exits with 1 when a node fails and 3 when a gate
+fails that the scene does not list under the node's `expect_fail` (the
+example lists two: the single panel has no wheels, and the built-in solid
+mesher is a placeholder); `--ignore-gates` keeps the exit code at 0.
 
 ```powershell
 cargo run -p vernon-cli -- cook examples/bodykit_pipeline.vrn --out deviation.obj

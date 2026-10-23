@@ -10,6 +10,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use vernon_core::materials::{self as m, PrintMaterial};
+
 use crate::linalg::{invert6, M6};
 
 /// Reference room temperature for retention ratios (degC).
@@ -55,6 +57,9 @@ pub struct Preset {
     pub water_abs_pct: Option<f64>,
     pub dma: Option<DmaAnchors>,
     pub note: &'static str,
+    /// The shared row (heat, Z ratio, strength, density, water) with its source tags.
+    #[serde(skip)]
+    pub shared: &'static PrintMaterial,
 }
 
 impl Preset {
@@ -76,14 +81,15 @@ pub const PRESETS: [Preset; 6] = [
         e_z: 2400.0,
         nu_xy: 0.35,
         nu_xz: 0.30,
-        xt: 50.0,
-        z_ratio: 0.55,
-        z_ratio_basis: "report: upright strength about 55 % of flat",
-        density_g_cm3: 1.24,
-        hdt_045_c: 57.0,
-        hdt_045_annealed_c: None,
-        hdt_18_c: None,
-        water_abs_pct: None,
+        xt: m::PLA.sigma_xy_mpa,
+        z_ratio: m::PLA.z_ratio,
+        z_ratio_basis: m::PLA.z_ratio_basis,
+        density_g_cm3: m::PLA.density_g_cm3,
+        hdt_045_c: m::PLA.hdt_045_c,
+        hdt_045_annealed_c: m::PLA.hdt_045_annealed_c,
+        hdt_18_c: m::PLA.hdt_18_c,
+        water_abs_pct: m::PLA.water_abs_pct,
+        shared: &m::PLA,
         dma: Some(DmaAnchors { r40: 0.919, t_onset_c: 57.0, tg_onset_c: 59.1 }),
         note: PLACEHOLDER,
     },
@@ -94,16 +100,17 @@ pub const PRESETS: [Preset; 6] = [
         e_z: 1700.0,
         nu_xy: 0.38,
         nu_xz: 0.33,
-        xt: 45.0,
-        z_ratio: 0.46,
-        z_ratio_basis: "report: upright strength about 46 % of flat",
-        density_g_cm3: 1.27,
-        hdt_045_c: 70.5,
-        hdt_045_annealed_c: None,
-        hdt_18_c: None,
-        water_abs_pct: None,
+        xt: m::PETG.sigma_xy_mpa,
+        z_ratio: m::PETG.z_ratio,
+        z_ratio_basis: m::PETG.z_ratio_basis,
+        density_g_cm3: m::PETG.density_g_cm3,
+        hdt_045_c: m::PETG.hdt_045_c,
+        hdt_045_annealed_c: m::PETG.hdt_045_annealed_c,
+        hdt_18_c: m::PETG.hdt_18_c,
+        water_abs_pct: m::PETG.water_abs_pct,
+        shared: &m::PETG,
         dma: Some(DmaAnchors { r40: 0.803, t_onset_c: 80.0, tg_onset_c: 80.7 }),
-        note: "HDT is the middle of the 69-72 degC range in the report; absolute values are placeholders",
+        note: "HDT is the low end of the 69-72 degC range in the report (shared with the print and solar stages); absolute values are placeholders",
     },
     Preset {
         id: "asa",
@@ -112,16 +119,17 @@ pub const PRESETS: [Preset; 6] = [
         e_z: 1600.0,
         nu_xy: 0.38,
         nu_xz: 0.33,
-        xt: 40.0,
-        z_ratio: 0.29,
-        z_ratio_basis: "report: upright strength about 29 % of flat",
-        density_g_cm3: 1.07,
-        hdt_045_c: 101.5,
-        hdt_045_annealed_c: None,
-        hdt_18_c: None,
-        water_abs_pct: None,
+        xt: m::ASA.sigma_xy_mpa,
+        z_ratio: m::ASA.z_ratio,
+        z_ratio_basis: m::ASA.z_ratio_basis,
+        density_g_cm3: m::ASA.density_g_cm3,
+        hdt_045_c: m::ASA.hdt_045_c,
+        hdt_045_annealed_c: m::ASA.hdt_045_annealed_c,
+        hdt_18_c: m::ASA.hdt_18_c,
+        water_abs_pct: m::ASA.water_abs_pct,
+        shared: &m::ASA,
         dma: Some(DmaAnchors { r40: 0.807, t_onset_c: 50.0, tg_onset_c: 105.7 }),
-        note: "HDT is the middle of the 100-103 degC range in the report; absolute values are placeholders",
+        note: "HDT is the low end of the 100-103 degC range in the report (shared with the print and solar stages); absolute values are placeholders",
     },
     Preset {
         id: "pet_cf",
@@ -130,14 +138,15 @@ pub const PRESETS: [Preset; 6] = [
         e_z: 3500.0,
         nu_xy: 0.35,
         nu_xz: 0.30,
-        xt: 70.0,
-        z_ratio: 0.40,
-        z_ratio_basis: "assumed (not in the report): measure on coupons",
-        density_g_cm3: 1.30,
-        hdt_045_c: 205.0,
-        hdt_045_annealed_c: None,
-        hdt_18_c: None,
-        water_abs_pct: Some(0.37),
+        xt: m::PET_CF.sigma_xy_mpa,
+        z_ratio: m::PET_CF.z_ratio,
+        z_ratio_basis: m::PET_CF.z_ratio_basis,
+        density_g_cm3: m::PET_CF.density_g_cm3,
+        hdt_045_c: m::PET_CF.hdt_045_c,
+        hdt_045_annealed_c: m::PET_CF.hdt_045_annealed_c,
+        hdt_18_c: m::PET_CF.hdt_18_c,
+        water_abs_pct: m::PET_CF.water_abs_pct,
+        shared: &m::PET_CF,
         dma: None,
         note: PLACEHOLDER,
     },
@@ -148,16 +157,17 @@ pub const PRESETS: [Preset; 6] = [
         e_z: 3800.0,
         nu_xy: 0.38,
         nu_xz: 0.33,
-        xt: 85.0,
-        z_ratio: 0.40,
-        z_ratio_basis: "assumed (not in the report): measure on coupons",
-        density_g_cm3: 1.25,
-        hdt_045_c: 84.8,
-        hdt_045_annealed_c: Some(190.7),
-        hdt_18_c: None,
-        water_abs_pct: Some(2.35),
+        xt: m::PAHT_CF.sigma_xy_mpa,
+        z_ratio: m::PAHT_CF.z_ratio,
+        z_ratio_basis: m::PAHT_CF.z_ratio_basis,
+        density_g_cm3: m::PAHT_CF.density_g_cm3,
+        hdt_045_c: m::PAHT_CF.hdt_045_c,
+        hdt_045_annealed_c: m::PAHT_CF.hdt_045_annealed_c,
+        hdt_18_c: m::PAHT_CF.hdt_18_c,
+        water_abs_pct: m::PAHT_CF.water_abs_pct,
+        shared: &m::PAHT_CF,
         dma: None,
-        note: "HDT is conditional on annealing (84.8 as printed, 190.7 annealed); water uptake is the PA6-CF value from the report, similar sensitivity assumed",
+        note: "HDT is conditional on annealing (84.8 as printed, 190.7 annealed); water uptake is assumed equal to the PA6-CF value in the report",
     },
     Preset {
         id: "ppa_cf",
@@ -166,14 +176,15 @@ pub const PRESETS: [Preset; 6] = [
         e_z: 4500.0,
         nu_xy: 0.35,
         nu_xz: 0.30,
-        xt: 168.0,
-        z_ratio: 57.0 / 168.0,
-        z_ratio_basis: "report: 57 MPa through-stack against 168 MPa in plane",
-        density_g_cm3: 1.28,
-        hdt_045_c: 227.0,
-        hdt_045_annealed_c: None,
-        hdt_18_c: Some(196.0),
-        water_abs_pct: None,
+        xt: m::PPA_CF.sigma_xy_mpa,
+        z_ratio: m::PPA_CF.z_ratio,
+        z_ratio_basis: m::PPA_CF.z_ratio_basis,
+        density_g_cm3: m::PPA_CF.density_g_cm3,
+        hdt_045_c: m::PPA_CF.hdt_045_c,
+        hdt_045_annealed_c: m::PPA_CF.hdt_045_annealed_c,
+        hdt_18_c: m::PPA_CF.hdt_18_c,
+        water_abs_pct: m::PPA_CF.water_abs_pct,
+        shared: &m::PPA_CF,
         dma: None,
         note: "strengths are report values; moduli and density are placeholders",
     },
@@ -591,6 +602,20 @@ mod tests {
         assert_eq!(preset("asa").unwrap().z_ratio, 0.29);
         assert_eq!(preset("pet-cf").unwrap().water_abs_pct, Some(0.37));
         assert!(preset("nope").is_none());
+    }
+
+    #[test]
+    fn presets_read_the_shared_material_table() {
+        // heat, Z ratio, strength and density are the numbers the print and
+        // solar stages use, so a material cannot pass one stage on table drift
+        for p in &PRESETS {
+            let s = vernon_core::materials::print_material(p.id).unwrap();
+            assert!(std::ptr::eq(p.shared, s) || p.shared == s, "{}", p.id);
+            assert_eq!((p.hdt_045_c, p.hdt_045_annealed_c, p.z_ratio, p.xt, p.density_g_cm3), (s.hdt_045_c, s.hdt_045_annealed_c, s.z_ratio, s.sigma_xy_mpa, s.density_g_cm3));
+        }
+        assert_eq!(preset("petg").unwrap().hdt_045_c, 69.0);
+        assert_eq!(preset("asa").unwrap().hdt_045_c, 100.0);
+        assert!(preset("paht_cf").unwrap().shared.z_ratio_assumed());
     }
 
     #[test]

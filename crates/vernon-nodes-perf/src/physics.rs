@@ -90,12 +90,16 @@ impl Env {
         json!({"kind": "env.v1", "rho": self.rho, "T_c": self.t_c, "p_pa": self.p_pa, "rh": self.rh})
     }
 
+    /// Reads `env.v1` and also the airflow stage's air state (`t_c`,
+    /// `rh_pct` in percent), so either can feed the performance nodes.
     pub fn from_json(v: &Value) -> Result<Self, String> {
         let get = |k: &str| v.get(k).and_then(Value::as_f64);
+        let t_c = get("T_c").or_else(|| get("t_c"));
+        let rh = get("rh").or_else(|| get("rh_pct").map(|p| p / 100.0));
         let rho = match get("rho") {
             Some(r) => r,
-            None => match (get("T_c"), get("p_pa")) {
-                (Some(t), Some(p)) => air_density(t, p, get("rh").unwrap_or(0.0), R_DRY),
+            None => match (t_c, get("p_pa")) {
+                (Some(t), Some(p)) => air_density(t, p, rh.unwrap_or(0.0), R_DRY),
                 _ => return Err("env: needs rho, or T_c and p_pa".into()),
             },
         };
@@ -104,9 +108,9 @@ impl Env {
         }
         Ok(Self {
             rho,
-            t_c: get("T_c").unwrap_or(f64::NAN),
+            t_c: t_c.unwrap_or(f64::NAN),
             p_pa: get("p_pa").unwrap_or(f64::NAN),
-            rh: get("rh").unwrap_or(f64::NAN),
+            rh: rh.unwrap_or(f64::NAN),
         })
     }
 }

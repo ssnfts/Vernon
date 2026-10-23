@@ -180,7 +180,7 @@ pub struct CookContext {
     pub node_name: String,
     /// Scratch directory for this node's files (solver cases, exports).
     pub work_dir: PathBuf,
-    /// Current frame, for animated parameters later.
+    /// Current study frame (the time slider; see `Graph::frame`), 0 outside a sweep.
     pub frame: f64,
 }
 

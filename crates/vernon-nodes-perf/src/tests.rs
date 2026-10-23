@@ -80,7 +80,7 @@ fn assert_clean(what: &str, text: &str) {
     }
 }
 
-const EXPECTED: [&str; 18] = [
+const EXPECTED: [&str; 19] = [
     "perf.air_density",
     "perf.aero_loads",
     "perf.duct_heat",
@@ -99,6 +99,7 @@ const EXPECTED: [&str; 18] = [
     "perf.cp_compare",
     "perf.tuft_analysis",
     "perf.validation_gate",
+    "perf.gate_summary",
 ];
 
 #[test]
@@ -220,6 +221,11 @@ fn input_for(name: &str, kind: DataKind) -> Option<Data> {
         }
         ("surface", _) => Some(Data::geometry(sphere_with_cp())),
         ("fit", _) => Some(Data::json(json!({"cda_m2": 0.64, "cda_ci95": [0.6, 0.68], "min_detectable_dcda_m2": 0.02}))),
+        (n, DataKind::Report) if n.starts_with("report_") => {
+            let mut r = Report::new(n);
+            r.metric("ok", Metric::new(1.0, "-").with_limit(1.0, false));
+            Some(Data::report(r))
+        }
         _ => None,
     }
 }
@@ -635,6 +641,32 @@ fn vehicle_node_takes_aero_from_the_airflow_stage() {
     close(Vehicle::from_json(out2[0].as_json().unwrap()).unwrap().cla_m2, -0.7, 1e-12, "no flip");
     let bad = cook("perf.vehicle", vec![None], &[("engine_curve", ParamValue::Str("not a curve".into()))]);
     assert!(bad.is_err());
+}
+
+#[test]
+fn vehicle_node_refuses_a_placeholder_aero_result() {
+    // The airflow stage's force result before the solver has run.
+    let ph = serde_json::json!({"placeholder": true, "cda": 0.0, "cla": 0.0, "cd": 0.0, "cl": 0.0});
+    let err = cook("perf.vehicle", vec![Some(Data::json(ph))], &[]).unwrap_err().to_string();
+    assert!(err.contains("placeholder"), "{err}");
+    let mut rep = Report::new("cfd");
+    rep.metric("data_available", Metric::new(0.0, "-").with_limit(1.0, false));
+    let err = cook("perf.vehicle", vec![Some(Data::report(rep.clone()))], &[]).unwrap_err().to_string();
+    assert!(err.contains("placeholder"), "{err}");
+    // A report without the aero metrics is refused too, not read as zero drag.
+    rep.metric("data_available", Metric::new(1.0, "-").with_limit(1.0, false));
+    assert!(cook("perf.vehicle", vec![Some(Data::report(rep))], &[]).is_err());
+    // A real result still passes through.
+    let ok = serde_json::json!({"placeholder": false, "cda": 0.64, "cla": -0.9});
+    let out = cook("perf.vehicle", vec![Some(Data::json(ok))], &[]).unwrap();
+    close(Vehicle::from_json(out[0].as_json().unwrap()).unwrap().cda_m2, 0.64, 1e-12, "CdA");
+}
+
+#[test]
+fn huge_paths_and_counts_are_refused_not_allocated() {
+    let pts = [[0.0, 0.0], [1e300, 0.0], [1e300, 1e300], [0.0, 1e300]];
+    let err = track_from_path(&pts, true, &PathOpts::default()).unwrap_err();
+    assert!(err.contains("units"), "{err}");
 }
 
 // ------------------------------------------------------------------ tracks

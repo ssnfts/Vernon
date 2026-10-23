@@ -215,7 +215,7 @@ pub fn chain_loops(edges: &[(u32, u32)], pos2: &dyn Fn(u32) -> DVec2) -> Result<
                     let oy = if edges[y].0 == v { edges[y].1 } else { edges[y].0 };
                     let ax = ccw_angle(d_in, pos2(ox) - pos2(v));
                     let ay = ccw_angle(d_in, pos2(oy) - pos2(v));
-                    ax.partial_cmp(&ay).unwrap_or(std::cmp::Ordering::Equal)
+                    ax.total_cmp(&ay)
                 })
                 .expect("candidate exists");
             used[best] = true;

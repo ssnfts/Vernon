@@ -6,6 +6,7 @@ use eframe::egui::{self, pos2, vec2, Align2, Color32, FontId, Key, Rect, RichTex
 use super::icons::{self, Icon};
 use super::VernonApp;
 use crate::hotkeys::Action;
+use crate::study::SampleState;
 use crate::theme;
 use crate::viewport::grid;
 
@@ -47,7 +48,14 @@ pub fn time_slider(app: &mut VernonApp, ctx: &egui::Context) {
                     FontId::proportional(11.0),
                     theme::TEXT,
                 );
-                resp.on_hover_text("Study slider: each frame is one sample of the active sweep");
+                let sample = match app.study.state(app.play.frame) {
+                    _ if !app.study.active() => "no study sweep defined (Motion tab)",
+                    Some(SampleState::Solved) => "this sample is solved",
+                    Some(SampleState::Failed) => "this sample failed",
+                    Some(SampleState::Stale) => "this sample is stale",
+                    None => "this sample is not solved yet",
+                };
+                resp.on_hover_text(format!("Study slider: each frame is one sample of the sweep; {sample}"));
                 if ui.small_button(">").on_hover_text("Next frame (.)").clicked() {
                     app.do_action(Action::NextFrame, ctx);
                 }
@@ -90,9 +98,35 @@ pub fn track_bar(app: &mut VernonApp, ctx: &egui::Context) {
                 }
                 f += step;
             }
+            // study samples: solved, failed or stale since a later edit
+            let w = (track.width() / len as f32).clamp(2.0, 8.0);
+            let (mut solved, mut failed, mut stale) = (0, 0, 0);
+            for (&f, &s) in app.study.samples.range(app.time.start..=app.time.end) {
+                let color = match s {
+                    SampleState::Solved => {
+                        solved += 1;
+                        theme::PASS
+                    }
+                    SampleState::Failed => {
+                        failed += 1;
+                        theme::FAIL
+                    }
+                    SampleState::Stale => {
+                        stale += 1;
+                        theme::DISABLED
+                    }
+                };
+                let x = frame_x(app, track, f);
+                p.rect_filled(Rect::from_min_max(pos2(x - w * 0.5, rect.top() + 12.0), pos2(x + w * 0.5, rect.bottom() - 1.0)), 1.0, color);
+            }
             let x = frame_x(app, track, app.play.frame);
             p.line_segment([pos2(x, rect.top()), pos2(x, rect.bottom())], Stroke::new(2.0_f32, theme::AXIS_Z));
-            ui.allocate_rect(rect, Sense::hover());
+            let hover = if app.study.active() || !app.study.samples.is_empty() {
+                format!("Study samples: {solved} solved (green), {failed} failed (red), {stale} stale (grey)")
+            } else {
+                "Define a study sweep in the Motion tab to mark solved, failed and stale samples here".into()
+            };
+            ui.allocate_rect(rect, Sense::hover()).on_hover_text(hover);
         });
 }
 
@@ -139,9 +173,32 @@ pub fn status_bar(app: &mut VernonApp, ctx: &egui::Context) {
                         n => format!("{n} Objects Selected"),
                     };
                     ui.add(egui::Label::new(RichText::new(sel).color(theme::TEXT)).truncate());
-                    let (prompt, warn) = app.prompt();
-                    let col = if warn { theme::WARN } else { theme::TEXT_DIM };
-                    ui.add(egui::Label::new(RichText::new(prompt).small().color(col)).truncate());
+                    match app.st.cook_status() {
+                        Some(s) if s.busy => {
+                            ui.horizontal(|ui| {
+                                ui.spinner();
+                                if ui.small_button("Stop").on_hover_text("Stop after the node being cooked").clicked() {
+                                    app.st.stop_cook();
+                                }
+                                let node = s.progress.current.as_deref().unwrap_or("…");
+                                let text = format!("Cooking {node} ({} done, {:.0} s); results shown are out of date", s.progress.cooked, s.seconds);
+                                ui.add(egui::Label::new(RichText::new(text).small().color(theme::WARN)).truncate());
+                            });
+                        }
+                        Some(s) if s.stale => {
+                            let text = if s.stopped {
+                                "Cook stopped: results are out of date until the next change"
+                            } else {
+                                "Results are out of date"
+                            };
+                            ui.add(egui::Label::new(RichText::new(text).small().color(theme::WARN)).truncate());
+                        }
+                        _ => {
+                            let (prompt, warn) = app.prompt();
+                            let col = if warn { theme::WARN } else { theme::TEXT_DIM };
+                            ui.add(egui::Label::new(RichText::new(prompt).small().color(col)).truncate());
+                        }
+                    }
                 });
                 ui.separator();
                 // Cursor coordinates and grid.

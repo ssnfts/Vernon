@@ -278,22 +278,24 @@ Support nodes are headless: pure functions of their inputs, so shell logic is un
 
 | # | id | Label | Inputs | Outputs | Key params (default; range; unit) | Plan |
 |---|---|---|---|---|---|---|
-| 1 | geometry.viewport_layout | Viewport Layout | window rect, layout name, maximised id | tile rects, active id | layout quad; splitter 0.5; 0.1-0.9; ratio. gutter 2; 0-8; px | Now |
-| 2 | geometry.frame_bounds | Frame Bounds | mesh or selection, camera | aabb, sphere_r_mm, fit_distance_mm, near, far | fov 45; 10-120; deg. margin 1.05; 1-1.5. mode sphere or box | Now |
-| 3 | geometry.reference_grid | Reference Grid | plane, camera, unit | line list, major list, readout | spacing 10; 0.001-1e6; mm. major_every 10; 2-100. extent 7; 1-100. adaptive on | Now |
-| 4 | geometry.view_orient | View Orientation | click ray, camera | region id 0-25, view dir, up | band 0.3; 0.1-0.45. snap deg 10; 0-20. slerp 0.3; 0-1; s. size 1; 0-3 | Now |
-| 5 | geometry.view_navigate | View Navigate | camera, drag or wheel, mode | camera | mode orbit, selected, sub, pan, zoom. wheel 1.1; 1.02-1.5. clamp 1e-3 to 1e6 x diag | Now |
-| 6 | geometry.pick_ray | Pick Ray | pixel, camera, meshes | hit part, face id, t, u, v | edge tol 4; 1-12; px | Now |
-| 7 | geometry.numeric_transform | Numeric Transform | part, x y z, mode | transform, readout | mode absolute or offset; unit mm | Now |
-| 8 | geometry.scene_stats | Scene Statistics | meshes | vertices, triangles, aabb, volume_mm3 | selected only off | Now |
-| 9 | geometry.stack_view | Stack View | graph, part | ordered entries, flags (bypass, shared, end result id) | show_end_result on; preserve position on; mru 20; 1-50 | Now |
-| 10 | geometry.graph_layout | Graph Layout | nodes, edges | positions, crossing count | rank gap 120; node gap 40; sweeps 24; px | Now (simple), WB (network simplex) |
-| 11 | geometry.hotkey_map | Hotkey Map | profile, user overrides | binding table, conflict list | profile default; chords on | Now |
-| 12 | geometry.theme_check | Theme Contrast Check | token pairs | ratios, violations | text min 4.5; non-text min 3.0 | Now |
-| 13 | performance.study_sweep | Study Sweep | parameter, v0, v1, segment | samples frame -> value, state per frame, display string | v0 0; v1 300; unit km/h. segment 0-150; fps 30; 1-120. display frames, timecode, frames_ticks, min_sec_ticks | Now |
-| 14 | performance.gate_summary | Gate Summary | gate records (stage, id, value, unit, limit, margin, state) | rows, worst state, pass and fail counts, stale list | stale policy grey; warn band 0 | Now |
+| 1 | geo.viewport_layout | Viewport Layout | window rect, layout name, maximised id | tile rects, active id | layout quad; splitter 0.5; 0.1-0.9; ratio. gutter 2; 0-8; px | Now |
+| 2 | geo.frame_bounds | Frame Bounds | mesh or selection, camera | aabb, sphere_r_mm, fit_distance_mm, near, far | fov 45; 10-120; deg. margin 1.05; 1-1.5. mode sphere or box | Now |
+| 3 | geo.reference_grid | Reference Grid | plane, camera, unit | line list, major list, readout | spacing 10; 0.001-1e6; mm. major_every 10; 2-100. extent 7; 1-100. adaptive on | Now |
+| 4 | geo.view_orient | View Orientation | click ray, camera | region id 0-25, view dir, up | band 0.3; 0.1-0.45. snap deg 10; 0-20. slerp 0.3; 0-1; s. size 1; 0-3 | Now |
+| 5 | geo.view_navigate | View Navigate | camera, drag or wheel, mode | camera | mode orbit, selected, sub, pan, zoom. wheel 1.1; 1.02-1.5. clamp 1e-3 to 1e6 x diag | Now |
+| 6 | geo.pick_ray | Pick Ray | pixel, camera, meshes | hit part, face id, t, u, v | edge tol 4; 1-12; px | Now |
+| 7 | geo.numeric_transform | Numeric Transform | part, x y z, mode | transform, readout | mode absolute or offset; unit mm | Now |
+| 8 | geo.scene_stats | Scene Statistics | meshes | vertices, triangles, aabb, volume_mm3 | selected only off | Now |
+| 9 | geo.stack_view | Stack View | graph, part | ordered entries, flags (bypass, shared, end result id) | show_end_result on; preserve position on; mru 20; 1-50 | Now |
+| 10 | geo.graph_layout | Graph Layout | nodes, edges | positions, crossing count | rank gap 120; node gap 40; sweeps 24; px | Now (simple), WB (network simplex) |
+| 11 | geo.hotkey_map | Hotkey Map | profile, user overrides | binding table, conflict list | profile default; chords on | Now |
+| 12 | geo.theme_check | Theme Contrast Check | token pairs | ratios, violations | text min 4.5; non-text min 3.0 | Now |
+| 13 | perf.study_sweep | Study Sweep | parameter, v0, v1, segment | samples frame -> value, state per frame, display string | v0 0; v1 300; unit km/h. segment 0-150; fps 30; 1-120. display frames, timecode, frames_ticks, min_sec_ticks | Now |
+| 14 | perf.gate_summary | Gate Summary | gate records (stage, id, value, unit, limit, margin, state) | rows, worst state, pass and fail counts, stale list | stale policy grey; warn band 0 | Now |
 
-14 nodes proposed.
+14 nodes proposed. Ids use the registry's stage prefixes (`geo.`, `perf.`).
+
+Status (implemented): the logic of #1-#12 is UI-state logic and lives as headless, unit-tested app modules rather than graph nodes, because it works on window, camera and selection state that no graph wire carries: #1 `app/src/viewport/layout.rs`, #2/#5/#6 `app/src/viewport/camera.rs`, #3 `app/src/viewport/grid.rs`, #4 the viewport orientation gizmo (six axis views so far; the 26-region cube is still to do), #7 the Move/Rotate/Scale tools (the status-bar numeric type-in is still to do), #8 the Utilities statistics page, #9 the Modify stack, #10 the node editor's layered layout, #11 `app/src/hotkeys.rs`, #12 `app/src/theme.rs`. #13 is the Motion tab's study sweep (`app/src/study.rs`): it maps the time-slider frame to a node parameter, passes the frame to every cook (`Graph::frame` -> `CookContext::frame`) and keeps a solved/failed/stale state per sample for the track bar. #14 is a registered node, `perf.gate_summary`, built on the gate rules in `vernon_graph::gate` that the app's Gate Dashboard and `vernon-cli cook` share.
 
 ## 5. Golden test ideas (numbers)
 

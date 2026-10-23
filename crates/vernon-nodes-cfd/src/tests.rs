@@ -292,6 +292,12 @@ fn full_chain_from_surfaces_to_site_loads() {
     let res = ForceResult::from_json(fc[0].as_json().unwrap()).unwrap();
     assert!((res.cd - 0.32).abs() < 1e-3 && (res.cda - 0.32 * a_front).abs() < 1e-3 * a_front, "{res:?}");
     assert!(res.cla < 0.0);
+    // the case writer's mesh and boundary recipe travels with the result for the A/B check
+    let recipe = res.recipe.as_ref().expect("recipe stamped on the force result");
+    let bc_json = bc[0].as_json().unwrap();
+    assert_eq!(recipe.ground_mode, bc_json["ground_mode"].as_str().unwrap());
+    assert_eq!(recipe.wheel_mode, bc_json["wheel_mode"].as_str().unwrap());
+    assert!(recipe.dx0_m.is_some() && recipe.base_cells.is_some() && recipe.levels.is_some(), "{recipe:?}");
 
     // three meshes, then a baseline-vs-kit comparison and the site loads
     let study = cook(&reg, "cfd.mesh_study", vec![Some(Data::json(force_json(0.2825))), Some(Data::json(force_json(0.2862))), Some(Data::json(force_json(0.2925)))], &[]);

@@ -130,7 +130,7 @@ impl NodeOp for SolveExternal {
             .output(PortSpec::new("results", DataKind::Json))
             .output(PortSpec::new("report", DataKind::Report))
             .output(PortSpec::new("dir", DataKind::File))
-            .param(ParamSpec::bool("run", "Run solver", false).help("Run the executable below on every deck. Results already computed from an identical deck are reused"))
+            .param(ParamSpec::bool("run", "Run solver", false).help("Run the executable below once on every deck; switches itself off again. Results already computed from an identical deck are reused").action())
             .param(ParamSpec::path("exe_path", "Solver executable", &["exe", ""], false).help("Empty searches the program path"))
             .param(ParamSpec::int("threads", "Threads", 0, 0, 256).help("0 leaves the solver default"))
             .param(ParamSpec::float("timeout_s", "Timeout", 3600.0, 1.0, 604800.0).unit("s"))
@@ -192,6 +192,7 @@ impl NodeOp for SolveExternal {
                                 status = "solved";
                             }
                             RunStatus::TimedOut => return Err(CookError::External { tool: "CalculiX".into(), message: format!("timed out on case '{}'", d.case) }),
+                            RunStatus::Cancelled => return Err(CookError::External { tool: "CalculiX".into(), message: format!("stopped on case '{}' (cook cancelled)", d.case) }),
                             RunStatus::Exited(code) => {
                                 return Err(CookError::External { tool: "CalculiX".into(), message: format!("case '{}' ended with exit code {code}:\n{}", d.case, tail(&log, 15)) });
                             }

@@ -656,6 +656,9 @@ fn patch_report(title: &str, conv: &Conversion, ps: &PatchSet, max_dev_limit: f6
     report
 }
 
+/// Most faces `surface.subd_to_nurbs` fits after refining the cage.
+pub const MAX_REFINED_FACES: f64 = 50_000.0;
+
 /// `surface.subd_to_nurbs`
 pub struct SubdToNurbsNode;
 
@@ -688,7 +691,13 @@ impl NodeOp for SubdToNurbsNode {
         if sub.faces.is_empty() {
             return Err(ctx.fail("the cage has no usable faces"));
         }
-        for _ in 0..params.int("refine_levels")?.clamp(0, 3) {
+        let levels = params.int("refine_levels")?.clamp(0, 3);
+        // Each level makes four faces of one; refuse a cage the fit would take minutes on.
+        let faces = sub.faces.len() as f64 * 4f64.powi(levels as i32);
+        if faces > MAX_REFINED_FACES {
+            return Err(ctx.fail(format!("{levels} refine levels would make about {faces:.0} faces (limit {MAX_REFINED_FACES:.0}); lower the refine levels or simplify the cage")));
+        }
+        for _ in 0..levels {
             sub = sub.refine();
         }
         let max_faces = params.float("max_faces")? as usize;

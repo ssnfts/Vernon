@@ -199,6 +199,59 @@ pub struct PorousZone {
     pub f: [f64; 3],
 }
 
+/// What a run was solved with, stamped by the case writer and carried by the
+/// history and the force result, so a baseline-vs-kit comparison can refuse
+/// runs that differ in more than the geometry.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Recipe {
+    /// Background cell size, m.
+    pub dx0_m: Option<f64>,
+    /// Background cell count.
+    pub base_cells: Option<f64>,
+    /// Refinement levels of the mesh plan, as compact JSON.
+    pub levels: Option<String>,
+    pub ground_mode: String,
+    pub wheel_mode: String,
+    pub yaw_deg: f64,
+    /// Turbulence model and inlet turbulence settings.
+    pub turbulence: String,
+}
+
+impl Recipe {
+    /// Names of the settings that differ between two runs.
+    pub fn mismatches(&self, o: &Recipe) -> Vec<&'static str> {
+        let num = |a: Option<f64>, b: Option<f64>| match (a, b) {
+            (Some(a), Some(b)) => (a - b).abs() > 1e-9 * a.abs().max(b.abs()).max(1.0),
+            (None, None) => false,
+            _ => true,
+        };
+        let mut out = Vec::new();
+        if num(self.dx0_m, o.dx0_m) {
+            out.push("background cell size");
+        }
+        if num(self.base_cells, o.base_cells) {
+            out.push("background cell count");
+        }
+        if self.levels != o.levels {
+            out.push("refinement levels");
+        }
+        if self.ground_mode != o.ground_mode {
+            out.push("ground treatment");
+        }
+        if self.wheel_mode != o.wheel_mode {
+            out.push("wheel treatment");
+        }
+        if (self.yaw_deg - o.yaw_deg).abs() > 0.01 {
+            out.push("yaw");
+        }
+        if self.turbulence != o.turbulence {
+            out.push("turbulence model");
+        }
+        out
+    }
+}
+
 /// Time series table: one `time` column and named columns of equal length.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Series {
@@ -208,6 +261,9 @@ pub struct Series {
     pub meta: IndexMap<String, f64>,
     /// True for the empty series a white-box node emits without solver data.
     pub placeholder: bool,
+    /// Settings the run was solved with (from the case manifest), when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recipe: Option<Recipe>,
 }
 
 impl Series {

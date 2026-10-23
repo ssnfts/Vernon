@@ -2,10 +2,12 @@
 //! build for its output flag, and running it as a separate process.
 
 use std::f64::consts::PI;
-use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
+use std::process::Command;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
+
+use vernon_core::process::{self, Exit, RunOptions};
 
 use glam::DVec3;
 use serde_json::{json, Value};
@@ -207,43 +209,25 @@ pub struct RunOutput {
     pub timed_out: bool,
 }
 
-/// Run a program to completion (or the timeout), capturing its output.
+/// Run a program to completion (or the timeout) through the shared runner
+/// ([`vernon_core::process`]), which kills the whole process tree at the
+/// deadline or when the cook is cancelled. Both streams go to a temporary
+/// log file (never a pipe a grandchild could hold open) and come back
+/// combined in `stdout`; `stderr` is empty.
 pub fn run_capture(exe: &Path, args: &[String], cwd: &Path, timeout: Duration) -> std::io::Result<RunOutput> {
-    let mut child = Command::new(exe).args(args).current_dir(cwd).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
-    let mut out = child.stdout.take();
-    let mut err = child.stderr.take();
-    let t_out = std::thread::spawn(move || {
-        let mut s = String::new();
-        if let Some(o) = out.as_mut() {
-            let mut b = Vec::new();
-            let _ = o.read_to_end(&mut b);
-            s = String::from_utf8_lossy(&b).to_string();
-        }
-        s
-    });
-    let t_err = std::thread::spawn(move || {
-        let mut s = String::new();
-        if let Some(o) = err.as_mut() {
-            let mut b = Vec::new();
-            let _ = o.read_to_end(&mut b);
-            s = String::from_utf8_lossy(&b).to_string();
-        }
-        s
-    });
-    let start = Instant::now();
-    let mut timed_out = false;
-    let status = loop {
-        if let Some(st) = child.try_wait()? {
-            break st;
-        }
-        if start.elapsed() > timeout {
-            timed_out = true;
-            let _ = child.kill();
-            break child.wait()?;
-        }
-        std::thread::sleep(Duration::from_millis(20));
+    static RUNS: AtomicU64 = AtomicU64::new(0);
+    let log = std::env::temp_dir().join(format!("vernon-slicer-{}-{}.log", std::process::id(), RUNS.fetch_add(1, Ordering::Relaxed)));
+    let mut cmd = Command::new(exe);
+    cmd.args(args).current_dir(cwd);
+    let opts = RunOptions::with_timeout(timeout.max(Duration::from_millis(1)));
+    let run = process::run(&mut cmd, &log, &opts);
+    let text = std::fs::read(&log).map(|b| String::from_utf8_lossy(&b).into_owned()).unwrap_or_default();
+    let _ = std::fs::remove_file(&log);
+    let (code, timed_out) = match run? {
+        Exit::Code(c) => (Some(c), false),
+        Exit::TimedOut | Exit::Cancelled => (None, true),
     };
-    Ok(RunOutput { code: status.code(), stdout: t_out.join().unwrap_or_default(), stderr: t_err.join().unwrap_or_default(), timed_out })
+    Ok(RunOutput { code, stdout: text, stderr: String::new(), timed_out })
 }
 
 /// G-code files (and packaged G-code) found under `dir`, two levels deep.

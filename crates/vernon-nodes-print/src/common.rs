@@ -61,11 +61,14 @@ pub fn printer_bed(id: &str, custom_bed: DVec3) -> DVec3 {
 
 pub const MATERIAL_IDS: [&str; 6] = ["pla", "petg", "asa", "pet_cf", "paht_cf", "ppa_cf"];
 
-/// Material data from the stage spec (section 2.7); entries marked assumed are
-/// placeholders until measured.
+/// Material data: heat, strength and density come from the shared table in
+/// `vernon_core::materials` (also read by the solar and structural stages);
+/// only the printing temperatures are print-specific.
 #[derive(Debug, Clone, Copy)]
 pub struct Material {
     pub id: &'static str,
+    /// The shared row, with its source tags.
+    pub shared: &'static vernon_core::materials::PrintMaterial,
     /// Ratio of the Z (layer-normal) allowable to the in-plane allowable.
     pub z_ratio: f64,
     /// Heat deflection temperature at 0.45 MPa, deg C.
@@ -80,14 +83,34 @@ pub struct Material {
     pub bed_c: f64,
 }
 
-const MATERIALS: [Material; 6] = [
-    Material { id: "pla", z_ratio: 0.55, hdt_c: 57.0, hdt_annealed_c: 57.0, density: 1.24, sigma_xy_mpa: 50.0, nozzle_c: 215.0, bed_c: 60.0 },
-    Material { id: "petg", z_ratio: 0.46, hdt_c: 69.0, hdt_annealed_c: 69.0, density: 1.27, sigma_xy_mpa: 45.0, nozzle_c: 240.0, bed_c: 80.0 },
-    Material { id: "asa", z_ratio: 0.30, hdt_c: 100.0, hdt_annealed_c: 100.0, density: 1.07, sigma_xy_mpa: 40.0, nozzle_c: 250.0, bed_c: 100.0 },
-    Material { id: "pet_cf", z_ratio: 0.50, hdt_c: 205.0, hdt_annealed_c: 205.0, density: 1.35, sigma_xy_mpa: 70.0, nozzle_c: 280.0, bed_c: 80.0 },
-    Material { id: "paht_cf", z_ratio: 0.50, hdt_c: 84.8, hdt_annealed_c: 190.7, density: 1.20, sigma_xy_mpa: 90.0, nozzle_c: 290.0, bed_c: 90.0 },
-    Material { id: "ppa_cf", z_ratio: 57.0 / 168.0, hdt_c: 227.0, hdt_annealed_c: 227.0, density: 1.28, sigma_xy_mpa: 168.0, nozzle_c: 300.0, bed_c: 100.0 },
-];
+const fn mat(m: &'static vernon_core::materials::PrintMaterial, nozzle_c: f64, bed_c: f64) -> Material {
+    Material {
+        id: m.id,
+        shared: m,
+        z_ratio: m.z_ratio,
+        hdt_c: m.hdt_045_c,
+        hdt_annealed_c: match m.hdt_045_annealed_c {
+            Some(h) => h,
+            None => m.hdt_045_c,
+        },
+        density: m.density_g_cm3,
+        sigma_xy_mpa: m.sigma_xy_mpa,
+        nozzle_c,
+        bed_c,
+    }
+}
+
+const MATERIALS: [Material; 6] = {
+    use vernon_core::materials as m;
+    [
+        mat(&m::PLA, 215.0, 60.0),
+        mat(&m::PETG, 240.0, 80.0),
+        mat(&m::ASA, 250.0, 100.0),
+        mat(&m::PET_CF, 280.0, 80.0),
+        mat(&m::PAHT_CF, 290.0, 90.0),
+        mat(&m::PPA_CF, 300.0, 100.0),
+    ]
+};
 
 pub fn material(id: &str) -> Material {
     MATERIALS.iter().copied().find(|m| m.id == id).unwrap_or(MATERIALS[0])

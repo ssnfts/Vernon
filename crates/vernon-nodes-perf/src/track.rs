@@ -484,6 +484,12 @@ pub fn track_from_path(pts: &[[f64; 2]], hint_closed: bool, o: &PathOpts) -> Res
     if total <= 0.0 {
         return Err("path: zero length".into());
     }
+    // Far more nodes than any circuit needs means wrong units or a stray point.
+    const MAX_NODES: f64 = 1e6;
+    let nodes = total / o.ds_m;
+    if nodes.is_nan() || nodes > MAX_NODES {
+        return Err(format!("path: {total:.3e} m at a {} m step needs more than {MAX_NODES:.0e} track nodes; check the units", o.ds_m));
+    }
     // uniform resampling
     let n_int = if closed { (total / o.ds_m).round().max(8.0) as usize } else { (total / o.ds_m).ceil().max(2.0) as usize };
     let ds = total / n_int as f64;

@@ -52,6 +52,12 @@ fn row(ui: &mut Ui, spec: &ParamSpec, value: Option<&ParamValue>) -> Edit {
                 return Edit::Set(ParamValue::Int(v));
             }
         }
+        // A one-shot action: a button, never a checkbox that stays on.
+        ParamKind::Bool { .. } if spec.action => {
+            if ui.button(&spec.label).on_hover_text(&spec.help).clicked() {
+                return Edit::Set(ParamValue::Bool(true));
+            }
+        }
         ParamKind::Bool { default } => {
             let mut v = match value {
                 Some(ParamValue::Bool(b)) => *b,
@@ -101,17 +107,26 @@ fn row(ui: &mut Ui, spec: &ParamSpec, value: Option<&ParamValue>) -> Edit {
             }
         }
         ParamKind::Path { default, extensions, save } => {
-            let mut s = match value {
+            let s = match value {
                 Some(ParamValue::Str(s)) => s.clone(),
                 _ => default.clone(),
             };
             let mut edit = Edit::None;
             ui.horizontal(|ui| {
-                if ui
-                    .add(egui::TextEdit::singleline(&mut s).desired_width(124.0).hint_text("path"))
-                    .changed()
-                {
-                    edit = Edit::Set(ParamValue::Str(s.clone()));
+                // A typed path is kept as a draft and set when the field
+                // loses focus (or on Enter), so half-typed paths are not
+                // read or written on every keystroke.
+                let key = ui.make_persistent_id(("path_draft", &spec.name));
+                let draft: Option<String> = ui.data(|d| d.get_temp(key));
+                let mut text = draft.clone().unwrap_or_else(|| s.clone());
+                let resp = ui.add(egui::TextEdit::singleline(&mut text).desired_width(124.0).hint_text("path"));
+                if resp.has_focus() {
+                    ui.data_mut(|d| d.insert_temp(key, text.clone()));
+                } else if draft.is_some() {
+                    ui.data_mut(|d| d.remove::<String>(key));
+                    if resp.lost_focus() && text != s {
+                        edit = Edit::Set(ParamValue::Str(text.clone()));
+                    }
                 }
                 if ui.small_button("…").on_hover_text("Browse").clicked() {
                     edit = Edit::Browse {

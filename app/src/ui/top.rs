@@ -116,13 +116,16 @@ fn file_menu(app: &mut VernonApp, ui: &mut Ui) {
         app.file_new();
     }
     if item(ui, "Open…", Some(Action::Open)) {
-        app.open_dialog(FileMode::Open);
+        app.file_open();
     }
     if item(ui, "Save", Some(Action::Save)) {
         app.file_save();
     }
     if item(ui, "Save As…", None) {
         app.open_dialog(FileMode::SaveAs);
+    }
+    if ui.add_enabled(!app.st.trusted, Button::new("Trust Scene…")).clicked() {
+        app.st.trust_prompt = true;
     }
     ui.separator();
     if item(ui, "Import Mesh…", None) {

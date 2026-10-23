@@ -20,6 +20,8 @@ use crate::hotkeys::{self, Action, Chord};
 use crate::registry::build_registry;
 use crate::state::AppState;
 use crate::timeline::{Playback, TimeConfig};
+use crate::study::Study;
+use crate::unsaved::{Choice, Guard, Pending, Step};
 use crate::viewport::gpu::GpuBackend;
 use crate::viewport::painter::PainterBackend;
 use crate::viewport::{ColorBy, Shading, ViewKind, ViewportBackend};
@@ -122,7 +124,19 @@ pub struct VernonApp {
     /// Seconds since start, refreshed every frame (used to coalesce undo).
     pub now: f64,
     title: String,
+    /// Save prompt before New, Open or closing a modified scene.
+    pub guard: Guard,
+    /// Closing was confirmed (saved or discarded): let the next close through.
+    allow_close: bool,
+    close_now: bool,
+    /// Time of the last crash-recovery copy.
+    last_autosave: f64,
+    /// Parameter sweep the time slider drives (Motion tab).
+    pub study: Study,
 }
+
+/// Seconds between crash-recovery copies of a modified scene.
+const AUTOSAVE_SECS: f64 = 120.0;
 
 impl VernonApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
@@ -182,6 +196,42 @@ impl VernonApp {
             name_buf: (None, String::new()),
             now: 0.0,
             title: String::new(),
+            guard: Guard::default(),
+            allow_close: false,
+            close_now: false,
+            last_autosave: 0.0,
+            study: Study::default(),
+        }
+    }
+
+    /// Drive the study sweep: record the finished sample, then apply the
+    /// parameter value of the current frame when the frame moved.
+    fn drive_study(&mut self) {
+        if !self.study.active() {
+            return;
+        }
+        let Some(node) = self.study.node.filter(|n| self.st.graph.nodes.contains_key(n)) else {
+            self.study.enabled = false;
+            self.st.info_text("study sweep switched off: its node was removed");
+            return;
+        };
+        self.study.observe(self.st.edit_count());
+        if self.study.awaiting() && self.st.cooked() {
+            let errors = self.st.graph.nodes.keys().any(|id| self.st.error_of(*id).is_some());
+            let failing = crate::gate::stage_gates(&self.st).iter().any(|g| g.state == crate::gate::GateState::Fail);
+            self.study.record(!errors && !failing);
+        }
+        if let Some(v) = self.study.due(&self.time, self.play.frame) {
+            let param = self.study.param.clone();
+            let is_int = self
+                .st
+                .info(node)
+                .and_then(|i| i.params.iter().find(|s| s.name == param))
+                .is_some_and(|s| matches!(s.kind, vernon_graph::ParamKind::Int { .. }));
+            let value = if is_int { vernon_graph::ParamValue::Int(v.round() as i64) } else { vernon_graph::ParamValue::Float(v) };
+            self.st.graph.frame = self.play.frame as f64;
+            self.st.set_param_silent(node, &param, value);
+            self.study.applied_revision(self.st.edit_count());
         }
     }
 
@@ -218,19 +268,73 @@ impl VernonApp {
         }
     }
 
+    /// File > New: asks to save a modified scene first.
     pub fn file_new(&mut self) {
-        self.st.new_scene();
-        self.vp.request_fit();
+        let step = self.guard.request(Pending::New, self.st.dirty);
+        self.step(step);
     }
 
-    pub fn file_save(&mut self) {
-        match self.st.path.clone() {
-            Some(p) => {
-                if let Err(e) = self.st.save(&p) {
-                    self.st.error_text(e);
+    /// File > Open: asks to save a modified scene first.
+    pub fn file_open(&mut self) {
+        let step = self.guard.request(Pending::Open, self.st.dirty);
+        self.step(step);
+    }
+
+    /// Answer to the unsaved-changes prompt.
+    pub fn answer_unsaved(&mut self, c: Choice) {
+        let step = self.guard.answer(c, self.st.path.is_some());
+        self.step(step);
+    }
+
+    fn step(&mut self, s: Step) {
+        match s {
+            Step::Proceed(a) => self.proceed(a),
+            Step::SaveThen(a) => {
+                if self.file_save() {
+                    self.proceed(a);
                 }
             }
-            None => self.open_dialog(FileMode::SaveAs),
+            Step::SaveAs => self.open_dialog(FileMode::SaveAs),
+            Step::Wait => {}
+        }
+    }
+
+    fn proceed(&mut self, a: Pending) {
+        match a {
+            Pending::New => {
+                self.st.new_scene();
+                self.study = Study::default();
+                self.vp.request_fit();
+            }
+            Pending::Open => self.open_dialog(FileMode::Open),
+            Pending::Close => {
+                self.allow_close = true;
+                self.close_now = true;
+            }
+        }
+    }
+
+    /// Save to the scene's path (Save As when it has none); true when saved.
+    pub fn file_save(&mut self) -> bool {
+        match self.st.path.clone() {
+            Some(p) => match self.st.save(&p) {
+                Ok(()) => true,
+                Err(e) => {
+                    self.st.error_text(e);
+                    false
+                }
+            },
+            None => {
+                self.open_dialog(FileMode::SaveAs);
+                false
+            }
+        }
+    }
+
+    /// The Save As dialog closed without saving: drop any action waiting on it.
+    pub fn file_dialog_cancelled(&mut self, mode: &FileMode) {
+        if *mode == FileMode::SaveAs {
+            self.guard.save_as_done(false);
         }
     }
 
@@ -248,10 +352,16 @@ impl VernonApp {
     /// Carry out a confirmed file dialog.
     pub fn file_chosen(&mut self, mode: FileMode, path: PathBuf) {
         let result = match mode {
-            FileMode::Open => self.st.open(&path).map(|_| self.vp.request_fit()),
+            FileMode::Open => self.st.open(&path).map(|_| {
+                self.study = Study::default();
+                self.vp.request_fit()
+            }),
             FileMode::SaveAs => {
-                let path = if path.extension().is_none() { path.with_extension("vrn") } else { path };
-                self.st.save(&path)
+                let r = self.st.save(&windows::save_target(&mode, &path));
+                if let Some(a) = self.guard.save_as_done(r.is_ok()) {
+                    self.proceed(a);
+                }
+                r
             }
             FileMode::Import => self.st.import(&path).map(|_| self.vp.request_fit()),
             FileMode::Export => self.st.export(&path),
@@ -296,8 +406,10 @@ impl VernonApp {
             Action::ViewUndo => self.vp.view_undo(active),
             Action::ViewRedo => self.vp.view_redo(active),
             Action::New => self.file_new(),
-            Action::Open => self.open_dialog(FileMode::Open),
-            Action::Save => self.file_save(),
+            Action::Open => self.file_open(),
+            Action::Save => {
+                self.file_save();
+            }
             Action::Delete => self.st.delete_selected(),
             Action::SelectAll => self.st.select_all(),
             Action::SelectNone => self.st.clear_selection(),
@@ -393,9 +505,9 @@ impl VernonApp {
         let gates = crate::gate::stage_gates(&self.st);
         if let Some(g) = gates.iter().find(|g| g.state == crate::gate::GateState::Fail) {
             let metric = g
-                .report
-                .as_ref()
-                .and_then(|r| r.metrics.iter().find(|(_, m)| m.passes() == Some(false)).map(|(k, _)| k.clone()))
+                .failing_metrics()
+                .first()
+                .map(|(n, k)| format!("{} {k}", self.st.name(*n)))
                 .unwrap_or_default();
             return (format!("Gate failing: {} {metric}", g.stage.label()), true);
         }
@@ -406,10 +518,31 @@ impl VernonApp {
 impl eframe::App for VernonApp {
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         self.now = ctx.input(|i| i.time);
-        self.st.cook_all();
+        // A modified scene is never dropped by closing the window: ask first.
+        if ctx.input(|i| i.viewport().close_requested()) && !self.allow_close && self.st.dirty {
+            ctx.send_viewport_cmd(ViewportCommand::CancelClose);
+            let step = self.guard.request(Pending::Close, true);
+            self.step(step);
+        }
+        if std::mem::take(&mut self.close_now) {
+            ctx.send_viewport_cmd(ViewportCommand::Close);
+        }
+        // Crash-recovery copy of a modified scene, next to it (never over it).
+        if self.st.dirty && self.now - self.last_autosave >= AUTOSAVE_SECS {
+            self.last_autosave = self.now;
+            if let Err(e) = self.st.autosave() {
+                self.st.error_text(format!("autosave failed: {e}"));
+            }
+        }
+        // Cooking runs on its own thread; the frame only collects results.
+        self.st.cook_step();
         self.shortcuts(ctx);
         if self.play.tick(&self.time, self.now) || self.play.playing {
             ctx.request_repaint();
+        }
+        self.drive_study();
+        if self.study.awaiting() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
         }
         self.backend.begin_frame(frame);
 
@@ -424,8 +557,14 @@ impl eframe::App for VernonApp {
         viewports::show(self, ctx);
         node_editor::show(self, ctx);
         windows::show(self, ctx);
-        // Edits made while drawing take effect this frame.
-        self.st.cook_all();
+        // Edits made while drawing start cooking now; keep repainting while
+        // a cook runs so its results appear when it ends.
+        if self.st.cook_step() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        } else {
+            // Held-back writes and changed input files need a frame too.
+            ctx.request_repaint_after(self.st.wake_after());
+        }
         self.update_title(ctx);
     }
 }

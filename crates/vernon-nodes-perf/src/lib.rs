@@ -1,4 +1,4 @@
-﻿//! Stage 8 Performance: aero calculator, point-mass lap model, coastdown and pressure-tap validation.
+//! Stage 8 Performance: aero calculator, point-mass lap model, coastdown and pressure-tap validation.
 //!
 //! Each stage-8 node takes numbers from the airflow stage (CdA, ClA, Cp maps), the vehicle
 //! facts and a track, and emits numbers a person can check against the road: lap time and
@@ -17,6 +17,7 @@ pub mod cp;
 pub mod gate;
 pub mod lapsim;
 pub mod nodes_calc;
+pub mod nodes_gate;
 pub mod nodes_lap;
 pub mod nodes_track;
 pub mod nodes_valid;
@@ -32,6 +33,7 @@ pub fn register(reg: &mut Registry) {
     nodes_track::register(reg);
     nodes_lap::register(reg);
     nodes_valid::register(reg);
+    nodes_gate::register(reg);
 }
 
 #[cfg(test)]

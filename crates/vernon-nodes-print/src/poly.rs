@@ -105,7 +105,7 @@ pub fn triangulate(outer: &[DVec2], holes: &[Vec<DVec2>]) -> Vec<[usize; 3]> {
     // Rightmost hole first.
     let max_x = |h: &Vec<usize>| h.iter().map(|&i| pts[i].x).fold(f64::NEG_INFINITY, f64::max);
     hole_idx.retain(|h| h.len() >= 3);
-    hole_idx.sort_by(|a, b| max_x(b).partial_cmp(&max_x(a)).unwrap_or(std::cmp::Ordering::Equal));
+    hole_idx.sort_by(|a, b| max_x(b).total_cmp(&max_x(a)));
     for h in &hole_idx {
         bridge_hole(&mut poly, h, &pts);
     }
@@ -126,7 +126,7 @@ fn bridge_hole(poly: &mut Vec<usize>, hole: &[usize], pts: &[DVec2]) {
     let (mpos, &m) = hole
         .iter()
         .enumerate()
-        .max_by(|a, b| pts[*a.1].x.partial_cmp(&pts[*b.1].x).unwrap_or(std::cmp::Ordering::Equal))
+        .max_by(|a, b| pts[*a.1].x.total_cmp(&pts[*b.1].x))
         .expect("hole not empty");
     let mp = pts[m];
     let len = poly.len();
@@ -156,8 +156,7 @@ fn bridge_hole(poly: &mut Vec<usize>, hole: &[usize], pts: &[DVec2]) {
                 .min_by(|&i, &j| {
                     (pts[poly[i]] - mp)
                         .length_squared()
-                        .partial_cmp(&(pts[poly[j]] - mp).length_squared())
-                        .unwrap_or(std::cmp::Ordering::Equal)
+                        .total_cmp(&(pts[poly[j]] - mp).length_squared())
                 })
                 .unwrap_or(0)
         }

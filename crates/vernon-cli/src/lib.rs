@@ -36,11 +36,16 @@ pub fn parse_graph(text: &str, reg: &Registry) -> Result<Graph> {
     Ok(graph)
 }
 
-/// Read and parse a `.vrn` file.
+/// Read and parse a `.vrn` file. Relative file parameters resolve against
+/// the file's folder.
 pub fn load_graph(path: &Path, reg: &Registry) -> Result<Graph> {
     let text =
         std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
-    parse_graph(&text, reg).with_context(|| format!("loading {}", path.display()))
+    let mut graph =
+        parse_graph(&text, reg).with_context(|| format!("loading {}", path.display()))?;
+    let full = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
+    graph.scene_dir = full.parent().map(Path::to_path_buf);
+    Ok(graph)
 }
 
 /// The result of cooking one node.
@@ -208,6 +213,107 @@ pub fn format_outcomes(outcomes: &[NodeOutcome]) -> String {
     s
 }
 
+/// One failing check in a cooked report: a metric outside its limit, or
+/// an error note.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GateFailure {
+    pub node: String,
+    pub report: String,
+    /// Metric name, `None` for an error note.
+    pub metric: Option<String>,
+    pub value: f64,
+    pub unit: String,
+    pub limit: f64,
+    pub lower_is_better: bool,
+    /// Distance to the limit, negative when failing (`limit - value` when
+    /// lower is better, else `value - limit`).
+    pub margin: f64,
+    /// The note text for an error note.
+    pub text: String,
+    /// The reason the scene expects this failure (`expect_fail` on the
+    /// node), if it does.
+    pub expected: Option<String>,
+}
+
+/// Every failing gate in `outcomes`. A metric listed in its node's
+/// `expect_fail` comes back with `expected` set.
+pub fn gate_failures(outcomes: &[NodeOutcome], graph: &Graph) -> Vec<GateFailure> {
+    let mut out = Vec::new();
+    for o in outcomes {
+        let expect = graph.nodes.get(&o.id).map(|n| &n.expect_fail);
+        for r in o.reports() {
+            for (name, m) in &r.metrics {
+                let (Some(limit), Some(false)) = (m.limit, m.passes()) else { continue };
+                out.push(GateFailure {
+                    node: o.name.clone(),
+                    report: r.title.clone(),
+                    metric: Some(name.clone()),
+                    value: m.value,
+                    unit: m.unit.clone(),
+                    limit,
+                    lower_is_better: m.lower_is_better,
+                    margin: vernon_graph::gate::margin(m).unwrap_or(f64::NAN),
+                    text: String::new(),
+                    expected: expect.and_then(|e| e.get(name)).cloned(),
+                });
+            }
+            for (sev, text) in &r.notes {
+                if *sev == Severity::Error {
+                    out.push(GateFailure {
+                        node: o.name.clone(),
+                        report: r.title.clone(),
+                        metric: None,
+                        value: f64::NAN,
+                        unit: String::new(),
+                        limit: f64::NAN,
+                        lower_is_better: true,
+                        margin: f64::NAN,
+                        text: text.clone(),
+                        expected: None,
+                    });
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Gate summary printed after the cook: each failing metric with value,
+/// limit and margin, expected failures marked, and a closing count line.
+pub fn format_gates(gates: &[GateFailure]) -> String {
+    let mut s = String::new();
+    let open = gates.iter().filter(|g| g.expected.is_none()).count();
+    let _ = writeln!(s, "\ngates: {open} failing, {} expected", gates.len() - open);
+    for g in gates {
+        let tag = if g.expected.is_some() { "expected" } else { "FAIL" };
+        match &g.metric {
+            Some(m) => {
+                let op = if g.lower_is_better { "<=" } else { ">=" };
+                let _ = write!(
+                    s,
+                    "  [{tag}] {} / {m} = {} {} (limit {op} {}, margin {} {})",
+                    g.node,
+                    fmt_num(g.value),
+                    g.unit,
+                    fmt_num(g.limit),
+                    fmt_num(g.margin),
+                    g.unit
+                );
+            }
+            None => {
+                let _ = write!(s, "  [{tag}] {} / {}: error: {}", g.node, g.report, g.text);
+            }
+        }
+        match &g.expected {
+            Some(why) => {
+                let _ = writeln!(s, ": {why}");
+            }
+            None => s.push('\n'),
+        }
+    }
+    s
+}
+
 fn by_stage(reg: &Registry) -> Vec<(Stage, Vec<&NodeTypeInfo>)> {
     Stage::ALL
         .iter()
@@ -333,10 +439,19 @@ pub fn list_markdown(reg: &Registry) -> String {
     s
 }
 
-/// Default scratch directory for cooking `vrn`.
+/// Default scratch directory for cooking `vrn`: `<temp>/vernon-cli/<stem>-<hash>`,
+/// where the hash of the file's full path keeps two files with the same
+/// name in different folders apart.
 pub fn default_work_root(vrn: &Path) -> PathBuf {
     let stem = vrn.file_stem().and_then(|s| s.to_str()).unwrap_or("graph");
-    std::env::temp_dir().join("vernon-cli").join(stem)
+    let full = std::fs::canonicalize(vrn)
+        .or_else(|_| std::path::absolute(vrn))
+        .unwrap_or_else(|_| vrn.to_path_buf());
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in full.to_string_lossy().bytes() {
+        h = (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3);
+    }
+    std::env::temp_dir().join("vernon-cli").join(format!("{stem}-{:08x}", h as u32))
 }
 
 /// Write a geometry `Data` to `path` in the format its extension names.
@@ -346,4 +461,60 @@ pub fn write_geometry(data: &Data, path: &Path) -> Result<()> {
     };
     vernon_io::write(path, geo, &vernon_io::WriteOptions::default())
         .with_context(|| format!("writing {}", path.display()))
+}
+
+#[cfg(test)]
+mod work_root_tests {
+    use super::*;
+
+    #[test]
+    fn same_stem_in_other_folders_gets_its_own_work_root() {
+        let a = default_work_root(Path::new("one/scene.vrn"));
+        let b = default_work_root(Path::new("two/scene.vrn"));
+        assert_ne!(a, b);
+        assert_eq!(a, default_work_root(Path::new("one/scene.vrn")));
+        assert!(a.file_name().unwrap().to_str().unwrap().starts_with("scene-"));
+    }
+}
+
+#[cfg(test)]
+mod gate_tests {
+    use super::*;
+    use vernon_core::Metric;
+
+    #[test]
+    fn failing_limits_are_listed_with_margins_and_expected_ones_marked() {
+        let graph = Graph::from_json(
+            r#"{ "nodes": { "1": { "type_id": "x", "name": "b",
+                 "expect_fail": { "wheels": "a panel has no wheels" } } } }"#,
+        )
+        .unwrap();
+        let mut r = Report::new("prep");
+        r.metric("wheels", Metric::new(0.0, "count").with_limit(4.0, false));
+        r.metric("area", Metric::new(2.5, "m2").with_limit(2.0, true));
+        r.metric("fine", Metric::new(1.0, "m2").with_limit(2.0, true));
+        r.metric("free", Metric::new(9.0, "m2"));
+        r.note(Severity::Error, "broken");
+        let o = |id: NodeId, name: &str| NodeOutcome {
+            id,
+            name: name.into(),
+            type_id: "x".into(),
+            stage: None,
+            result: Ok(vec![Data::report(r.clone())]),
+        };
+        let gates = gate_failures(&[o(1, "b"), o(2, "c")], &graph);
+        assert_eq!(gates.len(), 6, "{gates:#?}");
+        assert_eq!(gates[0].expected.as_deref(), Some("a panel has no wheels"));
+        assert_eq!(gates[0].margin, -4.0);
+        assert_eq!(gates[1].margin, -0.5);
+        assert!(gates[3].expected.is_none(), "expect_fail is per node");
+        let text = format_gates(&gates);
+        assert!(text.contains("gates: 5 failing, 1 expected"), "{text}");
+        assert!(
+            text.contains("[expected] b / wheels = 0 count (limit >= 4, margin -4 count): a panel has no wheels"),
+            "{text}"
+        );
+        assert!(text.contains("[FAIL] c / area = 2.5 m2 (limit <= 2, margin -0.5 m2)"), "{text}");
+        assert!(text.contains("[FAIL] c / prep: error: broken"), "{text}");
+    }
 }

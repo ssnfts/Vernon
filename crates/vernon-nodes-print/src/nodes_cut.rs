@@ -282,7 +282,7 @@ mod tests {
         let g = out[0].as_geometry().unwrap();
         let vols: Vec<f64> = (0..2).map(|i| mesh::signed_volume(&mesh::extract_part(g, i))).collect();
         let mut v = vols.clone();
-        v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        v.sort_by(|a, b| a.total_cmp(b));
         assert!((v[0] - 40.0 * 100.0 * 100.0).abs() < 1e-3, "{v:?}");
         assert!((v[1] - 60.0 * 100.0 * 100.0).abs() < 1e-3);
         let r = out[2].as_report().unwrap();
