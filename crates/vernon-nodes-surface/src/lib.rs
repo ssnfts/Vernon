@@ -20,6 +20,9 @@ pub mod convert;
 pub mod curvefit;
 pub mod deviation;
 pub mod fit;
+mod field_remesh;
+mod remesh_fields;
+mod remesh_symmetry;
 pub mod linalg;
 pub mod nurbs;
 pub mod patchnodes;
@@ -188,7 +191,6 @@ mod tests {
         for id in [
             "surface.auto_surface",
             "surface.mesh_to_g2_surface",
-            "surface.quad_remesh",
             "surface.convert_prismatic",
             "surface.write_step",
             "surface.refine_regions",
@@ -202,6 +204,7 @@ mod tests {
             "surface.curve_network_patch",
             "surface.segment_regions",
             "surface.fit_patch",
+            "surface.quad_remesh",
             "surface.mesh_to_subd",
             "surface.subd_refine",
             "surface.subd_to_nurbs",

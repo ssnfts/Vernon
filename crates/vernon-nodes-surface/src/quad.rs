@@ -1,5 +1,4 @@
-//! Quad mesh metrics (`surface.quad_mesh_report`) and the quad remesh
-//! placeholder (`surface.quad_remesh`).
+//! Quad mesh metrics and native field-aligned quad remeshing.
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -11,7 +10,7 @@ use crate::bvh::TriBvh;
 use crate::deviation::{dev_stats, signed_distances};
 use crate::subd::Subd;
 use crate::topology::{edge_map, orient, tri_adjacency, weld};
-use crate::util::{check_finite, max_abs_coord, node_info, placeholder_note, positive, SPEC_MESH};
+use crate::util::{check_finite, max_abs_coord, node_info, positive, SPEC_MESH};
 
 /// Metrics of a polygon mesh.
 #[derive(Debug, Clone, Default)]
@@ -168,7 +167,7 @@ impl NodeOp for QuadMeshReportNode {
 }
 
 // ---------------------------------------------------------------------------
-// remesh placeholder
+// Sparse-input refinement and node adapter
 // ---------------------------------------------------------------------------
 
 /// Merge adjacent triangles into well-shaped quads: triangles with the fewest
@@ -334,6 +333,40 @@ fn split_faces(points: &[DVec3], faces: &[Vec<u32>], n: usize) -> (Vec<DVec3>, V
 /// minutes on the cook thread.
 pub const MAX_QUADS: f64 = 2_000_000.0;
 
+/// Bounds on continuous, bidirectional Hausdorff distance between the two
+/// triangulated surfaces. Distance to a closed set is 1-Lipschitz: a triangle
+/// lies within `radius` of its centroid, hence d(centroid)+radius is an upper
+/// bound. Subdivision tightens the gap to accuracy unless the query budget is
+/// exhausted, in which case the returned upper bound remains conservative.
+fn deviation_bounds(a:&Geometry,b:&Geometry,accuracy:f64)->(f64,f64) {
+    use rayon::prelude::*;
+    fn triangle(p:[DVec3;3],bvh:&TriBvh,accuracy:f64,budget:usize)->(f64,f64) {
+        let c=(p[0]+p[1]+p[2])/3.0;
+        let radius=p.iter().map(|p| p.distance(c)).fold(0.0,f64::max);
+        if radius<=accuracy || budget<4 {
+            let d=bvh.closest(c).unwrap().dist;
+            return (d,d+radius);
+        }
+        let ab=(p[0]+p[1])*0.5;let bc=(p[1]+p[2])*0.5;let ca=(p[2]+p[0])*0.5;
+        [[p[0],ab,ca],[ab,p[1],bc],[ca,bc,p[2]],[ab,bc,ca]].iter()
+            .map(|&p|triangle(p,bvh,accuracy,budget/4))
+            .fold((0.0_f64,0.0_f64),|(a,b),(c,d)|(a.max(c),b.max(d)))
+    }
+    fn directed(a:&Geometry,b:&Geometry,accuracy:f64)->(f64,f64) {
+        let bvh=TriBvh::from_geometry(b,None);
+        if bvh.is_empty() {return (f64::INFINITY,f64::INFINITY);}
+        let triangles=a.prims.iter().filter(|p|p.closed).map(|p|p.vertices.len().saturating_sub(2)).sum::<usize>();
+        let budget=(1_000_000/triangles.max(1)).clamp(1,16384);
+        a.prims.par_iter().filter(|p| p.closed).map(|p| {
+            crate::util::triangulate_ring(&a.points,&p.vertices).iter()
+                .map(|t| triangle(t.map(|v|a.points[v as usize]),&bvh,accuracy,budget))
+                .fold((0.0_f64,0.0_f64),|(a,b),(c,d)|(a.max(c),b.max(d)))
+        }).reduce(||(0.0_f64,0.0_f64),|(a,b),(c,d)|(a.max(c),b.max(d)))
+    }
+    let (lo_a,hi_a)=directed(a,b,accuracy);let (lo_b,hi_b)=directed(b,a,accuracy);
+    (lo_a.max(lo_b),hi_a.max(hi_b))
+}
+
 /// `surface.quad_remesh`
 pub struct QuadRemeshNode;
 
@@ -354,15 +387,17 @@ impl NodeOp for QuadRemeshNode {
             .param(ParamSpec::choice("guide_influence", "Guide influence", "none", &["none", "approximate", "edge_ring", "edge_loop"]).help("How strongly guide curves steer the edge flow."))
             .param(ParamSpec::choice("use_surface_edges", "Use surface edges", "smart", &["off", "smart", "strict"]).help("Treat borders between source faces as edges."))
             .param(ParamSpec::bool("convert_to_subd", "Convert to subdivision cage", false).help("Output the quads as a subdivision cage with hard edges as creases."))
-            .help("Rebuilds a triangle mesh as a quad mesh near a target size. The current version pairs input triangles into quads and splits them evenly; it does not yet follow surface curvature directions.")
+            .help("Rebuilds a mesh using smoothed four-direction and position fields, then extracts a quad mesh and projects it onto the input. Sparse inputs are refined directly. Reports lower and conservative upper bounds on bidirectional surface deviation.")
             .emulates("Rhino QuadRemesh")
             .emulates("Instant Meshes")
             .emulates("QuadriFlow")
+            .implemented()
     }
 
     fn cook(&self, ctx: &CookContext, inputs: &[Option<Data>], params: &Params) -> CookResult<Vec<Data>> {
         let mesh = vernon_graph::node::inputs::geometry(inputs, 0)?;
         check_finite(ctx, &mesh)?;
+        mesh.validate().map_err(|e| ctx.fail(format!("invalid mesh: {e}")))?;
         let mut w = weld(&mesh, 1e-6f64.max(1.2e-7 * max_abs_coord(&mesh.points)));
         if w.faces.is_empty() {
             return Err(ctx.fail("the mesh has no usable faces"));
@@ -378,9 +413,23 @@ impl NodeOp for QuadRemeshNode {
         if target > MAX_QUADS {
             return Err(ctx.fail(format!("about {target:.0} quads asked for (limit {MAX_QUADS:.0}); lower the count or raise the edge length")));
         }
-        let hard_cos = if params.bool("detect_hard_edges")? { params.float("hard_edge_angle_deg")?.to_radians().cos() } else { -1.0 };
+        let hard_angle = params.float("hard_edge_angle_deg")?;
+        if !hard_angle.is_finite() { return Err(ctx.fail("hard edge angle must be finite")); }
+        let hard_cos = if params.bool("detect_hard_edges")? { hard_angle.clamp(0.0,180.0).to_radians().cos() } else { -1.0 };
         let tris: Vec<[u32; 3]> = w.faces.iter().flat_map(|f| crate::util::triangulate_ring(&w.points, f)).collect();
-        let (paired, left) = pair_triangles(&w.points, &tris, hard_cos);
+        let target_edge = if params.str("size_mode")? == "edge" { params.float("target_edge")? } else { (area / target).sqrt() };
+        if !target_edge.is_finite() || target_edge <= 0.0 {return Err(ctx.fail("input has no positive surface area"));}
+        let source = Geometry::from_polygons(w.points.clone(),w.faces.clone());
+        let symmetry=params.str("symmetry")?;
+        let center=source.bounds().center();
+        let clipped=crate::remesh_symmetry::cut_positive(&source,symmetry,center);
+        if clipped.prims.is_empty() || clipped.surface_area()<=0.0 {return Err(ctx.fail("the requested symmetry wedge contains no surface"));}
+        let (mut geo,left) = if tris.len() as f64 >= target || params.int("adaptive")?>0 {
+            let ct:Vec<_>=clipped.prims.iter().flat_map(|p| crate::util::triangulate_ring(&clipped.points,&p.vertices)).collect();
+            (crate::field_remesh::remesh(&clipped.points,&ct,target_edge,hard_cos,params.int("adaptive")?.clamp(0,100) as f64/100.0).map_err(|e|ctx.fail(e))?,0)
+        } else {
+        let tris:Vec<_>=clipped.prims.iter().flat_map(|p| crate::util::triangulate_ring(&clipped.points,&p.vertices)).collect();
+        let (paired, left) = pair_triangles(&clipped.points, &tris, hard_cos);
         // split count: quads give n^2 faces, triangles 3 (n/2)^2
         let q0 = (paired.len() - left) as f64;
         let t0 = left as f64;
@@ -390,40 +439,58 @@ impl NodeOp for QuadRemeshNode {
         let step = if left > 0 { 2 } else { 1 };
         let mut n = best_n;
         while n <= 256 {
-            let err = (faces_at(n) - target).abs() / target;
+            let patch_target=clipped.surface_area()/(target_edge*target_edge);
+            let err = (faces_at(n) - patch_target).abs() / patch_target;
             if err < best_err {
                 best_err = err;
                 best_n = n;
             }
-            if faces_at(n) > 2.0 * target {
+            if faces_at(n) > 2.0 * patch_target {
                 break;
             }
             n += step;
         }
-        let (pts, faces) = split_faces(&w.points, &paired, best_n);
-        let mut geo = Geometry::from_polygons(pts, faces);
+        let (pts, faces) = split_faces(&clipped.points, &paired, best_n);
+        (Geometry::from_polygons(pts, faces),left)
+        };
+        geo=crate::remesh_symmetry::reflect(&geo,symmetry,center);
+        if geo.prims.is_empty() {return Err(ctx.fail("remeshing produced no faces"));}
+        if geo.prims.len() as f64>MAX_QUADS {return Err(ctx.fail("output exceeds the quad resource limit; lower the count or raise the edge length"));}
         geo.compute_normals();
         let mut report = Report::new("Quad remesh");
         let st = quad_stats(&geo, 1e-9);
+        if st.min_scaled_jacobian<=0.0 {return Err(ctx.fail("field extraction produced a folded or degenerate quad; increase the target count or reduce adaptivity"));}
+        let source_topology=crate::topology::stats(&weld(&source,1e-9));
+        let output_topology=crate::topology::stats(&weld(&geo,1e-9));
+        if output_topology.nonmanifold_edges>0 || output_topology.inconsistent_edges>0 || (symmetry=="none" && (output_topology.euler_char!=source_topology.euler_char || output_topology.components!=source_topology.components || output_topology.closed!=source_topology.closed)) {
+            return Err(ctx.fail("field extraction could not preserve surface topology; increase the target count"));
+        }
         report.metric("quad_count", Metric::new(st.quads as f64, "count"));
         report.metric("face_count", Metric::new(st.faces as f64, "count"));
         report.metric("target_faces", Metric::new(target, "count"));
         report.metric("quad_fraction", Metric::new(st.quad_fraction, ""));
+        report.metric("quad_ratio", Metric::new(st.quad_fraction, ""));
+        report.metric("irregular_vertices", Metric::new(st.valence.iter().filter(|(v,_)| **v!=4).map(|(_,n)| n).sum::<usize>() as f64, "count"));
+        report.metric("target_edge_mm", Metric::new(target_edge,"mm"));
+        let accuracy=(target_edge*0.25).min(source.bounds().size().length()*0.004).max(1e-9);
+        let (dev_sample,max_dev)=deviation_bounds(&source,&geo,accuracy);
+        report.metric("max_dev_mm", Metric::new(max_dev,"mm"));
+        report.metric("dev_sample_max_mm", Metric::new(dev_sample,"mm"));
+        report.metric("dev_bound_gap_mm", Metric::new(max_dev-dev_sample,"mm"));
+        if max_dev-dev_sample>accuracy*1.01 {report.note(Severity::Warning,"the bounded deviation query budget was reached; max_dev_mm remains conservative but may be loose");}
         report.metric("mean_edge_mm", Metric::new(st.mean_edge, "mm"));
         report.metric("index_sum", Metric::new(st.index_sum as f64, ""));
         report.metric("min_scaled_jacobian", Metric::new(st.min_scaled_jacobian, ""));
-        report.metric("input_triangles_left", Metric::new(left as f64, "count"));
+        report.metric("input_triangles_left", Metric::new(left as f64,"count"));
         let off_target = (st.faces as f64 - target).abs() / target;
         if off_target > 0.15 {
-            report.note(Severity::Warning, format!("the face count {} is {:.0}% away from the target {}: this version can only refine, not coarsen, the input", st.faces, 100.0 * off_target, target as usize));
-        }
-        if params.str("symmetry")? != "none" {
-            report.note(Severity::Warning, "symmetry is not applied by this version");
+            report.note(Severity::Warning, format!("the face count {} is {:.0}% away from the approximate target {}", st.faces, 100.0 * off_target, target as usize));
         }
         if vernon_graph::node::inputs::opt_geometry(inputs, 1).is_some() || params.str("guide_influence")? != "none" {
             report.note(Severity::Warning, "guide curves are not used by this version");
         }
-        placeholder_note(&mut report, "field-aligned quad extraction (a smoothed 4-direction orientation field and a position field, then quad extraction and singularity cleanup); this version pairs input triangles into quads and splits them uniformly");
+        if params.str("use_surface_edges")?=="strict" {report.note(Severity::Warning,"strict source-face border constraints are not supported; source boundaries and detected hard edges are preserved");}
+        report.note(Severity::Info,"max_dev_mm conservatively bounds bidirectional distance between the triangulated surfaces; dev_sample_max_mm is a sampled lower bound. Irregular vertices count interior edge valences other than four.");
         let out = if params.bool("convert_to_subd")? {
             let mut sub = Subd::from_geometry(&geo, 1e-9);
             let adj = sub.adjacency();
@@ -451,6 +518,150 @@ impl NodeOp for QuadRemeshNode {
 mod tests {
     use super::*;
     use crate::testutil::{b, cook, f, geo_of, i, report_of, s, some, sphere, triangulated};
+
+    fn wp1_check_panel(panel: &Geometry, edge: Option<f64>) {
+        let params = edge.map(|l| vec![("size_mode", s("edge")), ("target_edge", f(l))]).unwrap_or_default();
+        let result = cook("surface.quad_remesh", &[some(panel), None], &params).unwrap();
+        let output = geo_of(&result[0]);
+        output.validate().unwrap();
+        let r = report_of(&result[1]);
+        let st = quad_stats(&output, 1e-9);
+        let target = edge.unwrap_or_else(|| (panel.surface_area() / 1000.0).sqrt());
+        assert!(st.quad_fraction >= 0.9, "{st:?}");
+        assert!(st.min_scaled_jacobian>0.0,"{st:?}");
+        println!("WP1 panel {} input faces: {} quads, mean edge {}, target {}, max deviation bound {}",panel.prims.len(),st.quads,st.mean_edge,target,r.metrics["max_dev_mm"].value);
+        assert!((st.mean_edge / target - 1.0).abs() <= 0.15, "edge {} vs {target}, {} faces", st.mean_edge, st.faces);
+        assert_eq!(r.metrics["quad_ratio"].value, st.quad_fraction);
+        assert_eq!(r.metrics["irregular_vertices"].value, st.valence.iter().filter(|(v, _)| **v != 4).map(|(_, n)| n).sum::<usize>() as f64);
+        assert!(r.metrics["max_dev_mm"].value < panel.bounds().size().length() * 0.01, "{r:?}");
+        let topo = crate::topology::stats(&weld(&output, 1e-9));
+        assert_eq!(topo.euler_char, 1, "{topo:?}");
+        assert_eq!(topo.components, 1);
+        assert_eq!(topo.nonmanifold_edges, 0);
+        assert_eq!(topo.inconsistent_edges, 0);
+        // Reverse direction catches a remesher that silently omits part of the panel.
+        let bvh = TriBvh::from_geometry(&output, None);
+        for &p in &panel.points {
+            assert!(bvh.closest(p).unwrap().dist < panel.bounds().size().length() * 0.01);
+        }
+        assert!(!r.notes.iter().any(|(_, t)| t.starts_with("white-box placeholder")));
+    }
+
+    #[test]
+    fn wp1_default_car_panel_acceptance() {
+        wp1_check_panel(&vernon_nodes_geo::primitives::car_panel_default(), None);
+    }
+
+    #[test]
+    fn wp1_dense_rotated_panel_coarsens_in_both_size_modes() {
+        let mut panel = triangulated(&vernon_nodes_geo::primitives::CarPanel { cols: 100, rows: 80, ..Default::default() }.build());
+        let rotation = glam::DQuat::from_euler(glam::EulerRot::XYZ, 0.71, 1.12, -0.47);
+        for p in &mut panel.points { *p = rotation * *p + DVec3::new(55.0, -123.0, 200.0); }
+        wp1_check_panel(&panel, None);
+        wp1_check_panel(&panel, Some(35.0));
+    }
+
+    #[test]
+    fn wp1_dense_closed_sphere_keeps_topology() {
+        let input=crate::testutil::icosphere(50.0,4);
+        let result=cook("surface.quad_remesh",&[some(&input),None],&[]).unwrap();
+        let out=geo_of(&result[0]);
+        let topo=crate::topology::stats(&weld(&out,1e-9));
+        assert!(topo.closed,"{topo:?}");
+        assert_eq!(topo.euler_char,2,"{topo:?}");
+        assert_eq!(topo.components,1);
+        assert!(quad_stats(&out,1e-9).min_scaled_jacobian>0.0);
+        let r=report_of(&result[1]);
+        assert!(r.metrics["quad_ratio"].value>=0.9);
+        assert!(r.metrics["max_dev_mm"].value<input.bounds().size().length()*0.01,"{r:?}");
+    }
+
+    #[test]
+    fn wp1_dense_hard_cube_has_welded_seams() {
+        let cube=Geometry::make_box(DVec3::splat(100.0));
+        let faces=cube.prims.iter().map(|p|p.vertices.clone()).collect::<Vec<_>>();
+        let (mut points,faces)=split_faces(&cube.points,&faces,20);
+        // Uneven interior sampling on every face, with conforming shared edges.
+        for p in &mut points {
+            if (0..3).filter(|&a|(p[a].abs()-50.0).abs()<1e-9).count()==1 {
+                for a in 0..3 {let t=p[a]/50.0;p[a]+=3.0*(1.0-t*t);}
+            }
+        }
+        let dense=triangulated(&Geometry::from_polygons(points,faces));
+        for target in [600,1000] {
+            let result=cook("surface.quad_remesh",&[some(&dense),None],&[("target_quads",i(target))]).unwrap();
+            let out=geo_of(&result[0]);
+            let topo=crate::topology::stats(&weld(&out,1e-7));
+            assert!(topo.closed,"target {target}: {topo:?}");
+            assert_eq!(topo.euler_char,2);
+            assert!((topo.volume-1_000_000.0).abs()<1.0);
+            assert!(quad_stats(&out,1e-9).min_scaled_jacobian>0.0);
+        }
+    }
+
+    #[test]
+    fn wp1_x_symmetry_has_exact_partners() {
+        let input=vernon_nodes_geo::primitives::car_panel_default();
+        let result=cook("surface.quad_remesh",&[some(&input),None],&[("symmetry",s("x"))]).unwrap();
+        let out=geo_of(&result[0]);
+        for p in &out.points {
+            let mirror=DVec3::new(-p.x,p.y,p.z);
+            assert!(out.points.iter().any(|q|q.distance(mirror)<1e-6));
+        }
+        let topo=crate::topology::stats(&weld(&out,1e-9));
+        assert_eq!(topo.euler_char,1,"{topo:?}");
+        assert_eq!(topo.components,1,"{topo:?}");
+        assert_eq!(topo.nonmanifold_edges,0,"{topo:?}");
+    }
+
+    #[test]
+    fn wp1_deviation_bounds_include_known_parallel_offset() {
+        let a=Geometry::from_polygons(vec![DVec3::ZERO,DVec3::X*20.0,DVec3::Y*20.0],vec![vec![0,1,2]]);
+        let mut b=a.clone();for p in &mut b.points {*p+=DVec3::Z*3.0;}
+        let (lower,upper)=deviation_bounds(&a,&b,0.2);
+        assert!((lower-3.0).abs()<1e-10);
+        assert!((3.0..=3.2).contains(&upper),"{lower}..{upper}");
+    }
+
+    #[test]
+    fn wp1_adaptivity_changes_curved_surface_sampling() {
+        let input=vernon_nodes_geo::primitives::car_panel_default();
+        let a=cook("surface.quad_remesh",&[some(&input),None],&[]).unwrap();
+        let b=cook("surface.quad_remesh",&[some(&input),None],&[("adaptive",i(60))]).unwrap();
+        let ga=geo_of(&a[0]);let gb=geo_of(&b[0]);
+        assert_ne!(ga.points,gb.points);
+        assert!(report_of(&b[1]).metrics["max_dev_mm"].value<input.bounds().size().length()*0.01);
+    }
+
+    #[test]
+    fn wp1_empty_symmetry_wedge_is_a_clear_error() {
+        let g=Geometry::from_polygons(vec![DVec3::new(1.0,-3.0,0.0),DVec3::new(3.0,-3.0,0.0),DVec3::new(1.0,-1.0,0.0),DVec3::new(-3.0,1.0,0.0),DVec3::new(-1.0,1.0,0.0),DVec3::new(-3.0,3.0,0.0)],vec![vec![0,1,2],vec![3,4,5]]);
+        let err=cook("surface.quad_remesh",&[some(&g),None],&[("symmetry",s("xy"))]).unwrap_err().to_string();
+        assert!(err.contains("wedge contains no surface"),"{err}");
+    }
+
+    #[test]
+    #[ignore = "release performance acceptance; run explicitly with --release"]
+    fn wp1_release_100k_triangles() {
+        if cfg!(debug_assertions) { panic!("run this benchmark with --release"); }
+        let panel = triangulated(&vernon_nodes_geo::primitives::CarPanel { cols: 250, rows: 200, ..Default::default() }.build());
+        assert_eq!(panel.prims.len(), 100_000);
+        let start = std::time::Instant::now();
+        let result = cook("surface.quad_remesh", &[some(&panel), None], &[]).unwrap();
+        let elapsed = start.elapsed();
+        let r = report_of(&result[1]);
+        println!("WP1 100k triangles: {elapsed:?}, metrics {:?}", r.metrics);
+        assert!(elapsed.as_secs_f64() < 5.0, "{elapsed:?}");
+        let st = quad_stats(&geo_of(&result[0]), 1e-9);
+        let output=geo_of(&result[0]);
+        let tree=TriBvh::from_geometry(&output,None);
+        let worst=panel.points.iter().map(|&p|(p,tree.closest(p).unwrap())).max_by(|a,b|a.1.dist.total_cmp(&b.1.dist)).unwrap();
+        println!("WP1 topology {:?}; worst {:?}; bounds {:?}",crate::topology::stats(&weld(&output,1e-9)),worst,output.bounds());
+        assert!(st.min_scaled_jacobian>0.0,"inverted quad: {}",st.min_scaled_jacobian);
+        assert!(st.quad_fraction >= 0.9);
+        assert!((st.mean_edge / (panel.surface_area() / 1000.0).sqrt() - 1.0).abs() <= 0.15);
+        assert!(r.metrics["max_dev_mm"].value < panel.bounds().size().length() * 0.01);
+    }
 
     #[test]
     fn closed_all_quad_meshes_have_index_sum_eight() {
@@ -502,7 +713,7 @@ mod tests {
         assert!((st.quad_fraction - 1.0).abs() < 1e-12);
         assert_eq!(st.index_sum, 8);
         let r = report_of(&out[1]);
-        assert!(r.notes.iter().any(|(_, t)| t.starts_with("white-box placeholder")));
+        assert!(!r.notes.iter().any(|(_, t)| t.starts_with("white-box placeholder")));
         // every corner and edge of the cube survives as mesh geometry
         assert!(g.points.iter().any(|p| (p.abs() - DVec3::splat(50.0)).abs().max_element() < 1e-9));
     }

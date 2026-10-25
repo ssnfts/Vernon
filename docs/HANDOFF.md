@@ -6,6 +6,22 @@ of done. This document lists the remaining work as ordered **work packages
 (WP)**. Do them in order, one commit each. Every WP ends with the full
 definition-of-done check from `AGENTS.md`.
 
+## Progress — 2026-10-26
+
+WP1 is implemented and verified; WP2 is next. The original baseline below is
+retained as historical context. Current registry: 197 nodes, 172 implemented,
+25 white-box. Workspace tests: 1,002 passed, zero failed, six ignored; the
+release-only WP1 benchmark also passed separately. Build and Clippy passed,
+the demo cooked 36 nodes with zero failures and two expected gates, the node
+catalogue was regenerated, and the app opened with GPU-rendered viewports.
+
+The 100k-triangle remesh took 1.35 s: 100% quads, mean edge 23.40 mm versus
+23.37 mm target, conservative bidirectional deviation bound 4.60 mm.
+See [implementation, measurements and limits](specs/field-aligned-remesh.md).
+Guide steering and strict source-face constraints still warn when requested.
+In the sandbox, set TEMP/TMP to `scratch/wp1-temp`; the existing process-tree
+timeout test additionally needs localhost ping access outside the sandbox.
+
 ---
 
 ## 0. Current state (verified at handoff)
