@@ -9,9 +9,9 @@ use crate::curvefit::fit_with_knots;
 use crate::fit::{fit_adaptive_surface, is_height_field, param_boundary, param_conformal, param_projection, sample_mesh, FitSample, SurfaceFit, TriMesh};
 use crate::linalg::solve_dense;
 use crate::nurbs::{basis_funs, clamped_uniform_knots, find_span, CurveSet, NurbsCurve, NurbsSurface, PatchSet};
-use crate::segment::{labels_from_geo, limit_regions, segment, seg_mesh, Primitive, SegParams};
+use crate::segment::{labels_from_geo, seg_mesh};
 use crate::topology::boundary_loops;
-use crate::util::{check_finite, json_err, json_input, node_info, percentile, placeholder_note, positive, SPEC_RE};
+use crate::util::{check_finite, json_err, json_input, node_info, placeholder_note, positive, SPEC_RE};
 
 /// Parameterise a mesh patch for fitting. Returns (uv, aspect, mode used).
 pub fn parameterise(m: &TriMesh, mode: &str) -> Result<(Vec<[f64; 2]>, f64, &'static str), String> {
@@ -82,16 +82,16 @@ fn fit_params(info: NodeTypeInfo) -> NodeTypeInfo {
         .param(ParamSpec::int("extra_samples", "Extra samples per face", 0, 0, 16).help("Additional sample points inside every triangle."))
 }
 
-struct FitSettings {
-    degree: usize,
-    init_cp: usize,
-    max_cp: usize,
-    smooth: f64,
-    tol: f64,
-    extra: usize,
+pub(crate) struct FitSettings {
+    pub(crate) degree: usize,
+    pub(crate) init_cp: usize,
+    pub(crate) max_cp: usize,
+    pub(crate) smooth: f64,
+    pub(crate) tol: f64,
+    pub(crate) extra: usize,
 }
 
-fn fit_settings(ctx: &CookContext, params: &Params) -> CookResult<FitSettings> {
+pub(crate) fn fit_settings(ctx: &CookContext, params: &Params) -> CookResult<FitSettings> {
     Ok(FitSettings {
         degree: params.int("degree")?.clamp(2, 5) as usize,
         init_cp: params.int("init_cp")?.clamp(4, 32) as usize,
@@ -176,90 +176,18 @@ impl NodeOp for AutoSurfaceNode {
                 .output(PortSpec::new("report", DataKind::Report)),
         )
         .param(ParamSpec::choice("detail", "Detail", "medium", &["coarse", "medium", "fine"]).help("How small regions may get: coarse keeps only large regions."))
-        .param(ParamSpec::int("target_patches", "Target patches", 0, 0, 5000).help("Merge smallest regions until at most this many remain; 0 lets the detail level decide."))
+        .param(ParamSpec::int("target_patches", "Target patches", 0, 0, 5000).help("Desired grid count for a smooth single chart, or a cap for automatic region merging. Existing region labels are retained. 0 uses the detail level; at most 256 patches per cook."))
         .param(ParamSpec::choice("continuity", "Continuity", "g0", &["g0", "g1"]).help("Continuity wanted between neighbouring patches."))
         .param(ParamSpec::float("sensitivity", "Segmentation sensitivity", 55.0, 0.0, 100.0).help("Sensitivity of the region segmentation."))
         .param(ParamSpec::float("noise_sigma_mm", "Noise level", 0.05, 0.0005, 5.0).unit("mm").help("Scan noise used to scale the region fit tolerance."))
-        .help("One-click surfacing: segments the mesh into regions, lays one patch over every region, fits each with a least-squares tensor B-spline and reports the measured deviation of the mesh from the patches. The patch layout is region based (see the report note).")
+        .help("Fits four-sided B-spline patch layouts with local knot refinement. Compatible whole boundaries share control points; optional tangent reconciliation is measured after joining. Reports final sampled deviation, seam gaps, normal jumps and uncovered chart interfaces. Max control points limits fitting; shared-edge knot reconciliation has a separate ceiling of 128 per direction. Partial-edge joins and trimming are unsupported.")
         .emulates("QUICKSURFACE auto surfacing")
         .emulates("Design X Auto Surface")
+        .implemented()
     }
 
     fn cook(&self, ctx: &CookContext, inputs: &[Option<Data>], params: &Params) -> CookResult<Vec<Data>> {
-        let geo = vernon_graph::node::inputs::geometry(inputs, 0)?;
-        check_finite(ctx, &geo)?;
-        let mut fs = fit_settings(ctx, params)?;
-        fs.tol = fs.tol.max(0.001);
-        let sm = seg_mesh(&geo);
-        if sm.mesh.tris.is_empty() {
-            return Err(ctx.fail("the input has no faces"));
-        }
-        let min_area = match params.str("detail")? {
-            "coarse" => 0.05,
-            "fine" => 0.002,
-            _ => 0.01,
-        };
-        let sp = SegParams { sensitivity: params.float("sensitivity")?.clamp(0.0, 100.0), noise_sigma: positive(ctx, "noise_sigma_mm", params.float("noise_sigma_mm")?)?, min_area_frac: min_area, cad_tessellation: false };
-        let mut seg = segment(&sm.mesh, &sp);
-        let target = params.int("target_patches")?.max(0) as usize;
-        if target > 0 {
-            seg = limit_regions(&sm.mesh, &seg, target, &sp);
-        }
-        let mut surfaces = Vec::new();
-        let mut region_ids = Vec::new();
-        let mut report = Report::new("Auto surface");
-        let (mut worst, mut sum2, mut n_s, mut p95s) = (0.0f64, 0.0, 0usize, Vec::<f64>::new());
-        let mut skipped = 0usize;
-        for (ri, reg) in seg.regions.iter().enumerate() {
-            let ids: Vec<usize> = reg.tris.iter().map(|&t| t as usize).collect();
-            let whole = sm.mesh.sub(&ids);
-            // planes need only the minimum net
-            let init = if matches!(reg.prim, Primitive::Plane { .. }) { fs.degree + 1 } else { fs.init_cp };
-            let mut pieces = vec![whole.clone()];
-            let faces: Vec<Vec<u32>> = whole.tris.iter().map(|t| t.to_vec()).collect();
-            if boundary_loops(&faces).is_empty() {
-                // a closed region cannot be mapped to a square: cut it in two along its longest axis
-                pieces = split_closed(&whole);
-                report.note(Severity::Info, format!("region {ri} is closed and was cut into {} parts", pieces.len()));
-            }
-            for (pi, sub) in pieces.iter().enumerate() {
-                match fit_region_patch(sub, "auto", fs.degree, init, fs.max_cp, fs.smooth, fs.tol, fs.extra) {
-                    Ok((fit, _)) => {
-                        worst = worst.max(fit.max_dev);
-                        sum2 += fit.rms_dev * fit.rms_dev * sub.points.len() as f64;
-                        n_s += sub.points.len();
-                        p95s.push(fit.p95_dev);
-                        surfaces.push(fit.surface);
-                        region_ids.push(ri as i64);
-                    }
-                    Err(e) => {
-                        skipped += 1;
-                        report.note(Severity::Warning, format!("region {ri} part {pi} skipped: {e}"));
-                    }
-                }
-            }
-        }
-        if surfaces.is_empty() {
-            return Err(ctx.fail("no region could be fitted; the mesh may be closed with a single region"));
-        }
-        let mut ps = PatchSet::new(surfaces);
-        for (p, id) in ps.patches.iter_mut().zip(&region_ids) {
-            p.region_id = Some(*id);
-        }
-        p95s.sort_by(|a, b| a.total_cmp(b));
-        report.metric("region_count", Metric::new(seg.regions.len() as f64, "count"));
-        report.metric("patch_count", Metric::new(ps.patches.len() as f64, "count"));
-        report.metric("skipped_regions", Metric::new(skipped as f64, "count"));
-        report.metric("control_points", Metric::new(ps.control_point_count() as f64, "count"));
-        report.metric("dev_max_mm", Metric::new(worst, "mm").with_limit(fs.tol, true));
-        report.metric("dev_rms_mm", Metric::new((sum2 / n_s.max(1) as f64).sqrt(), "mm"));
-        report.metric("dev_p95_mm", Metric::new(percentile(&p95s, 100.0), "mm").with_limit(fs.tol, true));
-        placeholder_note(&mut report, "patch layout is one untrimmed tensor patch per region; shared boundary curves, trimming and tangent continuity between patches are not built yet");
-        if params.str("continuity")? == "g1" {
-            report.note(Severity::Warning, "g1 continuity between patches is not enforced");
-        }
-        let preview = ps.tessellate((fs.tol / 2.0).max(0.02));
-        Ok(vec![Data::json(ps.to_json()), Data::geometry(preview), Data::report(report)])
+        crate::autosurface::cook(ctx, inputs, params)
     }
 }
 
@@ -628,9 +556,113 @@ impl NodeOp for LoftSectionsNode {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn wp2_car_panel_network_meets_tolerance_and_seams() {
+        let panel = vernon_nodes_geo::primitives::CarPanel::default().build();
+        let out = cook("surface.auto_surface", &[some(&panel)], &[("tol_mm",f(0.2)),("target_patches",i(4)),("continuity",s("g1"))]).unwrap();
+        let r=report_of(&out[2]);
+        assert!(!r.notes.iter().any(|(_,n)|n.starts_with("white-box placeholder")));
+        assert!(r.metrics["dev_p95_mm"].value<=0.2,"{:?}",r.metrics);
+        assert_eq!(r.metrics["seam_count"].value,4.0,"all grid seams must be checked");
+        assert_eq!(r.metrics["unjoined_region_boundaries"].value,0.0);
+        assert!(r.metrics["max_seam_gap_mm"].value<=0.01);
+        assert!(r.metrics["max_normal_jump_deg"].value<=1.0);
+        let ps=PatchSet::from_json(out[0].as_json().unwrap()).unwrap();
+        assert!(ps.patches.len()>=2);
+        let mut boundaries=std::collections::BTreeMap::<_,Vec<_>>::new();
+        for p in &ps.patches{for(e,&id)in p.boundary_ids.iter().enumerate(){boundaries.entry(id).or_default().push((&p.surface,e));}}
+        for seam in boundaries.values().filter(|v|v.len()==2){
+            let at=|(s,e):(&NurbsSurface,usize),t:f64|{
+                let(a,b)=s.domain_u();let(c,d)=s.domain_v();
+                let(u,v)=match e{0=>(a,c+(d-c)*t),1=>(b,c+(d-c)*t),2=>(a+(b-a)*t,c),_=>(a+(b-a)*t,d)};
+                (s.point(u,v),s.normal(u,v))
+            };
+            let rev=at(seam[0],0.0).0.distance(at(seam[1],1.0).0)<at(seam[0],0.0).0.distance(at(seam[1],0.0).0);
+            for k in 0..=37{let t=k as f64/37.0;let(a,na)=at(seam[0],t);let(b,nb)=at(seam[1],if rev{1.0-t}else{t});
+                assert!(a.distance(b)<=0.01);assert!(na.length_squared()>0.9 && nb.length_squared()>0.9);
+                assert!(na.dot(nb).clamp(-1.0,1.0).acos().to_degrees()<=1.0);
+            }
+        }
+        let preview=geo_of(&out[1]);
+        let parts=preview.prim_attribs.ints("part").unwrap();
+        assert_eq!(parts.len(),preview.prims.len());
+        let check=cook("surface.deviation_check",&[some(&panel),None,Some(out[0].clone())],&[("tol_mm",f(0.2)),("samples",i(10000))]).unwrap();
+        assert!(report_of(&check[1]).metrics["dev_p95_mm"].value<=0.2);
+    }
+
+    #[test]
+    fn wp2_rotated_labelled_panel_keeps_regions_and_joins() {
+        let mut panel=vernon_nodes_geo::primitives::CarPanel::default().build();
+        let labels=panel.prims.iter().map(|p|if p.vertices.iter().map(|&v|panel.points[v as usize].x).sum::<f64>()<0.0 {11}else{22}).collect();
+        panel.prim_attribs.set("region_id",vernon_core::AttribArray::Int(labels));
+        let rotation=glam::DQuat::from_rotation_x(1.1)*glam::DQuat::from_rotation_z(0.37);
+        for p in &mut panel.points{*p=rotation*(*p)+DVec3::new(83.0,-29.0,171.0);}
+        let out=cook("surface.auto_surface",&[some(&panel)],&[("tol_mm",f(0.2)),("continuity",s("g1"))]).unwrap();
+        let ps=PatchSet::from_json(out[0].as_json().unwrap()).unwrap();
+        assert!(ps.patches.iter().any(|p|p.region_id==Some(11)));
+        assert!(ps.patches.iter().any(|p|p.region_id==Some(22)));
+        let r=report_of(&out[2]);
+        println!("WP2 labelled metrics {:?}",r.metrics);
+        assert!(r.metrics["seam_count"].value>=1.0);
+        assert!(r.metrics["max_seam_gap_mm"].value<=0.01);
+        assert!(r.metrics["max_normal_jump_deg"].value<=1.0);
+        assert!(r.metrics["dev_p95_mm"].value<=0.2);
+    }
+
+    #[test]
+    fn wp2_disconnected_regions_do_not_get_a_bridging_patch() {
+        let mut g=grid(4,4,10.0,10.0,|_,_|0.0);
+        let mut other=g.clone(); for p in &mut other.points{p.x+=100.0;}
+        g.merge(&other);
+        g.prim_attribs.set("region_id",vernon_core::AttribArray::Int(vec![7;g.prims.len()]));
+        let out=cook("surface.auto_surface",&[some(&g)],&[]).unwrap();
+        let ps=PatchSet::from_json(out[0].as_json().unwrap()).unwrap();
+        assert_eq!(ps.patches.len(),2,"disconnected islands need separate charts");
+        assert!(report_of(&out[2]).metrics["dev_reverse_p95_mm"].value<=0.1);
+    }
+
+    #[test]
+    fn wp2_three_patches_have_two_complete_shared_edges() {
+        let panel=vernon_nodes_geo::primitives::CarPanel::default().build();
+        let out=cook("surface.auto_surface",&[some(&panel)],&[("target_patches",i(3)),("continuity",s("g1")),("tol_mm",f(0.2))]).unwrap();
+        let r=report_of(&out[2]);
+        assert_eq!(r.metrics["seam_count"].value,2.0,"T-junctions leave unchecked partial seams");
+    }
+
+    #[test]
+    fn wp2_partial_internal_boundaries_fail_the_coverage_gate() {
+        let mut g=grid(12,12,100.0,100.0,|_,_|0.0);
+        let labels=g.prims.iter().map(|p|{
+            let c=p.vertices.iter().map(|&v|g.points[v as usize]).sum::<DVec3>()/p.vertices.len() as f64;
+            if c.x<50.0{0}else if c.y<50.0{1}else{2}
+        }).collect();
+        g.prim_attribs.set("region_id",vernon_core::AttribArray::Int(labels));
+        let out=cook("surface.auto_surface",&[some(&g)],&[("continuity",s("g1"))]).unwrap();
+        let r=report_of(&out[2]);
+        assert!(r.metrics.get("unjoined_region_boundaries").is_some_and(|m|m.value>0.0),"missing seams must be a numeric failure, even when another seam matched");
+        assert!(!r.passes());
+    }
+
+    #[test]
+    fn wp2_closed_chart_cuts_do_not_bypass_coverage() {
+        let mut g=crate::testutil::sphere(20.0,12,6);
+        g.prim_attribs.set("region_id",vernon_core::AttribArray::Int(vec![8;g.prims.len()]));
+        let out=cook("surface.auto_surface",&[some(&g)],&[("max_cp",i(8)),("continuity",s("g1"))]).unwrap();
+        let r=report_of(&out[2]);
+        assert!(r.metrics["unjoined_region_boundaries"].value>0.0 || r.metrics["seam_count"].value>0.0,"the introduced chart cut must be checked");
+    }
+
+    #[test]
+    fn wp2_labelled_chart_limit_fails_before_fitting() {
+        let mut g=grid(257,1,257.0,1.0,|_,_|0.0);
+        g.prim_attribs.set("region_id",vernon_core::AttribArray::Int((0..257).collect()));
+        let error=cook("surface.auto_surface",&[some(&g)],&[]).unwrap_err().to_string();
+        assert!(error.contains("256 regions"),"{error}");
+    }
+
     use super::*;
     use crate::nurbs::CurveEntry;
-    use crate::testutil::{b, cook, cylinder, f, filleted_box, grid, i, report_of, s, some, v3};
+    use crate::testutil::{b, cook, cylinder, f, filleted_box, geo_of, grid, i, report_of, s, some, v3};
     use std::f64::consts::PI;
 
     fn line_curve(id: usize, a: DVec3, bb: DVec3) -> CurveEntry {
@@ -685,11 +717,11 @@ mod tests {
         let g = filleted_box(40.0, 5.0, 6);
         let out = cook("surface.auto_surface", &[some(&g)], &[("tol_mm", f(0.3))]).unwrap();
         let r = report_of(&out[2]);
-        assert_eq!(r.metrics["patch_count"].value + r.metrics["skipped_regions"].value, r.metrics["region_count"].value);
+        assert!(r.metrics["patch_count"].value >= r.metrics["region_count"].value);
         assert!(r.metrics["patch_count"].value >= 6.0, "{:?}", r.metrics);
         let fine = cook("surface.auto_surface", &[some(&g)], &[("tol_mm", f(0.3)), ("detail", s("fine"))]).unwrap();
         assert!(report_of(&fine[2]).metrics["region_count"].value >= r.metrics["region_count"].value);
-        assert!(r.notes.iter().any(|(_, t)| t.starts_with("white-box placeholder")));
+        assert!(!r.notes.iter().any(|(_, t)| t.starts_with("white-box placeholder")));
         // fitted region by region, the worst data distance stays small
         assert!(r.metrics["dev_max_mm"].value < 1.0, "{}", r.metrics["dev_max_mm"].value);
         let few = cook("surface.auto_surface", &[some(&g)], &[("target_patches", i(8))]).unwrap();

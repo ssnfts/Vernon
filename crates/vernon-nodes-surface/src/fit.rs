@@ -60,11 +60,15 @@ fn collocation_rows(samples: &[FitSample], degree: usize, nu: usize, nv: usize, 
 pub fn fit_fixed(samples: &[FitSample], opts: &FitOptions) -> Option<NurbsSurface> {
     let p = opts.degree;
     let (nu, nv) = (opts.nu.max(p + 1), opts.nv.max(p + 1));
+    fit_custom_knots(samples, opts, clamped_uniform_knots(nu, p), clamped_uniform_knots(nv, p))
+}
+
+fn fit_custom_knots(samples: &[FitSample], opts: &FitOptions, ku: Vec<f64>, kv: Vec<f64>) -> Option<NurbsSurface> {
+    let p = opts.degree;
+    let (nu, nv) = (ku.len() - p - 1, kv.len() - p - 1);
     if samples.len() < 4 || samples.iter().any(|s| !s.q.is_finite()) {
         return None;
     }
-    let ku = clamped_uniform_knots(nu, p);
-    let kv = clamped_uniform_knots(nv, p);
     let rows = collocation_rows(samples, p, nu, nv, &ku, &kv);
     let n = nu * nv;
     let mut dd = vec![0.0; n];
@@ -143,7 +147,7 @@ pub fn fit_fixed(samples: &[FitSample], opts: &FitOptions) -> Option<NurbsSurfac
 #[derive(Debug, Clone)]
 pub struct SurfaceFit {
     pub surface: NurbsSurface,
-    /// Foot-point distances from the samples to the surface.
+    /// Foot-point distances, or fixed-UV residuals for a shared-chart fit.
     pub max_dev: f64,
     pub rms_dev: f64,
     pub p95_dev: f64,
@@ -221,6 +225,150 @@ pub fn fit_adaptive_surface(
         }
     }
     best
+}
+
+/// Residual-driven local refinement. Each iteration bisects the knot span
+/// containing the largest measured residual in each available direction.
+/// The best measured fit is retained if later solves or parameter corrections
+/// worsen the maximum distance. Limits stop refinement without asserting success.
+pub fn fit_local_surface(
+    samples: &mut [FitSample],
+    degree: usize,
+    init_cp: usize,
+    max_cp: usize,
+    aspect: f64,
+    tol: f64,
+    smoothness: f64,
+    passes: usize,
+) -> Option<SurfaceFit> {
+    fit_local_impl(samples, degree, init_cp, max_cp, aspect, tol, smoothness, passes, true)
+}
+
+/// Fit a shared chart while retaining every supplied UV coordinate exactly.
+/// Deviations measure point residuals at the fixed chart coordinates, so chart
+/// isolines remain suitable for subdivision and shared-boundary constraints.
+pub fn fit_chart_surface(
+    samples: &mut [FitSample],
+    degree: usize,
+    init_cp: usize,
+    max_cp: usize,
+    aspect: f64,
+    tol: f64,
+    smoothness: f64,
+    passes: usize,
+) -> Option<SurfaceFit> {
+    fit_local_impl(samples, degree, init_cp, max_cp, aspect, tol, smoothness, passes, false)
+}
+
+fn local_distances(surface: &NurbsSurface, samples: &mut [FitSample], correct: bool) -> Vec<f64> {
+    if correct {
+        correct_parameters(surface, samples, 12)
+    } else {
+        samples.iter().map(|s| (s.q - surface.point(s.u, s.v)).length()).collect()
+    }
+}
+
+fn fit_local_impl(
+    samples: &mut [FitSample],
+    degree: usize,
+    init_cp: usize,
+    max_cp: usize,
+    aspect: f64,
+    tol: f64,
+    smoothness: f64,
+    passes: usize,
+    correct: bool,
+) -> Option<SurfaceFit> {
+    if degree == 0
+        || degree > 5
+        || max_cp < degree + 1
+        || max_cp > 128
+        || !aspect.is_finite()
+        || !tol.is_finite()
+        || tol < 0.0
+        || !smoothness.is_finite()
+        || samples
+            .iter()
+            .any(|s| !s.u.is_finite() || !s.v.is_finite() || !s.q.is_finite())
+    {
+        return None;
+    }
+    let aspect = aspect.clamp(0.05, 20.0).sqrt();
+    let dims = |a: f64| ((init_cp as f64 * a).round() as usize).clamp(degree + 1, max_cp);
+    let mut ku = clamped_uniform_knots(dims(aspect), degree);
+    let mut kv = clamped_uniform_knots(dims(1.0 / aspect), degree);
+    let mut best: Option<(SurfaceFit, Vec<FitSample>)> = None;
+    // One added knot per direction per iteration, with an explicit work bound.
+    for iteration in 1..=32 {
+        let (nu, nv) = (ku.len() - degree - 1, kv.len() - degree - 1);
+        let opts = FitOptions {
+            degree,
+            nu,
+            nv,
+            smoothness,
+        };
+        let mut surface = fit_custom_knots(samples, &opts, ku.clone(), kv.clone())?;
+        let mut d = local_distances(&surface, samples, correct);
+        for _ in 0..if correct { passes.min(8) } else { 0 } {
+            let candidate = fit_custom_knots(samples, &opts, ku.clone(), kv.clone())?;
+            let mut corrected = samples.to_vec();
+            let candidate_d = local_distances(&candidate, &mut corrected, correct);
+            if stats(&candidate_d).0 <= stats(&d).0 {
+                surface = candidate;
+                samples.copy_from_slice(&corrected);
+                d = candidate_d;
+            } else {
+                break;
+            }
+        }
+        let (max_dev, rms_dev, p95_dev) = stats(&d);
+        if !max_dev.is_finite() || surface.control_points.iter().any(|p| !p.is_finite()) {
+            break;
+        }
+        let reached_tol = max_dev <= tol;
+        if !matches!(best.as_ref(), Some((b, _)) if max_dev >= b.max_dev) {
+            best = Some((
+                SurfaceFit {
+                    surface,
+                    max_dev,
+                    rms_dev,
+                    p95_dev,
+                    iterations: iteration,
+                    reached_tol,
+                },
+                samples.to_vec(),
+            ));
+        }
+        if reached_tol || (nu == max_cp && nv == max_cp) || samples.len() < nu * nv * 2 {
+            break;
+        }
+        let worst = d
+            .iter()
+            .enumerate()
+            .max_by(|a, b| a.1.total_cmp(b.1).then(b.0.cmp(&a.0)))?
+            .0;
+        let insert = |knots: &mut Vec<f64>, n: usize, t: f64| {
+            let span = find_span(n, degree, t, knots);
+            let mid = (knots[span] + knots[span + 1]) * 0.5;
+            if mid > knots[span] && mid < knots[span + 1] {
+                knots.insert(span + 1, mid);
+            }
+        };
+        if nu < max_cp {
+            insert(&mut ku, nu, samples[worst].u);
+        }
+        if nv < max_cp {
+            insert(&mut kv, nv, samples[worst].v);
+        }
+    }
+    let (mut result, corrected) = best?;
+    samples.copy_from_slice(&corrected);
+    let (max, rms, p95) = stats(&local_distances(&result.surface, samples, correct));
+    result.max_dev = max;
+    result.rms_dev = rms;
+    result.p95_dev = p95;
+    result.reached_tol = max <= tol;
+    Some(result)
 }
 
 // ---------------------------------------------------------------------------
@@ -688,6 +836,90 @@ mod tests {
         let mut s = sheet_samples(70, 0.0, 3);
         let f = fit_adaptive_surface(&mut s, 3, 5, 40, 1.0, 0.02, 1e-6, 2).unwrap();
         assert!(f.reached_tol && f.max_dev <= 0.02, "max {} n {}x{}", f.max_dev, f.surface.nu, f.surface.nv);
+    }
+
+    fn bump_samples() -> Vec<FitSample> {
+        (0..31)
+            .flat_map(|i| {
+                (0..31).map(move |j| {
+                    let (u, v) = (i as f64 / 30.0, j as f64 / 30.0);
+                    let z = 3.0 * (-((u - 0.23).powi(2) / 0.008 + (v - 0.37).powi(2) / 0.02)).exp();
+                    FitSample {
+                        u,
+                        v,
+                        q: DVec3::new(100.0 * u, 100.0 * v, z),
+                    }
+                })
+            })
+            .collect()
+    }
+
+    #[test]
+    fn local_fit_refines_bump_and_measures_returned_surface() {
+        let mut s = bump_samples();
+        let baseline = fit_local_surface(&mut s.clone(), 3, 4, 4, 1.0, 0.01, 0.0, 1).unwrap();
+        let f = fit_local_surface(&mut s, 3, 4, 10, 1.0, 0.01, 0.0, 1).unwrap();
+        assert!(
+            f.max_dev < baseline.max_dev * 0.8,
+            "{} vs {}",
+            f.max_dev,
+            baseline.max_dev
+        );
+        let nonuniform = |k: &[f64]| {
+            let spans: Vec<_> = k
+                .windows(2)
+                .filter_map(|w| (w[1] > w[0]).then_some(w[1] - w[0]))
+                .collect();
+            spans.iter().any(|s| (s - spans[0]).abs() > 1e-8)
+        };
+        assert!(nonuniform(&f.surface.knots_u) || nonuniform(&f.surface.knots_v));
+        let (max, rms, p95) = stats(&correct_parameters(&f.surface, &mut s, 6));
+        assert!((max - f.max_dev).abs() < 1e-7);
+        assert!((rms - f.rms_dev).abs() < 1e-7);
+        assert!((p95 - f.p95_dev).abs() < 1e-7);
+        assert_eq!(f.reached_tol, f.max_dev <= 0.01);
+    }
+
+    #[test]
+    fn local_fit_plane_and_control_limit_are_finite() {
+        let mut s = bump_samples();
+        for p in &mut s {
+            p.q.z = 2.0;
+        }
+        let f = fit_local_surface(&mut s, 3, 4, 4, 1.0, 1e-6, 0.0, 1).unwrap();
+        assert!(f.reached_tol && f.max_dev < 1e-6);
+        let f = fit_local_surface(&mut bump_samples(), 3, 4, 4, 1.0, 1e-12, 0.0, 1).unwrap();
+        assert!(!f.reached_tol && f.max_dev.is_finite());
+        assert_eq!((f.surface.nu, f.surface.nv), (4, 4));
+        assert!(fit_local_surface(&mut bump_samples(), 3, 4, 3, 1.0, 0.1, 0.0, 1).is_none());
+    }
+
+    #[test]
+    fn chart_fit_preserves_parameters_and_agrees_under_nonuniform_sampling() {
+        let make = |warped: bool| (0..25).flat_map(|i| (0..25).map(move |j| {
+            let mut u = i as f64 / 24.0;
+            let v = j as f64 / 24.0;
+            if warped { u = u.powf(1.7); }
+            FitSample { u, v, q: DVec3::new(100.0*u, 60.0*v, 2.0*u*u + 3.0*u*v - v*v) }
+        })).collect::<Vec<_>>();
+        let mut uniform = make(false);
+        let mut warped = make(true);
+        let uv: Vec<_> = warped.iter().map(|s| (s.u, s.v)).collect();
+        let a = fit_chart_surface(&mut uniform, 3, 4, 10, 1.0, 1e-5, 0.0, 2).unwrap();
+        let b = fit_chart_surface(&mut warped, 3, 4, 10, 1.0, 1e-5, 0.0, 2).unwrap();
+        assert_eq!(uv, warped.iter().map(|s| (s.u, s.v)).collect::<Vec<_>>());
+        assert!(a.reached_tol && b.reached_tol, "{} {}", a.max_dev, b.max_dev);
+        for i in 0..21 { for j in 0..21 {
+            let (u,v) = (i as f64/20.0,j as f64/20.0);
+            assert!((a.surface.point(u,v)-b.surface.point(u,v)).length()<1e-5);
+        }}
+        let mut bump = bump_samples();
+        let uv: Vec<_> = bump.iter().map(|s| (s.u, s.v)).collect();
+        let f = fit_chart_surface(&mut bump, 3, 4, 10, 1.0, 0.01, 0.0, 2).unwrap();
+        assert_eq!(uv, bump.iter().map(|s| (s.u, s.v)).collect::<Vec<_>>());
+        assert!(f.surface.nu > 4 && f.surface.nu <= 10);
+        let residual: Vec<_> = bump.iter().map(|s| (s.q-f.surface.point(s.u,s.v)).length()).collect();
+        assert!((stats(&residual).0-f.max_dev).abs()<1e-10);
     }
 
     fn mesh_of(g: &vernon_core::Geometry) -> TriMesh {

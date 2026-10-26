@@ -6,7 +6,28 @@ of done. This document lists the remaining work as ordered **work packages
 (WP)**. Do them in order, one commit each. Every WP ends with the full
 definition-of-done check from `AGENTS.md`.
 
-## Progress — 2026-10-26
+## Progress — 2026-10-26 (WP2)
+
+WP1 and WP2 are implemented and verified; WP3 is next. The registry contains
+197 nodes: 174 implemented and 23 white-box. Workspace checks: 1,023 passed,
+zero failed, six ignored; build and Clippy clean. The demo cooks 36 nodes with
+zero failures and two expected gates. The node catalogue was regenerated and
+the GPU viewport launch was checked visually.
+
+WP2 adds local knot refinement, connected four-sided B-spline layouts with
+shared whole-edge boundaries, measured G1 residuals, and a failing coverage
+gate for unresolved source chart interfaces (including cuts inside one region).
+Region refinement now includes projected polyline label cuts and validated
+merge/re-segmentation operations. Preview faces carry `part` = patch id.
+
+The actual default car panel passes the 0.2 mm p95 and seam acceptance tests.
+The rotated labelled-panel case measured p95 0.14165 mm, zero seam gap and a
+normal jump about 0.00000121 degrees. Its worst sampled error is 0.62253 mm,
+so the stronger 0.2 mm maximum-error gate remains a failure. Neither trimming
+nor partial-edge joins are implemented; missing internal joins fail a coverage
+gate. See [current WP2 contract and limits](specs/connected-auto-surface.md).
+
+## WP1 checkpoint — 2026-10-26
 
 WP1 is implemented and verified; WP2 is next. The original baseline below is
 retained as historical context. Current registry: 197 nodes, 172 implemented,

@@ -699,16 +699,100 @@ impl NodeOp for SegmentRegionsNode {
 /// Region ids per triangle from the prim attribute `region_id`.
 pub(crate) fn labels_from_geo(geo: &Geometry, sm: &SegMesh) -> Option<Vec<i64>> {
     let ids = geo.prim_attribs.ints("region_id").ok()?;
-    Some(sm.tri_prim.iter().map(|&p| ids[p]).collect())
+    sm.tri_prim.iter().map(|&p| ids.get(p).copied()).collect()
 }
 
 /// `surface.refine_regions`
 pub struct RefineRegionsNode;
 
+/// A projected cut removes crossings in the original face dual graph. Keeping
+/// all triangles of a polygon together avoids silently losing a split on export.
+fn polyline_split(geo: &Geometry, sm: &SegMesh, labels: &mut [i64], targets: &[i64], curve: &Geometry) -> Result<(), String> {
+    if curve.prims.len() != 1 || curve.prims[0].closed {
+        return Err("provide one open polyline primitive; branches and polygon primitives are unsupported (repeat the first vertex to close a polyline)".into());
+    }
+    let path = &curve.prims[0].vertices;
+    if path.len() < 2 || path.iter().any(|&i| i as usize >= curve.points.len()) {
+        return Err("polyline needs at least two valid point indices".into());
+    }
+    if path.len().saturating_mul(sm.mesh.tris.len()) > 20_000_000 {
+        return Err("projected cut exceeds the work limit; simplify the polyline or mesh".into());
+    }
+    let adj = tri_adjacency(&sm.mesh.tris);
+    let mut face_edges = std::collections::BTreeSet::new();
+    for (t, ns) in adj.iter().enumerate() {
+        for &n in ns.iter().flatten() {
+            let (a, b) = (sm.tri_prim[t], sm.tri_prim[n as usize]);
+            if a != b { face_edges.insert((a.min(b), a.max(b))); }
+        }
+    }
+    let mut face_labels = vec![-1; geo.prims.len()];
+    for (t, &id) in labels.iter().enumerate() { face_labels[sm.tri_prim[t]] = id; }
+    let centers: Vec<DVec3> = geo.prims.iter().map(|p| p.vertices.iter().map(|&i| geo.points[i as usize]).sum::<DVec3>() / p.vertices.len().max(1) as f64).collect();
+    let mut next = labels.iter().copied().max().unwrap_or(-1).checked_add(1).ok_or("region id overflow")?;
+    let mut cuts = 0;
+    for &id in targets {
+        let faces: Vec<usize> = face_labels.iter().enumerate().filter_map(|(i, &l)| (l == id).then_some(i)).collect();
+        let pts: Vec<DVec3> = faces.iter().flat_map(|&i| geo.prims[i].vertices.iter().map(|&v| geo.points[v as usize])).collect();
+        let (origin, m) = scatter(&pts, None);
+        let (_, basis) = sym_eigen3(m);
+        let project = |p: DVec3| { let q = p - origin; glam::DVec2::new(q.dot(basis[1]), q.dot(basis[2])) };
+        let segments: Vec<_> = path.windows(2).map(|w| (project(curve.points[w[0] as usize]), project(curve.points[w[1] as usize]))).collect();
+        if segments.iter().all(|(a,b)| a.distance_squared(*b) < 1e-20) { return Err("polyline has no length in the region projection".into()); }
+        let mut graph = vec![Vec::new(); geo.prims.len()];
+        let mut uncut = graph.clone();
+        for &(a,b) in &face_edges {
+            if face_labels[a] != id || face_labels[b] != id { continue; }
+            uncut[a].push(b); uncut[b].push(a);
+            let (p,q) = (project(centers[a]), project(centers[b]));
+            let crosses = segments.iter().any(|&(r,s)| {
+                let (d,e) = (q-p,s-r);
+                let den = d.perp_dot(e);
+                if den.abs() < 1e-14 { return false; }
+                let t = (r-p).perp_dot(e)/den;
+                let u = (r-p).perp_dot(d)/den;
+                (0.0..=1.0).contains(&t) && (0.0..=1.0).contains(&u)
+            });
+            if !crosses { graph[a].push(b); graph[b].push(a); }
+        }
+        let components = |graph: &[Vec<usize>]| {
+            let mut seen = vec![false; geo.prims.len()];
+            let mut out = Vec::new();
+            for &seed in &faces {
+                if seen[seed] { continue; }
+                seen[seed] = true;
+                let mut members = vec![seed]; let mut cursor = 0;
+                while cursor < members.len() {
+                    for &n in &graph[members[cursor]] { if !seen[n] { seen[n] = true; members.push(n); } }
+                    cursor += 1;
+                }
+                out.push(members);
+            }
+            out
+        };
+        let original = components(&uncut);
+        let split = components(&graph);
+        if split.len() <= original.len() { continue; }
+        cuts += split.len() - original.len();
+        // Retain the old id in one piece of each pre-existing component.
+        let mut retained = std::collections::BTreeSet::new();
+        for members in split {
+            let parent = original.iter().position(|c| c.contains(&members[0])).expect("component parent");
+            if retained.insert(parent) { continue; }
+            for f in members { face_labels[f] = next; }
+            next = next.checked_add(1).ok_or("region id overflow")?;
+        }
+    }
+    if cuts == 0 { return Err("projected polyline does not separate any selected region; extend it to the region boundary or supply a closed loop".into()); }
+    for (t,l) in labels.iter_mut().enumerate() { *l = face_labels[sm.tri_prim[t]]; }
+    Ok(())
+}
+
 impl NodeOp for RefineRegionsNode {
     fn info(&self) -> NodeTypeInfo {
         node_info("surface.refine_regions", "Refine Regions", SPEC_RE)
             .input(PortSpec::new("regions", DataKind::Geometry))
+            .input(PortSpec::optional("polyline", DataKind::Geometry))
             .output(PortSpec::new("regions", DataKind::Geometry))
             .output(PortSpec::new("report", DataKind::Report))
             .param(ParamSpec::choice("op", "Operation", "resegment", &["resegment", "merge", "split_by_polyline"]).help("Re-run segmentation inside regions, merge regions, or cut a region along a polyline."))
@@ -717,8 +801,9 @@ impl NodeOp for RefineRegionsNode {
             .param(ParamSpec::float("noise_sigma_mm", "Noise level", 0.05, 0.0005, 5.0).unit("mm").help("Scan noise used to scale the fit tolerance."))
             .param(ParamSpec::float("min_region_area_pct", "Minimum region area", 0.05, 0.0, 10.0).unit("%").help("Smallest region kept when re-segmenting."))
             .param(ParamSpec::bool("cad_tessellation", "Tessellated CAD mesh", false).help("Use the tight tolerance suited to meshes whose facets lie exactly on the original surfaces."))
-            .help("Edits a segmentation: re-run it at higher sensitivity inside chosen regions, merge several regions into one, or cut a region along a polyline.")
+            .help("Edits a segmentation: re-run it at higher sensitivity inside chosen regions, merge several regions into one, or cut original faces along a polyline projected into each region's best-fit plane. Use a single open polyline, repeating its first vertex for a closed loop. Folded regions with overlapping planar projections must be separated first. Mesh topology is preserved.")
             .emulates("Design X Resegment / Merge / Split")
+            .implemented()
     }
 
     fn cook(&self, ctx: &CookContext, inputs: &[Option<Data>], params: &Params) -> CookResult<Vec<Data>> {
@@ -728,15 +813,29 @@ impl NodeOp for RefineRegionsNode {
         let Some(mut labels) = labels_from_geo(&geo, &sm) else {
             return Err(ctx.fail("the input has no 'region_id' primitive attribute; run Segment Regions first"));
         };
-        let group: Vec<i64> = params.str("group")?.split(',').filter_map(|s| s.trim().parse().ok()).collect();
+        if sm.mesh.tris.is_empty() || sm.mesh.tris.len() > 400_000 {
+            return Err(ctx.fail("region refinement requires between 1 and 400000 triangles"));
+        }
+        if labels.iter().copied().max() == Some(i64::MAX) {
+            return Err(ctx.fail("region ids leave no space for new region labels"));
+        }
+        let text = params.str("group")?.trim();
+        let mut group: Vec<i64> = if text.is_empty() { vec![] } else {
+            text.split(',').map(|s| s.trim().parse::<i64>().map_err(|_| ctx.fail("region group must contain comma separated nonnegative integer ids"))).collect::<Result<_,_>>()?
+        };
+        group.sort_unstable(); group.dedup();
+        for &id in &group {
+            if id < 0 || !labels.contains(&id) { return Err(ctx.fail(format!("region {id} does not exist"))); }
+        }
         let sp = seg_params(ctx, params)?;
         let op = params.str("op")?.to_string();
         let mut notes: Vec<(vernon_core::Severity, String)> = Vec::new();
         match op.as_str() {
             "merge" => {
-                let Some(&first) = group.first() else {
+                if group.len() < 2 {
                     return Err(ctx.fail("list at least two region ids to merge"));
-                };
+                }
+                let first = group[0];
                 for l in labels.iter_mut() {
                     if group.contains(l) {
                         *l = first;
@@ -768,9 +867,13 @@ impl NodeOp for RefineRegionsNode {
                     next += (sub.regions.len() as i64 - 1).max(0);
                 }
             }
-            _ => {
-                notes.push((vernon_core::Severity::Warning, "white-box placeholder: cutting a region along a user polyline (the geodesic cut and region split) is not implemented; the regions are returned unchanged".to_string()));
+            "split_by_polyline" => {
+                let curve = vernon_graph::node::inputs::geometry(inputs, 1)?;
+                check_finite(ctx, &curve)?;
+                let targets: Vec<i64> = if group.is_empty() { labels.iter().copied().filter(|&l| l >= 0).collect::<std::collections::BTreeSet<_>>().into_iter().collect() } else { group.clone() };
+                polyline_split(&geo, &sm, &mut labels, &targets, &curve).map_err(|e| ctx.fail(e))?;
             }
+            _ => return Err(ctx.fail("unknown region refinement operation")),
         }
         // compact ids in ascending order and reclassify
         let seg = classify_labels(&sm.mesh, &labels, &sp);
@@ -983,10 +1086,90 @@ mod tests {
         assert_eq!(report_of(&merged[1]).metrics["region_count"].value, before - 1.0);
         let re = cook("surface.refine_regions", &[Some(seg[0].clone())], &[("op", s("resegment")), ("group", s("0")), ("sensitivity", f(95.0))]).unwrap();
         assert!(report_of(&re[1]).metrics["region_count"].value >= before);
-        let split = cook("surface.refine_regions", &[Some(seg[0].clone())], &[("op", s("split_by_polyline"))]).unwrap();
-        assert!(report_of(&split[1]).notes.iter().any(|(_, t)| t.starts_with("white-box placeholder")));
+        assert!(cook("surface.refine_regions", &[Some(seg[0].clone())], &[("op", s("split_by_polyline"))]).is_err());
         // no attribute: clear error
         assert!(cook("surface.refine_regions", &[some(&g)], &[]).is_err());
+    }
+
+    fn curved_grid() -> Geometry {
+        let mut g = Geometry::new();
+        for y in 0..9 { for x in 0..9 {
+            g.points.push(DVec3::new(x as f64, y as f64, 0.02 * (x * x + y * y) as f64));
+        }}
+        for y in 0..8 { for x in 0..8 {
+            let a = y * 9 + x;
+            g.prims.push(vernon_core::Prim::polygon(vec![a, a + 1, a + 10, a + 9]));
+        }}
+        g.prim_attribs.set("region_id", AttribArray::Int(vec![7; 64]));
+        g.prim_attribs.set("part", AttribArray::Int(vec![42; 64]));
+        g
+    }
+
+    #[test]
+    fn projected_polyline_splits_curved_faces_and_preserves_attributes() {
+        let g = curved_grid();
+        let mut line = Geometry::new();
+        line.points = vec![DVec3::new(2.0, -1.0, 0.0), DVec3::new(2.0, 4.0, 0.4), DVec3::new(6.0, 9.0, 2.0)];
+        line.prims.push(vernon_core::Prim::polyline(vec![0, 1, 2]));
+        let args = [("op", s("split_by_polyline")), ("group", s("7"))];
+        let a = cook("surface.refine_regions", &[some(&g), some(&line)], &args).unwrap();
+        let b = cook("surface.refine_regions", &[some(&g), some(&line)], &args).unwrap();
+        let out = geo_of(&a[0]);
+        assert_eq!(out.prim_attribs.ints("region_id").unwrap(), geo_of(&b[0]).prim_attribs.ints("region_id").unwrap());
+        assert_eq!(report_of(&a[1]).metrics["region_count"].value, 2.0);
+        assert_eq!(out.prims, g.prims);
+        assert_eq!(out.points, g.points);
+        assert_eq!(out.prim_attribs.ints("part").unwrap(), &[42; 64]);
+        let ids = out.prim_attribs.ints("region_id").unwrap();
+        assert_eq!(ids[0], ids[56]);
+        assert_ne!(ids[0], ids[7]);
+        assert_ne!(ids[2], ids[58], "the bent cut must follow its supplied path");
+        line.points = vec![DVec3::splat(100.0), DVec3::splat(110.0)];
+        line.prims[0].vertices = vec![0, 1];
+        assert!(cook("surface.refine_regions", &[some(&g), some(&line)], &args).is_err());
+    }
+
+    #[test]
+    fn refine_rejects_invalid_region_selections() {
+        let g = curved_grid();
+        for group in ["7", "7,7", "7,99", "bad,7", "-1,7"] {
+            assert!(cook("surface.refine_regions", &[some(&g)], &[("op", s("merge")), ("group", s(group))]).is_err(), "{group}");
+        }
+        assert!(cook("surface.refine_regions", &[some(&g)], &[("group", s("99"))]).is_err());
+    }
+
+    #[test]
+    fn closed_cut_targets_only_selected_region_and_rejects_branches() {
+        let mut g = curved_grid();
+        let mut ids = vec![7; 64]; ids[0] = 9;
+        g.prim_attribs.set("region_id", AttribArray::Int(ids));
+        let mut line = Geometry::new();
+        line.points = vec![DVec3::new(2.0,2.0,0.2), DVec3::new(6.0,2.0,0.8), DVec3::new(6.0,6.0,1.4), DVec3::new(2.0,6.0,0.8)];
+        line.prims.push(vernon_core::Prim::polyline(vec![0,1,2,3,0]));
+        let args = [("op", s("split_by_polyline")), ("group", s("7"))];
+        let out = cook("surface.refine_regions", &[some(&g), some(&line)], &args).unwrap();
+        assert_eq!(geo_of(&out[0]).prim_attribs.ints("region_id").unwrap()[0], 9);
+        assert!(report_of(&out[1]).metrics["region_count"].value >= 3.0);
+        line.prims.push(vernon_core::Prim::polyline(vec![0,2]));
+        let err = cook("surface.refine_regions", &[some(&g), some(&line)], &args).unwrap_err();
+        assert!(err.to_string().contains("branches"));
+    }
+
+    #[test]
+    fn curvature_resegment_is_deterministic_and_separates_disconnected_faces() {
+        let mut g = curved_grid();
+        let a = g.points.len() as u32;
+        g.points.extend([DVec3::new(20.0,0.0,0.0),DVec3::new(21.0,0.0,0.0),DVec3::new(20.0,1.0,0.0)]);
+        g.prims.push(vernon_core::Prim::polygon(vec![a,a+1,a+2]));
+        g.prim_attribs.set("region_id", AttribArray::Int(vec![7;65]));
+        let args = [("sensitivity", f(100.0)), ("noise_sigma_mm", f(0.0005)), ("min_region_area_pct", f(0.0))];
+        let out = cook("surface.refine_regions", &[some(&g)], &args).unwrap();
+        let again = cook("surface.refine_regions", &[some(&g)], &args).unwrap();
+        let a = geo_of(&out[0]); let b = geo_of(&again[0]);
+        let ids = a.prim_attribs.ints("region_id").unwrap();
+        assert_eq!(ids, b.prim_attribs.ints("region_id").unwrap());
+        assert!(ids[..64].iter().all(|&i| i != ids[64]));
+        assert!(report_of(&out[1]).metrics["region_count"].value > 2.0, "curvature must refine the connected panel too");
     }
 
     #[test]

@@ -23,6 +23,8 @@ pub mod fit;
 mod field_remesh;
 mod remesh_fields;
 mod remesh_symmetry;
+mod patch_network;
+mod autosurface;
 pub mod linalg;
 pub mod nurbs;
 pub mod patchnodes;
@@ -189,11 +191,9 @@ mod tests {
     fn white_box_flags_are_honest() {
         let reg = registry();
         for id in [
-            "surface.auto_surface",
             "surface.mesh_to_g2_surface",
             "surface.convert_prismatic",
             "surface.write_step",
-            "surface.refine_regions",
         ] {
             assert!(reg.info(id).unwrap().whitebox, "{id} contains a placeholder");
         }
@@ -205,6 +205,8 @@ mod tests {
             "surface.segment_regions",
             "surface.fit_patch",
             "surface.quad_remesh",
+            "surface.auto_surface",
+            "surface.refine_regions",
             "surface.mesh_to_subd",
             "surface.subd_refine",
             "surface.subd_to_nurbs",
