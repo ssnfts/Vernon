@@ -6,7 +6,33 @@ of done. This document lists the remaining work as ordered **work packages
 (WP)**. Do them in order, one commit each. Every WP ends with the full
 definition-of-done check from `AGENTS.md`.
 
-## Progress — 2026-10-26 (WP2)
+## Progress — 2026-10-27 (WP3)
+
+WP1–WP3 are implemented and verified under their measured acceptance contracts;
+WP4 (the real STEP writer) is next. The registry contains 197 nodes: 176
+implemented and 21 white-box. Full workspace verification: 1,039 passed,
+zero failed, six ignored; build and Clippy clean. The demo cooks 36 nodes with
+zero failures and two expected gates. The catalogue was regenerated, final
+code review was clean, and GPU app launch was checked visually.
+
+WP3 measures every expected subdivision seam from cage topology, including
+position gap, normal angle and physical curvature jump. Regular grid and
+periodic torus fixtures achieve full sampled G2. Extraordinary cases remain
+partial: the cube reports G2 fraction 0.625 and the valence-five cap reports
+0.82142857; both fail the requested full-G2 gate honestly. No guaranteed
+curvature-continuous extraordinary cap is implemented. The published bicubic
+approximation's separate shading tangents must not be confused with geometric
+G2 continuity.
+
+Prismatic recognition now detects planes, spheres, cylinders and cones, with
+optional region restrictions, deterministic sample consensus, geometric
+refinement, and bounded work. The closed drilled-block test finds six planes
+and one cylinder with radius within 1%. Existing outputs remain JSON at index
+0 and Report at index 1; a labelled tessellated shell is appended at index 2.
+Analytic CAD trimming and STEP are not claimed. See the [WP3 contract and
+measured limits](specs/measured-continuity-primitives.md).
+
+## WP2 checkpoint — 2026-10-26
 
 WP1 and WP2 are implemented and verified; WP3 is next. The registry contains
 197 nodes: 174 implemented and 23 white-box. Workspace checks: 1,023 passed,

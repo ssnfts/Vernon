@@ -25,6 +25,8 @@ mod remesh_fields;
 mod remesh_symmetry;
 mod patch_network;
 mod autosurface;
+mod continuity;
+mod prismatic;
 pub mod linalg;
 pub mod nurbs;
 pub mod patchnodes;
@@ -190,13 +192,7 @@ mod tests {
     #[test]
     fn white_box_flags_are_honest() {
         let reg = registry();
-        for id in [
-            "surface.mesh_to_g2_surface",
-            "surface.convert_prismatic",
-            "surface.write_step",
-        ] {
-            assert!(reg.info(id).unwrap().whitebox, "{id} contains a placeholder");
-        }
+        assert!(reg.info("surface.write_step").unwrap().whitebox, "surface.write_step contains a placeholder");
         for id in [
             "surface.section_curves",
             "surface.fit_section_curves",
@@ -207,6 +203,8 @@ mod tests {
             "surface.quad_remesh",
             "surface.auto_surface",
             "surface.refine_regions",
+            "surface.mesh_to_g2_surface",
+            "surface.convert_prismatic",
             "surface.mesh_to_subd",
             "surface.subd_refine",
             "surface.subd_to_nurbs",
@@ -310,9 +308,6 @@ mod tests {
         bad.points[3].y = f64::NAN;
         for info in reg.types() {
             if !info.inputs.iter().any(|p| p.kind == DataKind::Geometry && p.required) {
-                continue;
-            }
-            if matches!(info.id.as_str(), "surface.refine_regions" | "surface.convert_prismatic") {
                 continue;
             }
             let mut inputs = natural_inputs(info);

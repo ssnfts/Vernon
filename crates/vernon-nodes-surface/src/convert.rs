@@ -9,9 +9,9 @@ use vernon_graph::{CookContext, CookResult, Data, DataKind, NodeOp, NodeTypeInfo
 use crate::curvefit::fit_with_knots;
 use crate::nurbs::{clamped_uniform_knots, NurbsCurve, NurbsSurface, PatchSet};
 use crate::patchops::{find_seams, Seam};
-use crate::segment::{classify_labels, labels_from_geo, seg_mesh, Primitive, SegParams};
+use crate::segment::{labels_from_geo, seg_mesh};
 use crate::topology::{boundary_loops, geometry_volume, orient, stats, weld, Welded};
-use crate::util::{check_finite, json_err, json_input, max_abs_coord, node_info, placeholder_note, positive, triangulate_ring, SPEC_RE};
+use crate::util::{check_finite, json_err, json_input, max_abs_coord, node_info, positive, triangulate_ring, SPEC_RE};
 
 fn welded_tolerance(ctx: &CookContext, params: &Params, geo: &Geometry) -> CookResult<f64> {
     let tol = params.float("weld_tol_mm")?;
@@ -100,69 +100,164 @@ impl NodeOp for ConvertPrismaticNode {
             .input(PortSpec::new("regions", DataKind::Geometry))
             .output(PortSpec::new("brep", DataKind::Json))
             .output(PortSpec::new("report", DataKind::Report))
+            .output(PortSpec::new("shell", DataKind::Geometry))
             .param(ParamSpec::float("tol_mm", "Tolerance", 0.05, 0.001, 5.0).unit("mm").help("Largest accepted distance between a region and its analytic surface."))
             .param(ParamSpec::bool("keep_unfit_as_facets", "Keep unfitted regions faceted", true).help("Regions without a good analytic fit stay as one face per triangle."))
-            .help("Collapses each region of a segmented mesh into one face bounded by its border loops, with the fitted plane, sphere or cylinder attached. Regions that do not fit stay faceted. The result lists faces, surfaces and loops; building trimmed solid faces from them is left to a CAD kernel.")
+            .help("Recognizes planes, spheres, cylinders and cones using deterministic sample consensus and geometric refitting. Optional region labels restrict supports. Emits analytic parameters, measured vertex and centroid residuals, source boundary polylines and a labelled tessellated shell. Unfitted supports optionally stay faceted; analytic CAD trimming is not performed.")
             .emulates("Fusion Convert Mesh (Prismatic)")
+            .implemented()
     }
 
-    fn cook(&self, ctx: &CookContext, inputs: &[Option<Data>], params: &Params) -> CookResult<Vec<Data>> {
+    fn cook(
+        &self,
+        ctx: &CookContext,
+        inputs: &[Option<Data>],
+        params: &Params,
+    ) -> CookResult<Vec<Data>> {
         let geo = vernon_graph::node::inputs::geometry(inputs, 0)?;
         check_finite(ctx, &geo)?;
         let tol = positive(ctx, "tol_mm", params.float("tol_mm")?)?;
+        if geo
+            .prims
+            .iter()
+            .any(|p| p.vertices.iter().any(|&v| v as usize >= geo.points.len()))
+        {
+            return Err(ctx.fail("mesh face refers to a missing vertex"));
+        }
+        geo.validate().map_err(|e|ctx.fail(format!("invalid mesh: {e}")))?;
+        if geo.prim_attribs.get("region_id").is_some() && geo.prim_attribs.ints("region_id").is_err() {
+            return Err(ctx.fail("region_id must be an integer primitive attribute"));
+        }
         let sm = seg_mesh(&geo);
-        let labels = labels_from_geo(&geo, &sm).ok_or_else(|| ctx.fail("the input has no 'region_id' primitive attribute; run Segment Regions first"))?;
-        let sp = SegParams { sensitivity: 55.0, noise_sigma: tol / 2.35, min_area_frac: 0.0, cad_tessellation: false };
-        let seg = classify_labels(&sm.mesh, &labels, &sp);
-        let mut ids: Vec<i64> = labels.iter().copied().filter(|&l| l >= 0).collect();
-        ids.sort_unstable();
-        ids.dedup();
+        if sm.mesh.tris.is_empty() {
+            return Err(ctx.fail("the mesh has no usable nondegenerate faces"));
+        }
+        let labels = labels_from_geo(&geo, &sm);
+        let groups = crate::prismatic::recognize(&sm.mesh, labels.as_deref(), tol).map_err(|e|ctx.fail(e))?;
+        if groups.is_empty() {
+            return Err(ctx.fail("the mesh has no usable nondegenerate faces"));
+        }
         let keep = params.bool("keep_unfit_as_facets")?;
         let (mut faces, mut analytic, mut faceted_tris) = (Vec::new(), 0usize, 0usize);
-        for (k, reg) in seg.regions.iter().enumerate() {
-            let ring_faces: Vec<Vec<u32>> = reg.tris.iter().map(|&t| sm.mesh.tris[t as usize].to_vec()).collect();
-            let loops = boundary_loops(&ring_faces);
-            let to_pts = |l: &Vec<u32>| l.iter().map(|&v| sm.mesh.points[v as usize].to_array()).collect::<Vec<_>>();
-            let perim = |l: &Vec<u32>| (0..l.len()).map(|i| (sm.mesh.points[l[i] as usize] - sm.mesh.points[l[(i + 1) % l.len()] as usize]).length()).sum::<f64>();
-            let mut loops_sorted = loops.clone();
-            loops_sorted.sort_by(|a, b| perim(b).total_cmp(&perim(a)));
-            let fits = reg.prim != Primitive::Freeform && reg.rms <= tol;
-            if fits {
+        let mut shell = Geometry::new();
+        shell.points = sm.mesh.points.clone();
+        let mut parts = Vec::new();
+        let mut max_dev: f64 = 0.0;
+        for reg in &groups {
+            let ring_faces: Vec<Vec<u32>> = reg
+                .tris
+                .iter()
+                .map(|&t| sm.mesh.tris[t as usize].to_vec())
+                .collect();
+            if let Some(shape) = &reg.shape {
                 analytic += 1;
-                let mut e = json!({"region_id": ids[k], "type": reg.prim.kind(), "rms_mm": reg.rms, "outer_loop": loops_sorted.first().map(to_pts), "inner_loops": loops_sorted.iter().skip(1).map(to_pts).collect::<Vec<_>>()});
-                match &reg.prim {
-                    Primitive::Plane { origin, normal } => {
-                        e["origin"] = json!(origin.to_array());
-                        e["normal"] = json!(normal.to_array());
-                    }
-                    Primitive::Sphere { center, radius } => {
-                        e["center"] = json!(center.to_array());
-                        e["radius"] = json!(radius);
-                    }
-                    Primitive::Cylinder { origin, axis, radius } => {
-                        e["origin"] = json!(origin.to_array());
-                        e["axis"] = json!(axis.to_array());
-                        e["radius"] = json!(radius);
-                    }
-                    Primitive::Freeform => {}
-                }
+                max_dev = max_dev.max(reg.max_dev);
+                let mut loops = boundary_loops(&ring_faces);
+                let perim = |l: &Vec<u32>| {
+                    (0..l.len())
+                        .map(|i| {
+                            (sm.mesh.points[l[i] as usize]
+                                - sm.mesh.points[l[(i + 1) % l.len()] as usize])
+                                .length()
+                        })
+                        .sum::<f64>()
+                };
+                loops.sort_by(|a, b| perim(b).total_cmp(&perim(a)));
+                let pts = |l: &Vec<u32>| {
+                    l.iter()
+                        .map(|&v| sm.mesh.points[v as usize].to_array())
+                        .collect::<Vec<_>>()
+                };
+                let mut e = shape.json();
+                e["region_id"] = json!(reg.id);
+                e["source_region_id"] = json!(labels.as_ref().map(|l|l[reg.tris[0]as usize]));
+                e["rms_mm"] = json!(reg.rms);
+                e["max_deviation_mm"] = json!(reg.max_dev);
+                e["support_triangles"] = json!(reg.tris.len());
+                let interior_max = reg
+                    .tris
+                    .iter()
+                    .map(|&t| {
+                        let t = sm.mesh.tris[t as usize];
+                        shape.distance(
+                            (sm.mesh.points[t[0] as usize]
+                                + sm.mesh.points[t[1] as usize]
+                                + sm.mesh.points[t[2] as usize])
+                                / 3.,
+                        )
+                    })
+                    .fold(0., f64::max);
+                e["sampled_centroid_max_mm"] = json!(interior_max);
+                e["outer_loop"] = json!(loops.first().map(pts));
+                e["inner_loops"] = json!(loops.iter().skip(1).map(pts).collect::<Vec<_>>());
+                e["boundary_loops"] = json!(loops.iter().map(pts).collect::<Vec<_>>());
                 faces.push(e);
             } else if keep {
                 faceted_tris += reg.tris.len();
-                for &t in &reg.tris {
-                    let tri = sm.mesh.tris[t as usize];
-                    faces.push(json!({"region_id": ids[k], "type": "facet", "outer_loop": tri.iter().map(|&v| sm.mesh.points[v as usize].to_array()).collect::<Vec<_>>()}));
+                for t in &ring_faces {
+                    faces.push(json!({"region_id":reg.id,"type":"facet","outer_loop":t.iter().map(|&v|sm.mesh.points[v as usize].to_array()).collect::<Vec<_>>()}));
+                }
+            }
+            if reg.shape.is_some() || keep {
+                for t in ring_faces {
+                    shell.prims.push(Prim::polygon(t));
+                    parts.push(reg.id);
                 }
             }
         }
+        shell.prim_attribs.set("part", AttribArray::Int(parts));
+        let mut w = weld(&shell, 1e-6f64.max(1.2e-7 * max_abs_coord(&shell.points)));
+        let repair = orient(&mut w);
+        let st = stats(&w);
+        for (p, f) in shell.prims.iter_mut().zip(&w.faces) {
+            p.vertices = f.clone();
+        }
+        shell.points = w.points;
         let mut report = Report::new("Prismatic solid");
         report.metric("faces", Metric::new(faces.len() as f64, "count"));
         report.metric("analytic_faces", Metric::new(analytic as f64, "count"));
-        report.metric("faceted_triangles", Metric::new(faceted_tris as f64, "count"));
-        report.metric("regions", Metric::new(seg.regions.len() as f64, "count"));
-        placeholder_note(&mut report, "trimmed analytic solid faces (loop classification and stitching in a CAD kernel); the output lists each face with its surface and border loops");
-        let doc = json!({"schema": "prismatic_brep", "version": 1, "units": "mm", "faces": faces});
-        Ok(vec![Data::json(doc), Data::report(report)])
+        report.metric(
+            "faceted_triangles",
+            Metric::new(faceted_tris as f64, "count"),
+        );
+        report.metric("regions", Metric::new(groups.len() as f64, "count"));
+        report.metric(
+            "fit_max_mm",
+            Metric::new(max_dev, "mm").with_limit(tol, true),
+        );
+        report.metric(
+            "analytic_coverage",
+            Metric::new(
+                (shell.prims.len() - faceted_tris) as f64 / sm.mesh.tris.len() as f64,
+                "",
+            ),
+        );
+        report.metric("watertight", Metric::new(f64::from(st.closed), ""));
+        report.metric(
+            "boundary_edges",
+            Metric::new(st.boundary_edges as f64, "count"),
+        );
+        report.metric(
+            "nonmanifold_edges",
+            Metric::new(st.nonmanifold_edges as f64, "count"),
+        );
+        report.metric(
+            "volume_mm3",
+            Metric::new(if st.closed { st.volume } else { 0. }, "mm3"),
+        );
+        report.note(Severity::Info,"Analytic fits describe source tessellation vertices; polygon interiors are approximations. Boundary loops retain source polylines; their perimeter ordering is not a CAD trim classification. The shell remains a tessellated surface, without analytic intersection or CAD trimming.");
+        if !st.closed {
+            report.note(Severity::Warning,"The retained tessellation is open or nonmanifold and cannot be certified as a solid.");
+        }
+        if repair.propagated_flips + repair.flipped_components > 0 {
+            report.note(Severity::Info, "Source tessellation winding was repaired.");
+        }
+        let doc = json!({"schema":"prismatic_brep","version":1,"units":"mm","faces":faces,"watertight":st.closed,"solid":st.closed&&st.volume>0.,"representation":"tessellated_shell_with_analytic_fits"});
+        Ok(vec![
+            Data::json(doc),
+            Data::report(report),
+            Data::geometry(shell),
+        ])
     }
 }
 
@@ -727,7 +822,8 @@ mod tests {
         let r = report_of(&out[1]);
         assert_eq!(r.metrics["faces"].value, 2.0);
         assert_eq!(r.metrics["analytic_faces"].value, 2.0);
-        assert!(r.notes.iter().any(|(_, t)| t.starts_with("white-box placeholder")));
+        assert!(!r.notes.iter().any(|(_, t)| t.starts_with("white-box placeholder")));
+        assert_eq!(out.len(), 3);
         let mut ring = Geometry::new();
         for rr in [5.0, 20.0] {
             for k in 0..64 {
@@ -746,7 +842,7 @@ mod tests {
         assert_eq!(faces[0]["type"], "plane");
         assert_eq!(faces[0]["inner_loops"].as_array().unwrap().len(), 1);
         assert_eq!(faces[0]["outer_loop"].as_array().unwrap().len(), 64);
-        assert!(cook("surface.convert_prismatic", &[some(&t)], &[]).is_err());
+        assert!(cook("surface.convert_prismatic", &[some(&t)], &[]).is_ok());
     }
 
     #[test]

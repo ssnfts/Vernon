@@ -1,6 +1,6 @@
 //! Subdivision cage to NURBS patches (`surface.subd_to_nurbs`),
 //! the patch-versus-limit deviation check (`surface.subd_deviation`) and the
-//! G2 placeholder (`surface.mesh_to_g2_surface`).
+//! measured continuity conversion (`surface.mesh_to_g2_surface`).
 //!
 //! Regular quads (all four corners regular, interior or on a straight crease /
 //! boundary, or a pinned mesh corner) are exactly bicubic B-spline patches of
@@ -13,16 +13,21 @@ use std::collections::{HashMap, HashSet};
 
 use glam::DVec3;
 use vernon_core::{AttribArray, Geometry, Metric, Report, Severity};
-use vernon_graph::{CookContext, CookResult, Data, DataKind, NodeOp, NodeTypeInfo, ParamSpec, Params, PortSpec};
+use vernon_graph::{
+    CookContext, CookResult, Data, DataKind, NodeOp, NodeTypeInfo, ParamSpec, Params, PortSpec,
+};
 
 use crate::bvh::TriBvh;
+use crate::continuity::{measure, SeamRef};
 use crate::deviation::dev_stats;
 use crate::linalg::solve_dense;
 use crate::nurbs::{basis_funs, find_span, NurbsSurface, PatchSet};
 use crate::patchops::find_seams;
 use crate::subd::{Adj, Subd, VKind};
 use crate::topology::edge_key;
-use crate::util::{check_finite, json_err, json_input, max_abs_coord, node_info, placeholder_note, positive, SPEC_MESH};
+use crate::util::{
+    check_finite, json_err, json_input, max_abs_coord, node_info, positive, SPEC_MESH,
+};
 
 /// Outcome of a conversion.
 #[derive(Debug, Clone)]
@@ -54,7 +59,12 @@ fn bezier_basis(t: f64) -> [f64; 4] {
 }
 
 fn uniform_basis(t: f64) -> [f64; 4] {
-    [(1.0 - t).powi(3) / 6.0, (3.0 * t.powi(3) - 6.0 * t * t + 4.0) / 6.0, (-3.0 * t.powi(3) + 3.0 * t * t + 3.0 * t + 1.0) / 6.0, t.powi(3) / 6.0]
+    [
+        (1.0 - t).powi(3) / 6.0,
+        (3.0 * t.powi(3) - 6.0 * t * t + 4.0) / 6.0,
+        (-3.0 * t.powi(3) + 3.0 * t * t + 3.0 * t + 1.0) / 6.0,
+        t.powi(3) / 6.0,
+    ]
 }
 
 fn clamped_knots(n: usize) -> Vec<f64> {
@@ -74,11 +84,18 @@ fn uniform_to_clamped(ctrl: &[Vec<DVec3>]) -> NurbsSurface {
     let (nu, nv) = (ctrl.len(), ctrl[0].len());
     let (w, h) = (nu - 3, nv - 3);
     let (ku, kv) = (clamped_knots(nu), clamped_knots(nv));
-    let greville = |k: &[f64], n: usize| -> Vec<f64> { (0..n).map(|i| (k[i + 1] + k[i + 2] + k[i + 3]) / 3.0).collect() };
+    let greville = |k: &[f64], n: usize| -> Vec<f64> {
+        (0..n)
+            .map(|i| (k[i + 1] + k[i + 2] + k[i + 3]) / 3.0)
+            .collect()
+    };
     let (gu, gv) = (greville(&ku, nu), greville(&kv, nv));
     let eval = |u: f64, v: f64| -> DVec3 {
         let (us, vs) = (u * w as f64, v * h as f64);
-        let (i0, j0) = ((us.floor() as usize).min(w - 1), (vs.floor() as usize).min(h - 1));
+        let (i0, j0) = (
+            (us.floor() as usize).min(w - 1),
+            (vs.floor() as usize).min(h - 1),
+        );
         let (bu, bv) = (uniform_basis(us - i0 as f64), uniform_basis(vs - j0 as f64));
         let mut s = DVec3::ZERO;
         for a in 0..4 {
@@ -138,14 +155,25 @@ struct Walker<'a> {
 
 impl<'a> Walker<'a> {
     fn new(sub: &'a Subd, adj: &'a Adj) -> Self {
-        let kinds = (0..sub.points.len() as u32).map(|v| sub.vertex_kind(adj, v)).collect();
+        let kinds = (0..sub.points.len() as u32)
+            .map(|v| sub.vertex_kind(adj, v))
+            .collect();
         Walker { sub, adj, kinds }
     }
 
     fn regular_vertex(&self, v: u32) -> bool {
-        let (nf, ne) = (self.adj.vert_faces[v as usize].len(), self.adj.vert_edges[v as usize].len());
+        let (nf, ne) = (
+            self.adj.vert_faces[v as usize].len(),
+            self.adj.vert_edges[v as usize].len(),
+        );
         match self.kinds[v as usize] {
-            VKind::Smooth(4) => nf == 4 && ne == 4 && self.adj.vert_edges[v as usize].iter().all(|&e| !self.sub.is_sharp(self.adj, e as usize)),
+            VKind::Smooth(4) => {
+                nf == 4
+                    && ne == 4
+                    && self.adj.vert_edges[v as usize]
+                        .iter()
+                        .all(|&e| !self.sub.is_sharp(self.adj, e as usize))
+            }
             VKind::Crease(..) => nf == 2 && ne == 3,
             VKind::Fixed => nf == 1 && ne == 2,
             _ => false,
@@ -198,10 +226,13 @@ impl<'a> Walker<'a> {
     }
 
     fn face_with(&self, a: u32, b: u32, c: u32) -> Option<usize> {
-        self.adj.vert_faces[a as usize].iter().map(|&f| f as usize).find(|&f| {
-            let r = &self.sub.faces[f];
-            r.contains(&b) && r.contains(&c)
-        })
+        self.adj.vert_faces[a as usize]
+            .iter()
+            .map(|&f| f as usize)
+            .find(|&f| {
+                let r = &self.sub.faces[f];
+                r.contains(&b) && r.contains(&c)
+            })
     }
 
     /// Frame of the face across the edge `(x, y)` (directed as the current
@@ -222,7 +253,12 @@ fn ring_from(ring: &[u32], first: u32, second: u32) -> Option<[u32; 4]> {
     if ring[(k + 1) % 4] != second {
         return None;
     }
-    Some([ring[k], ring[(k + 1) % 4], ring[(k + 2) % 4], ring[(k + 3) % 4]])
+    Some([
+        ring[k],
+        ring[(k + 1) % 4],
+        ring[(k + 2) % 4],
+        ring[(k + 3) % 4],
+    ])
 }
 
 /// Control net (w+3) x (h+3) of the uniform B-spline for the vertex grid `v`.
@@ -237,7 +273,12 @@ fn extended_net(wk: &Walker, pts: &[DVec3], v: &[Vec<u32>]) -> Vec<Vec<DVec3>> {
             pos[i + 1][j + 1] = pts[v[i][j] as usize];
         }
     }
-    let mut put = |gi: usize, gj: usize, e: Option<u32>, prev_pos: DVec3, cur_pos: DVec3, id: &mut Vec<Vec<Option<u32>>>| {
+    let mut put = |gi: usize,
+                   gj: usize,
+                   e: Option<u32>,
+                   prev_pos: DVec3,
+                   cur_pos: DVec3,
+                   id: &mut Vec<Vec<Option<u32>>>| {
         id[gi][gj] = e;
         pos[gi][gj] = match e {
             Some(x) => pts[x as usize],
@@ -245,12 +286,40 @@ fn extended_net(wk: &Walker, pts: &[DVec3], v: &[Vec<u32>]) -> Vec<Vec<DVec3>> {
         };
     };
     for j in 0..=h {
-        put(0, j + 1, wk.ext(v[1][j], v[0][j]), pts[v[1][j] as usize], pts[v[0][j] as usize], &mut id);
-        put(w + 2, j + 1, wk.ext(v[w - 1][j], v[w][j]), pts[v[w - 1][j] as usize], pts[v[w][j] as usize], &mut id);
+        put(
+            0,
+            j + 1,
+            wk.ext(v[1][j], v[0][j]),
+            pts[v[1][j] as usize],
+            pts[v[0][j] as usize],
+            &mut id,
+        );
+        put(
+            w + 2,
+            j + 1,
+            wk.ext(v[w - 1][j], v[w][j]),
+            pts[v[w - 1][j] as usize],
+            pts[v[w][j] as usize],
+            &mut id,
+        );
     }
     for i in 0..=w {
-        put(i + 1, 0, wk.ext(v[i][1], v[i][0]), pts[v[i][1] as usize], pts[v[i][0] as usize], &mut id);
-        put(i + 1, h + 2, wk.ext(v[i][h - 1], v[i][h]), pts[v[i][h - 1] as usize], pts[v[i][h] as usize], &mut id);
+        put(
+            i + 1,
+            0,
+            wk.ext(v[i][1], v[i][0]),
+            pts[v[i][1] as usize],
+            pts[v[i][0] as usize],
+            &mut id,
+        );
+        put(
+            i + 1,
+            h + 2,
+            wk.ext(v[i][h - 1], v[i][h]),
+            pts[v[i][h - 1] as usize],
+            pts[v[i][h] as usize],
+            &mut id,
+        );
     }
     for &(ki, kj) in &[(0usize, 0usize), (w + 2, 0), (0, h + 2), (w + 2, h + 2)] {
         let si: isize = if ki == 0 { 1 } else { -1 };
@@ -263,7 +332,12 @@ fn extended_net(wk: &Walker, pts: &[DVec3], v: &[Vec<u32>]) -> Vec<Vec<DVec3>> {
         let (b2i, b2j) = at(2 * si, 0);
         let (cid, aid, bid) = (id[ci][cj], id[ai][aj], id[bi][bj]);
         let real = match (cid, aid, bid) {
-            (Some(c), Some(a), Some(b)) => wk.face_with(c, a, b).and_then(|f| wk.sub.faces[f].iter().copied().find(|&x| x != c && x != a && x != b)),
+            (Some(c), Some(a), Some(b)) => wk.face_with(c, a, b).and_then(|f| {
+                wk.sub.faces[f]
+                    .iter()
+                    .copied()
+                    .find(|&x| x != c && x != a && x != b)
+            }),
             _ => None,
         };
         let value = match real {
@@ -288,7 +362,18 @@ type Frame = [u32; 4];
 /// every face, the frame (ring rotation) used for its lattice.
 fn plan_patches(wk: &Walker, packed: bool) -> (Vec<PatchPlan>, Vec<Frame>, Vec<Vec<Vec<u32>>>) {
     let nf = wk.sub.faces.len();
-    let mut frames: Vec<Frame> = wk.sub.faces.iter().map(|r| if r.len() == 4 { [r[0], r[1], r[2], r[3]] } else { [0; 4] }).collect();
+    let mut frames: Vec<Frame> = wk
+        .sub
+        .faces
+        .iter()
+        .map(|r| {
+            if r.len() == 4 {
+                [r[0], r[1], r[2], r[3]]
+            } else {
+                [0; 4]
+            }
+        })
+        .collect();
     let regular: Vec<bool> = (0..nf).map(|f| wk.regular_face(f)).collect();
     let mut assigned = vec![false; nf];
     let mut plans = Vec::new();
@@ -299,7 +384,12 @@ fn plan_patches(wk: &Walker, packed: bool) -> (Vec<PatchPlan>, Vec<Frame>, Vec<V
         }
         if !regular[seed] {
             assigned[seed] = true;
-            plans.push(PatchPlan { faces: vec![(seed, 0, 0)], w: 1, h: 1, regular: false });
+            plans.push(PatchPlan {
+                faces: vec![(seed, 0, 0)],
+                w: 1,
+                h: 1,
+                regular: false,
+            });
             vgrids.push(Vec::new());
             continue;
         }
@@ -310,11 +400,15 @@ fn plan_patches(wk: &Walker, packed: bool) -> (Vec<PatchPlan>, Vec<Frame>, Vec<V
             // extend along u
             loop {
                 let (last_f, last) = *grid.last().expect("column").first().expect("row");
-                let Some(g) = wk.across(last_f, last[1], last[2]) else { break };
+                let Some(g) = wk.across(last_f, last[1], last[2]) else {
+                    break;
+                };
                 if !regular[g] || assigned[g] || taken.contains(&g) {
                     break;
                 }
-                let Some(fr) = ring_from_rev(&wk.sub.faces[g], last[2], last[1]) else { break };
+                let Some(fr) = ring_from_rev(&wk.sub.faces[g], last[2], last[1]) else {
+                    break;
+                };
                 taken.insert(g);
                 grid.push(vec![(g, fr)]);
                 if grid.len() >= 64 {
@@ -326,11 +420,19 @@ fn plan_patches(wk: &Walker, packed: bool) -> (Vec<PatchPlan>, Vec<Frame>, Vec<V
                 let mut row: Vec<(usize, Frame)> = Vec::new();
                 for col in &grid {
                     let (cf, fr) = *col.last().expect("column");
-                    let Some(g) = wk.across(cf, fr[3], fr[2]) else { break 'rows };
-                    if !regular[g] || assigned[g] || taken.contains(&g) || row.iter().any(|r| r.0 == g) {
+                    let Some(g) = wk.across(cf, fr[3], fr[2]) else {
+                        break 'rows;
+                    };
+                    if !regular[g]
+                        || assigned[g]
+                        || taken.contains(&g)
+                        || row.iter().any(|r| r.0 == g)
+                    {
                         break 'rows;
                     }
-                    let Some(nf_) = ring_from(&wk.sub.faces[g], fr[3], fr[2]) else { break 'rows };
+                    let Some(nf_) = ring_from(&wk.sub.faces[g], fr[3], fr[2]) else {
+                        break 'rows;
+                    };
                     if let Some(prev) = row.last() {
                         if prev.1[1] != nf_[0] || prev.1[2] != nf_[3] {
                             break 'rows;
@@ -372,7 +474,12 @@ fn plan_patches(wk: &Walker, packed: bool) -> (Vec<PatchPlan>, Vec<Frame>, Vec<V
                 }
             }
         }
-        plans.push(PatchPlan { faces, w, h, regular: true });
+        plans.push(PatchPlan {
+            faces,
+            w,
+            h,
+            regular: true,
+        });
         vgrids.push(v);
     }
     (plans, frames, vgrids)
@@ -387,7 +494,12 @@ fn ring_from_rev(ring: &[u32], a: u32, b: u32) -> Option<Frame> {
         return None;
     }
     // ring: a, b, c, d  ->  frame starting at b: b, c, d, a
-    Some([ring[(k + 1) % 4], ring[(k + 2) % 4], ring[(k + 3) % 4], ring[k]])
+    Some([
+        ring[(k + 1) % 4],
+        ring[(k + 2) % 4],
+        ring[(k + 3) % 4],
+        ring[k],
+    ])
 }
 
 struct Lattice {
@@ -402,7 +514,10 @@ fn build_lattice(cage: &Subd, level: usize, frames: &[Frame]) -> Lattice {
     let mut cur = cage.clone();
     let mut m = 2usize;
     // index i * m + j: (0,0) = c0, (0,1) = c3, (1,0) = c1, (1,1) = c2
-    let mut grids: Vec<Vec<u32>> = frames.iter().map(|f| vec![f[0], f[3], f[1], f[2]]).collect();
+    let mut grids: Vec<Vec<u32>> = frames
+        .iter()
+        .map(|f| vec![f[0], f[3], f[1], f[2]])
+        .collect();
     for _ in 0..level {
         let adj = cur.adjacency();
         let (nv, ne) = (cur.points.len(), adj.edges.len());
@@ -432,7 +547,12 @@ fn build_lattice(cage: &Subd, level: usize, frames: &[Frame]) -> Lattice {
                         n[2 * i * nm + 2 * j + 1] = (nv as u32) + e;
                     }
                     if i + 1 < m && j + 1 < m {
-                        let mut key = [g[i * m + j], g[(i + 1) * m + j], g[(i + 1) * m + j + 1], g[i * m + j + 1]];
+                        let mut key = [
+                            g[i * m + j],
+                            g[(i + 1) * m + j],
+                            g[(i + 1) * m + j + 1],
+                            g[i * m + j + 1],
+                        ];
                         key.sort_unstable();
                         n[(2 * i + 1) * nm + 2 * j + 1] = (nv + ne) as u32 + fmap[&key];
                     }
@@ -444,7 +564,11 @@ fn build_lattice(cage: &Subd, level: usize, frames: &[Frame]) -> Lattice {
         cur = cur.refine();
         m = nm;
     }
-    Lattice { grids, m, refined: cur }
+    Lattice {
+        grids,
+        m,
+        refined: cur,
+    }
 }
 
 fn solve_small(a: &[f64], n: usize, rhs: &[DVec3]) -> Vec<DVec3> {
@@ -483,9 +607,163 @@ fn fit_edge(q: &[DVec3]) -> [DVec3; 4] {
     [p0, sol[0], sol[1], p3]
 }
 
+/// Check direct callers as well as node inputs before adjacency indexes vertices.
+fn validate_cage(cage: &Subd) -> Result<(), String> {
+    if cage.faces.is_empty() || cage.points.iter().any(|p| !p.is_finite()) {
+        return Err("a finite cage with usable faces is required".into());
+    }
+    for f in &cage.faces {
+        if f.len() < 3
+            || f.iter().any(|&v| v as usize >= cage.points.len())
+            || f.iter().copied().collect::<HashSet<_>>().len() != f.len()
+        {
+            return Err("cage faces require distinct, valid vertex indices".into());
+        }
+        let origin = cage.points[f[0] as usize];
+        let area = (1..f.len() - 1).fold(DVec3::ZERO, |sum, i| {
+            sum + (cage.points[f[i] as usize] - origin)
+                .cross(cage.points[f[i + 1] as usize] - origin)
+        });
+        if !area.is_finite() || area.length_squared() <= 1e-24 {
+            return Err("cage faces must have nonzero finite area".into());
+        }
+    }
+    if cage.adjacency().edge_faces.iter().any(|fs| fs.len() > 2) {
+        return Err("nonmanifold cage edges are unsupported".into());
+    }
+    Ok(())
+}
+
+/// Complete expected joins for unpacked quad patches, in face order. Side
+/// directions follow increasing patch parameter, rather than the face winding.
+fn expected_seams(cage: &Subd) -> (Vec<SeamRef>, usize) {
+    let mut edges: HashMap<(u32, u32), Vec<(usize, usize, u32)>> = HashMap::new();
+    for (f, r) in cage.faces.iter().enumerate() {
+        for (side, (x, y)) in [(r[0], r[1]), (r[1], r[2]), (r[3], r[2]), (r[0], r[3])]
+            .into_iter()
+            .enumerate()
+        {
+            edges
+                .entry(edge_key(x, y).0)
+                .or_default()
+                .push((f, side, x));
+        }
+    }
+    let mut seams = Vec::new();
+    let mut free = 0;
+    for fs in edges.values() {
+        if fs.len() == 2 {
+            let (a, side_a, x) = fs[0];
+            let (b, side_b, y) = fs[1];
+            seams.push(SeamRef {
+                a,
+                side_a,
+                b,
+                side_b,
+                reversed: x != y,
+            });
+        } else {
+            free += fs.len();
+        }
+    }
+    seams.sort_by_key(|s| (s.a, s.side_a, s.b, s.side_b));
+    (seams, free)
+}
+
+/// Index an edge row and its first inward row in a bicubic Bezier net.
+fn seam_control(side: usize, k: usize, inward: bool) -> usize {
+    let d = usize::from(inward);
+    match side {
+        0 => k * 4 + d,
+        1 => (3 - d) * 4 + k,
+        2 => k * 4 + 3 - d,
+        _ => d * 4 + k,
+    }
+}
+
+/// Local C1 candidates against exact regular neighbors. Only fitted interior
+/// coefficients move; shared curves and regular Catmull-Clark patches are fixed.
+/// Conflicting corner-row constraints are averaged, then the caller measures
+/// whether the candidate actually improves the entire network.
+fn reconcile_regular_neighbors(
+    cage: &Subd,
+    conv: &mut Conversion,
+    seams: &[SeamRef],
+    fit_level: usize,
+) -> bool {
+    let adj = cage.adjacency();
+    let wk = Walker::new(cage, &adj);
+    let mut targets = vec![[DVec3::ZERO; 16]; conv.patches.len()];
+    let mut counts = vec![[0usize; 16]; conv.patches.len()];
+    for seam in seams {
+        let (a, sa, b, sb) = if wk.regular_face(seam.a) && !wk.regular_face(seam.b) {
+            (seam.a, seam.side_a, seam.b, seam.side_b)
+        } else if wk.regular_face(seam.b) && !wk.regular_face(seam.a) {
+            (seam.b, seam.side_b, seam.a, seam.side_a)
+        } else {
+            continue;
+        };
+        for k in 1..3 {
+            let kb = if seam.reversed { 3 - k } else { k };
+            let edge = conv.patches[a].control_points[seam_control(sa, k, false)];
+            let inside = conv.patches[a].control_points[seam_control(sa, k, true)];
+            let index = seam_control(sb, kb, true);
+            targets[b][index] += edge * 2.0 - inside;
+            counts[b][index] += 1;
+        }
+    }
+    let mut changed = false;
+    for (p, patch) in conv.patches.iter_mut().enumerate() {
+        for k in 0..16 {
+            if counts[p][k] > 0 {
+                patch.control_points[k] = targets[p][k] / counts[p][k] as f64;
+                changed = true;
+            }
+        }
+    }
+    if changed {
+        // Re-evaluate the same limit lattice after editing, never retain the
+        // pre-edit approximation residual as a claim about the new surface.
+        let (_, frames, _) = plan_patches(&wk, false);
+        let mut level = fit_level.clamp(1, 4) + 1;
+        while level > 2 && cage.faces.len().saturating_mul(4usize.pow(level as u32)) > 3_000_000 {
+            level -= 1;
+        }
+        let lat = build_lattice(cage, level, &frames);
+        let limit = lat.refined.limit_positions();
+        let mut sum = 0.0;
+        conv.max_dev = 0.0;
+        conv.samples = 0;
+        for (f, patch) in conv.patches.iter().enumerate() {
+            for i in 0..lat.m {
+                for j in 0..lat.m {
+                    let d = patch
+                        .point(i as f64 / (lat.m - 1) as f64, j as f64 / (lat.m - 1) as f64)
+                        .distance(limit[lat.grids[f][i * lat.m + j] as usize]);
+                    conv.max_dev = conv.max_dev.max(d);
+                    sum += d * d;
+                    conv.samples += 1;
+                }
+            }
+        }
+        conv.rms_dev = (sum / conv.samples.max(1) as f64).sqrt();
+    }
+    changed
+}
+
 /// Convert a cage to NURBS patches.
-pub fn convert(cage_in: &Subd, packed: bool, fit_level: usize, max_faces: usize) -> Result<Conversion, String> {
-    let (cage, refined_first) = if cage_in.all_quads() { (cage_in.clone(), false) } else { (cage_in.refine(), true) };
+pub fn convert(
+    cage_in: &Subd,
+    packed: bool,
+    fit_level: usize,
+    max_faces: usize,
+) -> Result<Conversion, String> {
+    validate_cage(cage_in)?;
+    let (cage, refined_first) = if cage_in.all_quads() {
+        (cage_in.clone(), false)
+    } else {
+        (cage_in.refine(), true)
+    };
     let adj = cage.adjacency();
     let wk = Walker::new(&cage, &adj);
     let (plans, frames, vgrids) = plan_patches(&wk, packed);
@@ -520,7 +798,12 @@ pub fn convert(cage_in: &Subd, packed: bool, fit_level: usize, max_faces: usize)
             2 => g(f, k, m - 1),
             _ => g(f, 0, k),
         };
-        let ends = [(fr[0], fr[1]), (fr[1], fr[2]), (fr[3], fr[2]), (fr[0], fr[3])];
+        let ends = [
+            (fr[0], fr[1]),
+            (fr[1], fr[2]),
+            (fr[3], fr[2]),
+            (fr[0], fr[3]),
+        ];
         for (side, &(x, y)) in ends.iter().enumerate() {
             let key = edge_key(x, y).0;
             edge_curves.entry(key).or_insert_with(|| {
@@ -548,7 +831,8 @@ pub fn convert(cage_in: &Subd, packed: bool, fit_level: usize, max_faces: usize)
                     for j in 0..m {
                         let u = (a as f64 + i as f64 / (m - 1) as f64) / plan.w as f64;
                         let v = (b as f64 + j as f64 / (m - 1) as f64) / plan.h as f64;
-                        let d = (surf.point(u.clamp(0.0, 1.0), v.clamp(0.0, 1.0)) - g(f, i, j)).length();
+                        let d = (surf.point(u.clamp(0.0, 1.0), v.clamp(0.0, 1.0)) - g(f, i, j))
+                            .length();
                         dev_max = dev_max.max(d);
                         dev_sum2 += d * d;
                         dev_n += 1;
@@ -567,7 +851,12 @@ pub fn convert(cage_in: &Subd, packed: bool, fit_level: usize, max_faces: usize)
                 }
                 c
             };
-            let (bot, right, top, left) = (curve(fr[0], fr[1]), curve(fr[1], fr[2]), curve(fr[3], fr[2]), curve(fr[0], fr[3]));
+            let (bot, right, top, left) = (
+                curve(fr[0], fr[1]),
+                curve(fr[1], fr[2]),
+                curve(fr[3], fr[2]),
+                curve(fr[0], fr[3]),
+            );
             let mut b = [[DVec3::ZERO; 4]; 4];
             for k in 0..4 {
                 b[k][0] = bot[k];
@@ -586,7 +875,10 @@ pub fn convert(cage_in: &Subd, packed: bool, fit_level: usize, max_faces: usize)
             let mut rhs = [DVec3::ZERO; 4];
             for i in (0..m).step_by(stride) {
                 for j in (0..m).step_by(stride) {
-                    let (bu, bv) = (bezier_basis(i as f64 / (m - 1) as f64), bezier_basis(j as f64 / (m - 1) as f64));
+                    let (bu, bv) = (
+                        bezier_basis(i as f64 / (m - 1) as f64),
+                        bezier_basis(j as f64 / (m - 1) as f64),
+                    );
                     let mut r = g(f, i, j);
                     for p in 0..4 {
                         for q in 0..4 {
@@ -608,11 +900,16 @@ pub fn convert(cage_in: &Subd, packed: bool, fit_level: usize, max_faces: usize)
             for (s, &(p, q)) in idx.iter().enumerate() {
                 b[p][q] = sol[s];
             }
-            let cps: Vec<DVec3> = (0..4).flat_map(|i| (0..4).map(move |j| (i, j))).map(|(i, j)| b[i][j]).collect();
+            let cps: Vec<DVec3> = (0..4)
+                .flat_map(|i| (0..4).map(move |j| (i, j)))
+                .map(|(i, j)| b[i][j])
+                .collect();
             let surf = NurbsSurface::clamped_uniform(3, 3, 4, 4, cps);
             for i in 0..m {
                 for j in 0..m {
-                    let d = (surf.point(i as f64 / (m - 1) as f64, j as f64 / (m - 1) as f64) - g(f, i, j)).length();
+                    let d = (surf.point(i as f64 / (m - 1) as f64, j as f64 / (m - 1) as f64)
+                        - g(f, i, j))
+                    .length();
                     dev_max = dev_max.max(d);
                     dev_sum2 += d * d;
                     dev_n += 1;
@@ -635,23 +932,53 @@ pub fn convert(cage_in: &Subd, packed: bool, fit_level: usize, max_faces: usize)
     })
 }
 
-fn patch_report(title: &str, conv: &Conversion, ps: &PatchSet, max_dev_limit: f64, diag: f64) -> Report {
+fn patch_report(
+    title: &str,
+    conv: &Conversion,
+    ps: &PatchSet,
+    max_dev_limit: f64,
+    diag: f64,
+) -> Report {
     let mut report = Report::new(title);
     let seams = find_seams(ps, 1e-4 * diag.max(1.0), 8);
-    report.metric("patch_count", Metric::new(conv.patches.len() as f64, "count"));
-    report.metric("control_points", Metric::new(ps.control_point_count() as f64, "count"));
+    report.metric(
+        "patch_count",
+        Metric::new(conv.patches.len() as f64, "count"),
+    );
+    report.metric(
+        "control_points",
+        Metric::new(ps.control_point_count() as f64, "count"),
+    );
     report.metric("cage_faces", Metric::new(conv.cage_faces as f64, "count"));
-    report.metric("regular_faces", Metric::new(conv.regular_faces as f64, "count"));
-    report.metric("extraordinary_patches", Metric::new(conv.irregular_faces as f64, "count"));
-    report.metric("extraordinary_vertices", Metric::new(conv.extraordinary_vertices as f64, "count"));
-    report.metric("dev_max_mm", Metric::new(conv.max_dev, "mm").with_limit(max_dev_limit, true));
+    report.metric(
+        "regular_faces",
+        Metric::new(conv.regular_faces as f64, "count"),
+    );
+    report.metric(
+        "extraordinary_patches",
+        Metric::new(conv.irregular_faces as f64, "count"),
+    );
+    report.metric(
+        "extraordinary_vertices",
+        Metric::new(conv.extraordinary_vertices as f64, "count"),
+    );
+    report.metric(
+        "dev_max_mm",
+        Metric::new(conv.max_dev, "mm").with_limit(max_dev_limit, true),
+    );
     report.metric("dev_rms_mm", Metric::new(conv.rms_dev, "mm"));
     report.metric("dev_samples", Metric::new(conv.samples as f64, "count"));
     report.metric("seam_gap_max_mm", Metric::new(seams.max_gap(), "mm"));
     report.metric("g1_max_deg", Metric::new(seams.max_g1_deg(), "deg"));
-    report.metric("free_boundary_edges", Metric::new(seams.free_edges.len() as f64, "count"));
+    report.metric(
+        "free_boundary_edges",
+        Metric::new(seams.free_edges.len() as f64, "count"),
+    );
     if conv.refined_first {
-        report.note(Severity::Info, "the cage had non-quad faces and was refined once before conversion");
+        report.note(
+            Severity::Info,
+            "the cage had non-quad faces and was refined once before conversion",
+        );
     }
     report
 }
@@ -683,10 +1010,17 @@ impl NodeOp for SubdToNurbsNode {
             .implemented()
     }
 
-    fn cook(&self, ctx: &CookContext, inputs: &[Option<Data>], params: &Params) -> CookResult<Vec<Data>> {
+    fn cook(
+        &self,
+        ctx: &CookContext,
+        inputs: &[Option<Data>],
+        params: &Params,
+    ) -> CookResult<Vec<Data>> {
         let cage = vernon_graph::node::inputs::geometry(inputs, 0)?;
         check_finite(ctx, &cage)?;
-        let tol = params.float("weld_tol_mm")?.max(1.2e-7 * max_abs_coord(&cage.points));
+        let tol = params
+            .float("weld_tol_mm")?
+            .max(1.2e-7 * max_abs_coord(&cage.points));
         let mut sub = Subd::from_geometry(&cage, tol);
         if sub.faces.is_empty() {
             return Err(ctx.fail("the cage has no usable faces"));
@@ -701,7 +1035,13 @@ impl NodeOp for SubdToNurbsNode {
             sub = sub.refine();
         }
         let max_faces = params.float("max_faces")? as usize;
-        let conv = convert(&sub, params.str("faces")? == "packed", params.int("fit_level")?.clamp(1, 4) as usize, max_faces).map_err(|e| ctx.fail(e))?;
+        let conv = convert(
+            &sub,
+            params.str("faces")? == "packed",
+            params.int("fit_level")?.clamp(1, 4) as usize,
+            max_faces,
+        )
+        .map_err(|e| ctx.fail(e))?;
         let ps = PatchSet::new(conv.patches.clone());
         let diag = crate::util::bbox_diagonal(&cage);
         let lim = positive(ctx, "max_deviation_mm", params.float("max_deviation_mm")?)?;
@@ -712,8 +1052,16 @@ impl NodeOp for SubdToNurbsNode {
         }
         let mut ps = ps;
         ps.closed = report.metrics["free_boundary_edges"].value == 0.0;
-        let preview = ps.tessellate(positive(ctx, "preview_tol_mm", params.float("preview_tol_mm")?)?);
-        Ok(vec![Data::json(ps.to_json()), Data::geometry(preview), Data::report(report)])
+        let preview = ps.tessellate(positive(
+            ctx,
+            "preview_tol_mm",
+            params.float("preview_tol_mm")?,
+        )?);
+        Ok(vec![
+            Data::json(ps.to_json()),
+            Data::geometry(preview),
+            Data::report(report),
+        ])
     }
 }
 
@@ -736,20 +1084,34 @@ impl NodeOp for SubdDeviationNode {
             .implemented()
     }
 
-    fn cook(&self, ctx: &CookContext, inputs: &[Option<Data>], params: &Params) -> CookResult<Vec<Data>> {
+    fn cook(
+        &self,
+        ctx: &CookContext,
+        inputs: &[Option<Data>],
+        params: &Params,
+    ) -> CookResult<Vec<Data>> {
         let cage = vernon_graph::node::inputs::geometry(inputs, 0)?;
         check_finite(ctx, &cage)?;
         let pj = json_input(inputs, 1).ok_or_else(|| ctx.fail("connect a patch set"))?;
         let ps = PatchSet::from_json(&pj).map_err(|e| json_err(ctx, "patch set input", e))?;
         let tol = positive(ctx, "tol_mm", params.float("tol_mm")?)?;
-        let sub = Subd::from_geometry(&cage, params.float("weld_tol_mm")?.max(1.2e-7 * max_abs_coord(&cage.points)));
+        let sub = Subd::from_geometry(
+            &cage,
+            params
+                .float("weld_tol_mm")?
+                .max(1.2e-7 * max_abs_coord(&cage.points)),
+        );
         if sub.faces.is_empty() {
             return Err(ctx.fail("the cage has no usable faces"));
         }
         let levels = params.int("levels")?.clamp(1, 5) as usize;
-        let predicted = sub.refined_face_count().saturating_mul(4usize.pow((levels - 1) as u32));
+        let predicted = sub
+            .refined_face_count()
+            .saturating_mul(4usize.pow((levels - 1) as u32));
         if predicted > 4_000_000 {
-            return Err(ctx.fail(format!("{levels} levels would create {predicted} faces; lower the level count")));
+            return Err(ctx.fail(format!(
+                "{levels} levels would create {predicted} faces; lower the level count"
+            )));
         }
         let fine = sub.refine_levels(levels);
         let lim = fine.limit_positions();
@@ -762,8 +1124,12 @@ impl NodeOp for SubdDeviationNode {
         for p in &ps.patches {
             let (ua, ub) = p.surface.domain_u();
             let (va, vb) = p.surface.domain_v();
-            let us: Vec<f64> = (0..side).map(|i| ua + (ub - ua) * i as f64 / (side - 1) as f64).collect();
-            let vs: Vec<f64> = (0..side).map(|j| va + (vb - va) * j as f64 / (side - 1) as f64).collect();
+            let us: Vec<f64> = (0..side)
+                .map(|i| ua + (ub - ua) * i as f64 / (side - 1) as f64)
+                .collect();
+            let vs: Vec<f64> = (0..side)
+                .map(|j| va + (vb - va) * j as f64 / (side - 1) as f64)
+                .collect();
             pts.extend(p.surface.eval_grid(&us, &vs));
         }
         let hits = bvh.closest_many(&pts);
@@ -776,14 +1142,24 @@ impl NodeOp for SubdDeviationNode {
         report.metric("dev_rms_mm", Metric::new(st.rms, "mm"));
         report.metric("dev_max_mm", Metric::new(st.max_abs, "mm"));
         report.metric("dev_p50_mm", Metric::new(st.p50, "mm"));
-        report.metric("dev_p95_mm", Metric::new(st.p95, "mm").with_limit(tol, true));
+        report.metric(
+            "dev_p95_mm",
+            Metric::new(st.p95, "mm").with_limit(tol, true),
+        );
         report.metric("dev_p99_mm", Metric::new(st.p99, "mm"));
         report.metric("g1_max_deg", Metric::new(seams.max_g1_deg(), "deg"));
         report.metric("seam_gap_max_mm", Metric::new(seams.max_gap(), "mm"));
         report.metric("sample_count", Metric::new(st.count as f64, "count"));
         let mut out = Geometry::from_points(pts);
         out.point_attribs.set("dist", AttribArray::Float(d.clone()));
-        out.point_attribs.set("Cd", AttribArray::Vec3(d.iter().map(|&x| crate::deviation::abs_ramp(x, tol)).collect()));
+        out.point_attribs.set(
+            "Cd",
+            AttribArray::Vec3(
+                d.iter()
+                    .map(|&x| crate::deviation::abs_ramp(x, tol))
+                    .collect(),
+            ),
+        );
         Ok(vec![Data::geometry(out), Data::report(report)])
     }
 }
@@ -803,27 +1179,144 @@ impl NodeOp for MeshToG2SurfaceNode {
             .param(ParamSpec::float("max_deviation_mm", "Max deviation", 0.3, 0.0001, 100.0).unit("mm").help("Limit on the distance between the patches and the limit surface of the quad mesh."))
             .param(ParamSpec::int("fit_level", "Fit resolution", 3, 1, 4).help("Subdivision depth of the samples used near extraordinary vertices."))
             .param(ParamSpec::float("preview_tol_mm", "Preview tolerance", 0.2, 0.001, 10.0).unit("mm").help("Chord tolerance of the preview mesh."))
-            .help("Turns a quad-dominant mesh into patches that meet smoothly. The final G2 construction around extraordinary vertices is not implemented: the placeholder converts through the subdivision limit surface and reports the measured normal angle across seams.")
+            .help("Converts a mesh through its subdivision limit surface. Regular regions are exact bicubics; extraordinary regions are fitted. Reports sampled position, tangent-plane and curvature continuity over every topological join, including partial G2 coverage.")
             .emulates("Plasticity PolySplines")
             .emulates("SurfLab G2 spline constructions")
+            .implemented()
     }
 
-    fn cook(&self, ctx: &CookContext, inputs: &[Option<Data>], params: &Params) -> CookResult<Vec<Data>> {
+    fn cook(
+        &self,
+        ctx: &CookContext,
+        inputs: &[Option<Data>],
+        params: &Params,
+    ) -> CookResult<Vec<Data>> {
         let mesh = vernon_graph::node::inputs::geometry(inputs, 0)?;
         check_finite(ctx, &mesh)?;
-        let sub = Subd::from_geometry(&mesh, 1e-6f64.max(1.2e-7 * max_abs_coord(&mesh.points)));
-        if sub.faces.is_empty() {
-            return Err(ctx.fail("the mesh has no usable faces"));
+        mesh.validate()
+            .map_err(|e| ctx.fail(format!("invalid mesh: {e}")))?;
+        let original =
+            Subd::from_geometry(&mesh, 1e-6f64.max(1.2e-7 * max_abs_coord(&mesh.points)));
+        validate_cage(&original).map_err(|e| ctx.fail(e))?;
+        let refined_first = !original.all_quads();
+        if refined_first && original.refined_face_count() > MAX_REFINED_FACES as usize {
+            return Err(ctx.fail("refining non-quad input exceeds the cage face budget"));
         }
-        let conv = convert(&sub, true, params.int("fit_level")?.clamp(1, 4) as usize, 3_000_000).map_err(|e| ctx.fail(e))?;
-        let ps = PatchSet::new(conv.patches.clone());
+        let sub = if refined_first {
+            original.refine()
+        } else {
+            original
+        };
+        let fit = params.int("fit_level")?.clamp(1, 4) as usize;
+        let max_degree = params.int("max_degree")?;
+        if !(3..=6).contains(&max_degree) {
+            return Err(ctx.fail("max_degree must be between 3 and 6"));
+        }
         let lim = positive(ctx, "max_deviation_mm", params.float("max_deviation_mm")?)?;
-        let mut report = patch_report("G2 mesh to surface", &conv, &ps, lim, crate::util::bbox_diagonal(&mesh));
-        placeholder_note(&mut report, "bi-3 / bi-6 curvature-continuous caps around extraordinary vertices (published polyhedral-spline constructions); this node returns position-continuous bicubic patches fitted to the subdivision limit surface");
-        let target = if params.str("continuity")? == "g2" { 0.5 } else { 1.0 };
-        report.metric("g1_target_deg", Metric::new(target, "deg"));
-        let preview = ps.tessellate(positive(ctx, "preview_tol_mm", params.float("preview_tol_mm")?)?);
-        Ok(vec![Data::json(ps.to_json()), Data::geometry(preview), Data::report(report)])
+        let mut conv = convert(&sub, false, fit, 3_000_000).map_err(|e| ctx.fail(e))?;
+        conv.refined_first = refined_first;
+        let (expected, free) = expected_seams(&sub);
+        let mut ps = PatchSet::new(conv.patches.clone());
+        let mut stats = measure(&ps, &expected, 17);
+        let mut candidate = conv.clone();
+        let mut accepted = false;
+        if reconcile_regular_neighbors(&sub, &mut candidate, &expected, fit) {
+            let candidate_ps = PatchSet::new(candidate.patches.clone());
+            let trial = measure(&candidate_ps, &expected, 17);
+            if trial.invalid_samples <= stats.invalid_samples
+                && trial.g1_fraction >= stats.g1_fraction
+                && (params.str("continuity")? != "g2" || trial.g2_fraction >= stats.g2_fraction)
+                && trial.max_normal_deg < stats.max_normal_deg
+                && candidate.max_dev <= lim
+            {
+                conv = candidate;
+                ps = candidate_ps;
+                stats = trial;
+                accepted = true;
+            }
+        }
+        ps.closed = free == 0;
+        let mut report = Report::new("Measured mesh to surface");
+        for (key, value, unit) in [
+            ("patch_count", conv.patches.len() as f64, "count"),
+            ("control_points", ps.control_point_count() as f64, "count"),
+            ("cage_faces", conv.cage_faces as f64, "count"),
+            ("regular_faces", conv.regular_faces as f64, "count"),
+            (
+                "extraordinary_patches",
+                conv.irregular_faces as f64,
+                "count",
+            ),
+            (
+                "extraordinary_vertices",
+                conv.extraordinary_vertices as f64,
+                "count",
+            ),
+            ("dev_rms_mm", conv.rms_dev, "mm"),
+            ("dev_samples", conv.samples as f64, "count"),
+            ("seam_gap_max_mm", stats.max_gap_mm, "mm"),
+            ("g1_max_deg", stats.max_normal_deg, "deg"),
+            (
+                "curvature_jump_max_inv_mm",
+                stats.max_curvature_jump_inv_mm,
+                "1/mm",
+            ),
+            ("g1_fraction", stats.g1_fraction, "fraction"),
+            ("g2_fraction", stats.g2_fraction, "fraction"),
+            ("expected_seams", stats.expected_seams as f64, "count"),
+            (
+                "invalid_continuity_samples",
+                stats.invalid_samples as f64,
+                "count",
+            ),
+            ("free_boundary_edges", free as f64, "count"),
+            ("g1_reconciliation_applied", f64::from(accepted), "bool"),
+            ("max_degree_used", 3.0, "degree"),
+        ] {
+            report.metric(key, Metric::new(value, unit));
+        }
+        report.metric(
+            "dev_max_mm",
+            Metric::new(conv.max_dev, "mm").with_limit(lim, true),
+        );
+        report.metric("g1_target_deg", Metric::new(1.0, "deg"));
+        report.metric(
+            "invalid_continuity_samples",
+            Metric::new(stats.invalid_samples as f64, "count").with_limit(0.0, true),
+        );
+        let requested = if params.str("continuity")? == "g2" {
+            "g2_fraction"
+        } else {
+            "g1_fraction"
+        };
+        let fraction = if params.str("continuity")? == "g2" {
+            stats.g2_fraction
+        } else {
+            stats.g1_fraction
+        };
+        report.metric(
+            requested,
+            Metric::new(fraction, "fraction").with_limit(1.0, false),
+        );
+        if fraction < 1.0 || expected.is_empty() {
+            report.note(Severity::Warning, "requested continuity is only partially achieved; inspect g1_fraction, g2_fraction and invalid_continuity_samples. Extraordinary regions use fitted bicubics, without a guaranteed curvature-continuous cap");
+        }
+        if refined_first {
+            report.note(
+                Severity::Info,
+                "non-quad input was refined once before fitting",
+            );
+        }
+        let preview = ps.tessellate(positive(
+            ctx,
+            "preview_tol_mm",
+            params.float("preview_tol_mm")?,
+        )?);
+        Ok(vec![
+            Data::json(ps.to_json()),
+            Data::geometry(preview),
+            Data::report(report),
+        ])
     }
 }
 
@@ -833,15 +1326,213 @@ mod tests {
     use crate::testutil::{b, cook, f, geo_of, grid, i, report_of, s, some};
 
     fn pinned_grid(nx: usize, ny: usize) -> Subd {
-        let g = grid(nx, ny, nx as f64 * 10.0, ny as f64 * 10.0, |x, y| 6.0 * (x / 25.0).sin() + 4.0 * (y / 18.0).cos());
+        let g = grid(nx, ny, nx as f64 * 10.0, ny as f64 * 10.0, |x, y| {
+            6.0 * (x / 25.0).sin() + 4.0 * (y / 18.0).cos()
+        });
         let mut sub = Subd::from_geometry(&g, 1e-9);
-        let (lo, hi) = (DVec3::ZERO, DVec3::new(nx as f64 * 10.0, ny as f64 * 10.0, 0.0));
+        let (lo, hi) = (
+            DVec3::ZERO,
+            DVec3::new(nx as f64 * 10.0, ny as f64 * 10.0, 0.0),
+        );
         for (k, p) in sub.points.iter().enumerate() {
-            if ((p.x - lo.x).abs() < 1e-9 || (p.x - hi.x).abs() < 1e-9) && ((p.y - lo.y).abs() < 1e-9 || (p.y - hi.y).abs() < 1e-9) {
+            if ((p.x - lo.x).abs() < 1e-9 || (p.x - hi.x).abs() < 1e-9)
+                && ((p.y - lo.y).abs() < 1e-9 || (p.y - hi.y).abs() < 1e-9)
+            {
                 sub.corners.insert(k as u32);
             }
         }
         sub
+    }
+
+    #[test]
+    fn periodic_regular_torus_measures_every_topology_join() {
+        let (nu, nv) = (8, 6);
+        let points = (0..nu)
+            .flat_map(|i| {
+                (0..nv).map(move |j| {
+                    let u = std::f64::consts::TAU * i as f64 / nu as f64;
+                    let v = std::f64::consts::TAU * j as f64 / nv as f64;
+                    DVec3::new(
+                        (30.0 + 10.0 * v.cos()) * u.cos(),
+                        (30.0 + 10.0 * v.cos()) * u.sin(),
+                        10.0 * v.sin(),
+                    )
+                })
+            })
+            .collect();
+        let faces = (0..nu)
+            .flat_map(|i| {
+                (0..nv).map(move |j| {
+                    vec![
+                        (i * nv + j) as u32,
+                        (((i + 1) % nu) * nv + j) as u32,
+                        (((i + 1) % nu) * nv + (j + 1) % nv) as u32,
+                        (i * nv + (j + 1) % nv) as u32,
+                    ]
+                })
+            })
+            .collect();
+        let cage = Subd {
+            points,
+            faces,
+            ..Default::default()
+        };
+        let conv = convert(&cage, false, 2, 3_000_000).unwrap();
+        let (seams, free) = expected_seams(&cage);
+        assert_eq!(seams.len(), 2 * nu * nv);
+        assert_eq!(free, 0);
+        let mut ps = PatchSet::new(conv.patches);
+        let stats = measure(&ps, &seams, 17);
+        assert_eq!(stats.g2_fraction, 1.0, "{stats:?}");
+        for p in &mut ps.patches[0].surface.control_points {
+            p.z += 1.0;
+        }
+        let stats = measure(&ps, &seams, 17);
+        assert_eq!(stats.expected_seams, 2 * nu * nv);
+        assert!(stats.max_gap_mm > 0.99);
+        assert!(stats.g2_fraction < 1.0);
+    }
+
+    #[test]
+    fn malformed_cages_fail_before_lattice_construction() {
+        let cage = Subd {
+            points: (0..4).map(|i| DVec3::X * i as f64).collect(),
+            faces: vec![vec![0, 1, 2, 3]],
+            ..Default::default()
+        };
+        assert!(convert(&cage, false, 2, 1_000_000).is_err());
+        let mut cage = pinned_grid(2, 2);
+        cage.faces[0][0] = u32::MAX;
+        assert!(convert(&cage, false, 2, 1_000_000).is_err());
+    }
+
+    #[test]
+    fn valence_five_cap_has_measured_partial_g2() {
+        let n = 5;
+        let mut points = vec![DVec3::new(0.0, 0.0, 8.0)];
+        for i in 0..2 * n {
+            let t = std::f64::consts::TAU * i as f64 / (2 * n) as f64;
+            let radius = if i % 2 == 0 { 20.0 } else { 30.0 };
+            points.push(DVec3::new(radius * t.cos(), radius * t.sin(), 0.0));
+        }
+        let faces = (0..n)
+            .map(|i| {
+                vec![
+                    0,
+                    1 + (2 * i) as u32,
+                    2 + (2 * i) as u32,
+                    1 + (2 * ((i + 1) % n)) as u32,
+                ]
+            })
+            .collect();
+        let sub = Subd {
+            points,
+            faces,
+            ..Default::default()
+        }
+        .refine_levels(2);
+        let out = cook(
+            "surface.mesh_to_g2_surface",
+            &[some(&sub.to_geometry())],
+            &[("max_degree", i(3)), ("fit_level", i(2))],
+        )
+        .unwrap();
+        let r = report_of(&out[2]);
+        assert_eq!(r.metrics["expected_seams"].value, 140.0);
+        assert!(r.metrics["g2_fraction"].value > 0.0);
+        assert!(r.metrics["g2_fraction"].value < 1.0);
+        println!(
+            "valence5 g2={} g1={} dev={} curvature_jump={}",
+            r.metrics["g2_fraction"].value,
+            r.metrics["g1_fraction"].value,
+            r.metrics["dev_max_mm"].value,
+            r.metrics["curvature_jump_max_inv_mm"].value
+        );
+        assert_eq!(r.metrics["invalid_continuity_samples"].value, 0.0);
+        assert_eq!(r.metrics["max_degree_used"].value, 3.0);
+    }
+
+    #[test]
+    fn reconciliation_recomputes_deviation_after_control_edits() {
+        let cube =
+            Subd::from_geometry(&Geometry::make_box(DVec3::splat(100.0)), 1e-9).refine_levels(2);
+        let mut c = convert(&cube, false, 2, 3_000_000).unwrap();
+        let before = c.clone();
+        let (seams, _) = expected_seams(&cube);
+        assert!(reconcile_regular_neighbors(&cube, &mut c, &seams, 2));
+        assert!(c
+            .patches
+            .iter()
+            .zip(&before.patches)
+            .any(|(a, b)| a.control_points != b.control_points));
+        let old_stats = measure(&PatchSet::new(before.patches.clone()), &seams, 17);
+        let new_stats = measure(&PatchSet::new(c.patches.clone()), &seams, 17);
+        assert_eq!(old_stats.expected_seams, new_stats.expected_seams);
+        assert_eq!(new_stats.invalid_samples, 0);
+        let adj = cube.adjacency();
+        let (_, frames, _) = plan_patches(&Walker::new(&cube, &adj), false);
+        let lat = build_lattice(&cube, 3, &frames);
+        let limit = lat.refined.limit_positions();
+        let mut worst: f64 = 0.0;
+        for (f, patch) in c.patches.iter().enumerate() {
+            for i in 0..lat.m {
+                for j in 0..lat.m {
+                    worst = worst.max(
+                        patch
+                            .point(i as f64 / (lat.m - 1) as f64, j as f64 / (lat.m - 1) as f64)
+                            .distance(limit[lat.grids[f][i * lat.m + j] as usize]),
+                    );
+                }
+            }
+        }
+        assert!((c.max_dev - worst).abs() < 1e-12);
+        for f in 0..cube.faces.len() {
+            if Walker::new(&cube, &adj).regular_face(f) {
+                assert_eq!(
+                    c.patches[f].control_points,
+                    before.patches[f].control_points
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn g2_reports_topology_seams_and_partial_coverage() {
+        let sub = pinned_grid(4, 3);
+        let out = cook(
+            "surface.mesh_to_g2_surface",
+            &[some(&sub.to_geometry())],
+            &[],
+        )
+        .unwrap();
+        let r = report_of(&out[2]);
+        assert_eq!(r.metrics["expected_seams"].value, 17.0);
+        assert_eq!(r.metrics["g2_fraction"].value, 1.0);
+        assert!(r.metrics["curvature_jump_max_inv_mm"].value < 1e-8);
+        let cube =
+            Subd::from_geometry(&Geometry::make_box(DVec3::splat(100.0)), 1e-9).refine_levels(2);
+        let out = cook(
+            "surface.mesh_to_g2_surface",
+            &[some(&cube.to_geometry())],
+            &[],
+        )
+        .unwrap();
+        let r = report_of(&out[2]);
+        assert_eq!(r.metrics["expected_seams"].value, 192.0);
+        assert!(r.metrics["g2_fraction"].value > 0.0);
+        assert!(r.metrics["g2_fraction"].value < 1.0);
+        assert!(r.metrics["dev_max_mm"].value > 0.0);
+        assert!(
+            !r.passes(),
+            "partial G2 must fail the requested continuity gate"
+        );
+        println!(
+            "cube g2={} g1={} dev={} curvature_jump={}",
+            r.metrics["g2_fraction"].value,
+            r.metrics["g1_fraction"].value,
+            r.metrics["dev_max_mm"].value,
+            r.metrics["curvature_jump_max_inv_mm"].value
+        );
     }
 
     #[test]
@@ -885,23 +1576,34 @@ mod tests {
     #[test]
     fn cube_cage_with_extraordinary_vertices_stays_watertight() {
         // spec N2: each cube face subdivided 4 x 4 -> valence-3 vertices at 8 corners
-        let cube = Subd::from_geometry(&Geometry::make_box(DVec3::splat(100.0)), 1e-9).refine_levels(2);
+        let cube =
+            Subd::from_geometry(&Geometry::make_box(DVec3::splat(100.0)), 1e-9).refine_levels(2);
         let c = convert(&cube, false, 2, 3_000_000).unwrap();
         assert_eq!(c.patches.len(), 96);
         assert_eq!(c.extraordinary_vertices, 8);
         assert_eq!(c.irregular_faces, 24, "three faces at each of 8 corners");
         let diag = 100.0 * 3f64.sqrt();
-        assert!(c.max_dev <= 1e-3 * diag, "dev {} vs {}", c.max_dev, 1e-3 * diag);
+        assert!(
+            c.max_dev <= 1e-3 * diag,
+            "dev {} vs {}",
+            c.max_dev,
+            1e-3 * diag
+        );
         let ps = PatchSet::new(c.patches);
         let seams = find_seams(&ps, 1e-6, 8);
         assert!(seams.is_closed(), "free edges {}", seams.free_edges.len());
         assert!(seams.max_gap() < 1e-6, "gap {}", seams.max_gap());
-        println!("cube g1 {:.3} deg, dev {:.5}", seams.max_g1_deg(), c.max_dev);
+        println!(
+            "cube g1 {:.3} deg, dev {:.5}",
+            seams.max_g1_deg(),
+            c.max_dev
+        );
     }
 
     #[test]
     fn packed_cube_merges_regular_runs() {
-        let cube = Subd::from_geometry(&Geometry::make_box(DVec3::splat(100.0)), 1e-9).refine_levels(3);
+        let cube =
+            Subd::from_geometry(&Geometry::make_box(DVec3::splat(100.0)), 1e-9).refine_levels(3);
         let c = convert(&cube, true, 2, 3_000_000).unwrap();
         assert!(c.patches.len() < 384, "{} patches", c.patches.len());
         assert!(c.max_dev < 0.2, "dev {}", c.max_dev);
@@ -926,19 +1628,39 @@ mod tests {
     #[test]
     fn nodes_run_end_to_end() {
         let cube = Geometry::make_box(DVec3::splat(100.0));
-        let out = cook("surface.mesh_to_subd", &[some(&cube)], &[("creases", b(false))]).unwrap();
+        let out = cook(
+            "surface.mesh_to_subd",
+            &[some(&cube)],
+            &[("creases", b(false))],
+        )
+        .unwrap();
         let cage = geo_of(&out[0]);
-        let out = cook("surface.subd_to_nurbs", &[some(&cage)], &[("refine_levels", i(2)), ("faces", s("unpacked"))]).unwrap();
+        let out = cook(
+            "surface.subd_to_nurbs",
+            &[some(&cage)],
+            &[("refine_levels", i(2)), ("faces", s("unpacked"))],
+        )
+        .unwrap();
         let rep = report_of(&out[2]);
         assert_eq!(rep.metrics["patch_count"].value, 96.0);
         assert_eq!(rep.metrics["free_boundary_edges"].value, 0.0);
         let patches = out[0].clone();
-        let dev = cook("surface.subd_deviation", &[some(&cage), Some(patches)], &[("tol_mm", f(1.0)), ("levels", i(3))]).unwrap();
+        let dev = cook(
+            "surface.subd_deviation",
+            &[some(&cage), Some(patches)],
+            &[("tol_mm", f(1.0)), ("levels", i(3))],
+        )
+        .unwrap();
         let drep = report_of(&dev[1]);
         assert!(drep.passes(), "p95 {}", drep.metrics["dev_p95_mm"].value);
-        let refined = cook("surface.subd_refine", &[some(&cage)], &[("levels", i(2)), ("output", s("level"))]).unwrap();
+        let refined = cook(
+            "surface.subd_refine",
+            &[some(&cage)],
+            &[("levels", i(2)), ("output", s("level"))],
+        )
+        .unwrap();
         let cage2 = geo_of(&refined[0]);
         let g2 = cook("surface.mesh_to_g2_surface", &[some(&cage2)], &[]).unwrap();
-        assert!(report_of(&g2[2]).notes.iter().any(|(_, t)| t.starts_with("white-box placeholder")));
+        assert!(report_of(&g2[2]).metrics.contains_key("g2_fraction"));
     }
 }
