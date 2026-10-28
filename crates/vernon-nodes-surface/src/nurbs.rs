@@ -149,10 +149,12 @@ pub fn expand_knots(vals: &[f64], mult: &[usize]) -> Vec<f64> {
 }
 
 fn check_knots(knots: &[f64], n_ctrl: usize, p: usize, what: &str) -> Result<(), String> {
-    if n_ctrl < p + 1 {
+    let order = p.checked_add(1).ok_or_else(|| format!("{what}: degree is too large"))?;
+    if n_ctrl < order {
         return Err(format!("{what}: {n_ctrl} control points is too few for degree {p}"));
     }
-    if knots.len() != n_ctrl + p + 1 {
+    let expected = n_ctrl.checked_add(order).ok_or_else(|| format!("{what}: control-point count is too large"))?;
+    if knots.len() != expected {
         return Err(format!("{what}: knot count {} != points {} + degree {} + 1", knots.len(), n_ctrl, p));
     }
     if knots.windows(2).any(|w| w[1] < w[0]) {
@@ -162,7 +164,7 @@ fn check_knots(knots: &[f64], n_ctrl: usize, p: usize, what: &str) -> Result<(),
         return Err(format!("{what}: non-finite knot"));
     }
     let (vals, mult) = compress_knots(knots);
-    if mult[0] != p + 1 || *mult.last().expect("non-empty") != p + 1 {
+    if mult[0] != order || *mult.last().expect("non-empty") != order {
         return Err(format!("{what}: knot vector is not clamped (end multiplicity must be degree + 1)"));
     }
     if mult[1..mult.len() - 1].iter().any(|&m| m > p) {
@@ -481,8 +483,9 @@ impl NurbsSurface {
     pub fn validate(&self) -> Result<(), String> {
         check_knots(&self.knots_u, self.nu, self.degree_u, "surface u")?;
         check_knots(&self.knots_v, self.nv, self.degree_v, "surface v")?;
-        if self.control_points.len() != self.nu * self.nv {
-            return Err(format!("surface: {} control points, expected {}", self.control_points.len(), self.nu * self.nv));
+        let expected = self.nu.checked_mul(self.nv).ok_or("surface: control grid size overflow")?;
+        if self.control_points.len() != expected {
+            return Err(format!("surface: {} control points, expected {}", self.control_points.len(), expected));
         }
         if let Some(w) = &self.weights {
             if w.len() != self.control_points.len() || w.iter().any(|&x| x <= 0.0 || !x.is_finite()) {

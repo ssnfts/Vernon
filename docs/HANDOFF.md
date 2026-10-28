@@ -6,7 +6,36 @@ of done. This document lists the remaining work as ordered **work packages
 (WP)**. Do them in order, one commit each. Every WP ends with the full
 definition-of-done check from `AGENTS.md`.
 
-## Progress — 2026-10-27 (WP3)
+## Progress — 2026-10-28 (WP4)
+
+WP1–WP4 are implemented under their documented contracts; WP5 (split/print)
+is next. The registry contains 197 nodes: 177 implemented and 20 white-box.
+All 23 surface nodes now have native implementations, with their individual
+limits retained. Full workspace verification: 1,067 passed, zero failed,
+seven ignored; build and Clippy clean. The demo cooks 36 nodes with zero
+failures and two expected gates. The catalogue was regenerated, final narrow
+review found no remaining blocker, and GPU app launch was checked visually.
+
+WP4 exports planar faceted shells and untrimmed rational/nonrational B-spline
+faces using AP214/AP242 Part 21 structure. Compatible whole patch boundaries
+share vertices and edge curves; each connected component receives its own
+appropriately typed solid or surface representation. Partial seams, different
+knot refinements and differently scaled rational weights can remain open.
+Analytic CAD trimming and self-intersection certification remain absent.
+
+An independent bounded parser checks references and selected entity, spline,
+loop, shell and representation rules before the node writes files. It is not
+a complete ISO/EXPRESS validator. Paths stay within the node work directory,
+and replacement is atomic per file. Review regressions cover oversized JSON
+metadata, translated solid orientation, physically different rational edges
+and preserving a preexisting temporary file.
+
+The seventh ignored test is the optional `needs FreeCAD` import test. It was
+added with four fixtures but **has not run**: no suitable existing executable
+or Python module was found. Independent CAD import remains unverified. See
+the [STEP contract, limits and external check](specs/step-export.md).
+
+## WP3 checkpoint — 2026-10-27
 
 WP1–WP3 are implemented and verified under their measured acceptance contracts;
 WP4 (the real STEP writer) is next. The registry contains 197 nodes: 176
@@ -166,17 +195,24 @@ then the external solvers, then UI polish, then release.
 - **Format:** write ISO 10303-21 (Part 21) files, schema AP214
   (`AUTOMOTIVE_DESIGN`) or AP242.
   - Faceted solids: `CLOSED_SHELL` with `FACE_SURFACE` + `PLANE` + `POLY_LOOP`.
-  - Fitted patches: `B_SPLINE_SURFACE_WITH_KNOTS` faces in an `OPEN_SHELL`
-    inside a `SHELL_BASED_SURFACE_MODEL`, with an
-    `ADVANCED_BREP_SHAPE_REPRESENTATION` once edges are shared.
+  - Fitted patches: B-spline `ADVANCED_FACE` boundaries share compatible
+    whole edges. Open components use `OPEN_SHELL` inside a
+    `SHELL_BASED_SURFACE_MODEL` with
+    `MANIFOLD_SURFACE_SHAPE_REPRESENTATION`; closed components with nonzero
+    sampled volume use `MANIFOLD_SOLID_BREP` and
+    `ADVANCED_BREP_SHAPE_REPRESENTATION`. See the implemented
+    [contract and conservative joining limits](specs/step-export.md).
   - Units: millimetre (`SI_UNIT(.MILLI.,.METRE.)`). Build the standard
     product, context and header entities.
 - **Acceptance:**
   - A unit test parses the output back: entity count, matching `#n` refs, no
     dangling references.
-  - Add a test with `#[ignore = "needs FreeCAD"]` that runs
-    `freecadcmd -c "import Part; s=Part.read('out.step'); print(s.isValid())"`
-    and asserts `True`.
+  - Add a test with `#[ignore = "needs FreeCAD"]` that passes a Python
+    script file to an existing command-line importer and checks `Part.read`
+    validity, solid counts and dimensions. Run with
+    `cargo test -p vernon-nodes-surface freecad_import -- --ignored --nocapture`;
+    `FREECADCMD` selects the executable. Added in WP4; external execution
+    remains pending because no runtime is available locally.
   - Document that check in the node's help.
 
 ### WP5 — Print: body-line cut, smart partition, region select, snap joint (`vernon-nodes-print`)

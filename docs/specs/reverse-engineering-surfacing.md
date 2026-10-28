@@ -137,7 +137,7 @@ All ids `surface.<snake>`; stage `Stage::Surface`; spec = `docs/specs/reverse-en
 | surface.mirror_surface | Mirror Surface | pattern/mirror in RE tools | Json (patch set) | Json (patch set) | plane {x,y,z,custom}; origin; merge_seam true; symmetrize_seam true | Now |
 | surface.thicken_shell | Thicken Shell | shell/thicken | Json (patch set) | Json (solid), Report | thickness_mm 3 [0.01,100]; side {outward,inward,both}; refit_tol_mm 0.05 | WB first |
 | surface.deviation_check | Surface Deviation | live deviation / accuracy analyser | Geometry (mesh), Json (patch set) or Geometry (surface tessellation) | Geometry (signed `dev_mm` point attrib), Report | tol_mm 0.5 [0.001,50]; samples 200000 [1000,5e7]; sign {outside_positive}; p_gate 95 [50,100] | Now |
-| surface.write_step | Write STEP | STEP export of surfaces/solids | Json (patch set/brep) | File (.stp) | schema {ap214,ap242}; units mm; trimmed false | Now untrimmed; trimmed WB |
+| surface.write_step | Write STEP | STEP export of surfaces/solids | patches: Json (optional); mesh: Geometry (optional) | file: File (.stp); report: Report | schema ap214 {ap214,ap242}; name vernon_surface; save_to empty (within node work directory); max_faces 500000 [100,50000000]; fixed mm | Native WP4; faceted shells and untrimmed whole-edge connected B-spline faces; bounded structural validation, external CAD import not yet run; [contract and limits](step-export.md) |
 
 **Proposed count: 18 nodes.** Report keys emitted for the next stage to check: `dev_mean_mm`, `dev_rms_mm`, `dev_max_mm`, `dev_p95_mm`, `dev_p99_mm`, `pct_within_tol`, `patch_count`, `region_count`, `g1_max_deg`, `watertight` (0/1). `surface.deviation_check` attaches `Metric::with_limit(0.5, lower_is_better)` to `dev_p95_mm`, matching the toolchain report's "95 % within +-0.5 mm" phrasing.
 
@@ -159,7 +159,7 @@ Reference-tool comparisons need a licensed copy and inputs made by us; the cases
 12. **Mirror/sew**: half panel mirrored across x = 0: sew gap after merge <= 1e-6 mm, G1 angle across the seam <= 0.5 degrees, watertight if the half was closed against the plane.
 13. **Thicken**: full sphere R = 50 mm thickened 3 mm inward: inner radius 47 +- 0.05; volume 4/3 pi (50^3 - 47^3) = 88 706 mm^3 within 0.5 %.
 14. **Fusion parity (when a licence is available)**: same 20 mm-spaced section of a known scan fitted with Spline Fit Tolerance 0.05 and 0.5 mm; compare control-point counts (expect same order, not equality) and max deviation within each tolerance.
-15. **STEP round trip**: `write_step` of a 2-patch surface re-read by an open-source STEP reader (separate process) gives 2 faces, bounding box equal to input within 1e-4 mm.
+15. **STEP round trip**: the optional ignored `freecad_import` test checks AP214/AP242 boxes, a shared two-patch sheet and a rational quarter-cylinder through a separate process, including validity and bounding-box dimensions within 1e-4 mm. It has not run locally because no suitable existing runtime was found. Native structural checks are separate evidence; see [the WP4 contract](step-export.md).
 
 ### 5.1 Known gaps and open questions (resolve before claiming parity)
 - No vendor publishes numeric defaults for segmentation sensitivity, auto-surface detail, or sew tolerance. The values in sections 3-4 are Vernon proposals; record the licensed tool's behaviour on tests 1-6 and retune the sensitivity map (3.1.4).
@@ -168,6 +168,7 @@ Reference-tool comparisons need a licensed copy and inputs made by us; the cases
 - PolySplines internals are unpublished; degree 3/6 and the licensing relation to the SurfLab work are forum claims. Build against the published SurfLab constructions, not against assumed behaviour.
 - Plasticity, Design X and QUICKSURFACE are Windows-first or closed; any parity tests must use inputs we create and outputs we record ourselves (CLEAN_ROOM.md, process step 3).
 - Geometry has no dedicated NURBS type. Native fitting uses the existing `nurbs_patch_set` JSON schema with a tessellated preview. WP2 supports compatible whole-edge joins; trimming and partial-edge seams remain unsupported. See [current contract and acceptance limits](connected-auto-surface.md).
+- WP4 exports native planar facets and untrimmed B-spline boundaries, with conservative whole-edge sharing and per-component shells. Its bounded parser does not establish full ISO/EXPRESS conformance or geometric validity in a CAD kernel. Independent CAD import remains unverified; see [STEP export evidence and limits](step-export.md).
 
 ## 5a. Node map: loft through sections
 

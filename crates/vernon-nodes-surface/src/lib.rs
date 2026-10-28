@@ -27,6 +27,8 @@ mod patch_network;
 mod autosurface;
 mod continuity;
 mod prismatic;
+mod step_format;
+mod step_validate;
 pub mod linalg;
 pub mod nurbs;
 pub mod patchnodes;
@@ -192,8 +194,8 @@ mod tests {
     #[test]
     fn white_box_flags_are_honest() {
         let reg = registry();
-        assert!(reg.info("surface.write_step").unwrap().whitebox, "surface.write_step contains a placeholder");
         for id in [
+            "surface.write_step",
             "surface.section_curves",
             "surface.fit_section_curves",
             "surface.loft_sections",

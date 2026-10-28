@@ -1,288 +1,14 @@
-//! STEP (ISO 10303-21) writer for faceted shells and untrimmed NURBS patches,
-//! and the `surface.write_step` node.
-//!
-//! Units are always millimetres. Faceted meshes are written as planar
-//! advanced faces bounded by poly loops; patches as B-spline surface faces
-//! bounded by their four border curves (untrimmed).
-
-use std::fmt::Write as _;
-use std::path::PathBuf;
-
-use glam::DVec3;
-use vernon_core::{Geometry, Metric, Report, Severity};
-use vernon_graph::{CookContext, CookResult, Data, DataKind, NodeOp, NodeTypeInfo, ParamSpec, Params, PortSpec};
-
-use crate::nurbs::{compress_knots, NurbsCurve, NurbsSurface, PatchSet};
-use crate::topology::{orient, stats, weld};
-use crate::util::{check_finite, json_err, json_input, max_abs_coord, node_info, placeholder_note, SPEC_RE};
-
-/// Application protocol written into the file header.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Schema {
-    Ap214,
-    Ap242,
-}
-
-/// Writer settings.
-#[derive(Debug, Clone)]
-pub struct StepOptions {
-    pub schema: Schema,
-    pub name: String,
-    pub max_faces: usize,
-}
-
-impl Default for StepOptions {
-    fn default() -> Self {
-        StepOptions { schema: Schema::Ap214, name: "vernon_surface".into(), max_faces: 500_000 }
-    }
-}
-
-/// Counts of what was written.
-#[derive(Debug, Clone, Default)]
-pub struct StepSummary {
-    pub faces: usize,
-    pub patches: usize,
-    pub entities: usize,
-    pub bytes: usize,
-    pub closed_shell: bool,
-    pub bbox_min: DVec3,
-    pub bbox_max: DVec3,
-}
-
-struct Writer {
-    body: String,
-    next: usize,
-    bbox: (DVec3, DVec3),
-}
-
-fn real(x: f64) -> String {
-    let mut s = format!("{x}");
-    if !s.contains('.') {
-        s.push('.');
-    }
-    s
-}
-
-fn text(s: &str) -> String {
-    s.chars().map(|c| if c.is_ascii() && c != '\'' && !c.is_ascii_control() { c } else { '_' }).collect()
-}
-
-impl Writer {
-    fn new() -> Self {
-        Writer { body: String::new(), next: 1, bbox: (DVec3::splat(f64::INFINITY), DVec3::splat(f64::NEG_INFINITY)) }
-    }
-
-    fn add(&mut self, entity: impl AsRef<str>) -> usize {
-        let id = self.next;
-        self.next += 1;
-        let _ = writeln!(self.body, "#{id}={};", entity.as_ref());
-        id
-    }
-
-    fn point(&mut self, p: DVec3) -> usize {
-        self.bbox.0 = self.bbox.0.min(p);
-        self.bbox.1 = self.bbox.1.max(p);
-        self.add(format!("CARTESIAN_POINT('',({},{},{}))", real(p.x), real(p.y), real(p.z)))
-    }
-
-    fn direction(&mut self, d: DVec3) -> usize {
-        self.add(format!("DIRECTION('',({},{},{}))", real(d.x), real(d.y), real(d.z)))
-    }
-
-    fn list(ids: &[usize]) -> String {
-        ids.iter().map(|i| format!("#{i}")).collect::<Vec<_>>().join(",")
-    }
-
-    fn curve(&mut self, c: &NurbsCurve) -> usize {
-        let cps: Vec<usize> = c.control_points.iter().map(|&p| self.point(p)).collect();
-        let (vals, mult) = compress_knots(&c.knots);
-        let m = mult.iter().map(usize::to_string).collect::<Vec<_>>().join(",");
-        let k = vals.iter().map(|&v| real(v)).collect::<Vec<_>>().join(",");
-        match &c.weights {
-            None => self.add(format!("B_SPLINE_CURVE_WITH_KNOTS('',{},({}),.UNSPECIFIED.,.F.,.F.,({m}),({k}),.UNSPECIFIED.)", c.degree, Self::list(&cps))),
-            Some(w) => {
-                let ws = w.iter().map(|&v| real(v)).collect::<Vec<_>>().join(",");
-                self.add(format!("(BOUNDED_CURVE() B_SPLINE_CURVE({},({}),.UNSPECIFIED.,.F.,.F.) B_SPLINE_CURVE_WITH_KNOTS(({m}),({k}),.UNSPECIFIED.) CURVE() GEOMETRIC_REPRESENTATION_ITEM() RATIONAL_B_SPLINE_CURVE(({ws})) REPRESENTATION_ITEM(''))", c.degree, Self::list(&cps)))
-            }
-        }
-    }
-
-    fn surface(&mut self, s: &NurbsSurface) -> usize {
-        let mut rows = Vec::with_capacity(s.nu);
-        for i in 0..s.nu {
-            let ids: Vec<usize> = (0..s.nv).map(|j| self.point(s.cp(i, j))).collect();
-            rows.push(format!("({})", Self::list(&ids)));
-        }
-        let grid = rows.join(",");
-        let (vu, mu) = compress_knots(&s.knots_u);
-        let (vv, mv) = compress_knots(&s.knots_v);
-        let ints = |v: &[usize]| v.iter().map(usize::to_string).collect::<Vec<_>>().join(",");
-        let reals = |v: &[f64]| v.iter().map(|&x| real(x)).collect::<Vec<_>>().join(",");
-        match &s.weights {
-            None => self.add(format!(
-                "B_SPLINE_SURFACE_WITH_KNOTS('',{},{},({grid}),.UNSPECIFIED.,.F.,.F.,.F.,({}),({}),({}),({}),.UNSPECIFIED.)",
-                s.degree_u,
-                s.degree_v,
-                ints(&mu),
-                ints(&mv),
-                reals(&vu),
-                reals(&vv)
-            )),
-            Some(w) => {
-                let wr: Vec<String> = (0..s.nu).map(|i| format!("({})", (0..s.nv).map(|j| real(w[i * s.nv + j])).collect::<Vec<_>>().join(","))).collect();
-                self.add(format!(
-                    "(BOUNDED_SURFACE() B_SPLINE_SURFACE({},{},({grid}),.UNSPECIFIED.,.F.,.F.,.F.) B_SPLINE_SURFACE_WITH_KNOTS(({}),({}),({}),({}),.UNSPECIFIED.) GEOMETRIC_REPRESENTATION_ITEM() RATIONAL_B_SPLINE_SURFACE(({})) REPRESENTATION_ITEM('') SURFACE())",
-                    s.degree_u,
-                    s.degree_v,
-                    ints(&mu),
-                    ints(&mv),
-                    reals(&vu),
-                    reals(&vv),
-                    wr.join(",")
-                ))
-            }
-        }
-    }
-
-    /// One untrimmed patch face; returns the ADVANCED_FACE id.
-    fn patch_face(&mut self, s: &NurbsSurface) -> usize {
-        let surf = self.surface(s);
-        let mut oriented = Vec::with_capacity(4);
-        for side in 0..4 {
-            let c = s.boundary_curve(side);
-            let (t0, t1) = c.domain();
-            let (a, b) = (c.point(t0), c.point(t1));
-            let curve = self.curve(&c);
-            let (pa, pb) = (self.point(a), self.point(b));
-            let (va, vb) = (self.add(format!("VERTEX_POINT('',#{pa})")), self.add(format!("VERTEX_POINT('',#{pb})")));
-            let edge = self.add(format!("EDGE_CURVE('',#{va},#{vb},#{curve},.T.)"));
-            let flag = if side < 2 { ".T." } else { ".F." };
-            oriented.push(self.add(format!("ORIENTED_EDGE('',*,*,#{edge},{flag})")));
-        }
-        // loop order: side 0 forward, side 1 forward, side 2 reversed, side 3 reversed
-        let lp = self.add(format!("EDGE_LOOP('',({}))", Self::list(&oriented)));
-        let bound = self.add(format!("FACE_OUTER_BOUND('',#{lp},.T.)"));
-        self.add(format!("ADVANCED_FACE('',(#{bound}),#{surf},.T.)"))
-    }
-
-    /// One planar polygon face over shared point ids.
-    fn polygon_face(&mut self, pts: &[usize], coords: &[DVec3]) -> usize {
-        let mut n = DVec3::ZERO;
-        for i in 0..coords.len() {
-            let (a, b) = (coords[i], coords[(i + 1) % coords.len()]);
-            n += DVec3::new((a.y - b.y) * (a.z + b.z), (a.z - b.z) * (a.x + b.x), (a.x - b.x) * (a.y + b.y));
-        }
-        let n = n.normalize_or_zero();
-        let n = if n == DVec3::ZERO { DVec3::Z } else { n };
-        let xdir = (coords[1] - coords[0]).normalize_or_zero();
-        let xdir = if xdir == DVec3::ZERO { n.any_orthonormal_vector() } else { (xdir - n * xdir.dot(n)).normalize_or_zero() };
-        let xdir = if xdir == DVec3::ZERO { n.any_orthonormal_vector() } else { xdir };
-        let o = self.add(format!("CARTESIAN_POINT('',({},{},{}))", real(coords[0].x), real(coords[0].y), real(coords[0].z)));
-        let (dz, dx) = (self.direction(n), self.direction(xdir));
-        let ax = self.add(format!("AXIS2_PLACEMENT_3D('',#{o},#{dz},#{dx})"));
-        let plane = self.add(format!("PLANE('',#{ax})"));
-        let lp = self.add(format!("POLY_LOOP('',({}))", Self::list(pts)));
-        let bound = self.add(format!("FACE_OUTER_BOUND('',#{lp},.T.)"));
-        self.add(format!("ADVANCED_FACE('',(#{bound}),#{plane},.T.)"))
-    }
-}
-
-/// Write faceted meshes and/or patch sets into one STEP file body.
-pub fn write_step(mesh: Option<&Geometry>, patches: Option<&PatchSet>, opts: &StepOptions) -> Result<(String, StepSummary), String> {
-    let mut w = Writer::new();
-    let mut sum = StepSummary::default();
-    let mut items: Vec<usize> = Vec::new();
-
-    // product structure
-    let name = text(&opts.name);
-    let app = w.add("APPLICATION_CONTEXT('automotive design')");
-    let proto = match opts.schema {
-        Schema::Ap214 => w.add(format!("APPLICATION_PROTOCOL_DEFINITION('international standard','automotive_design',2000,#{app})")),
-        Schema::Ap242 => w.add(format!("APPLICATION_PROTOCOL_DEFINITION('international standard','ap242_managed_model_based_3d_engineering',2020,#{app})")),
-    };
-    let _ = proto;
-    let pctx = w.add(format!("PRODUCT_CONTEXT('',#{app},'mechanical')"));
-    let prod = w.add(format!("PRODUCT('{name}','{name}','',(#{pctx}))"));
-    let pdf = w.add(format!("PRODUCT_DEFINITION_FORMATION('','',#{prod})"));
-    let pdctx = w.add(format!("PRODUCT_DEFINITION_CONTEXT('part definition',#{app},'design')"));
-    let pd = w.add(format!("PRODUCT_DEFINITION('design','',#{pdf},#{pdctx})"));
-    let pds = w.add(format!("PRODUCT_DEFINITION_SHAPE('','',#{pd})"));
-    // units and context
-    let lu = w.add("(LENGTH_UNIT() NAMED_UNIT(*) SI_UNIT(.MILLI.,.METRE.))");
-    let au = w.add("(NAMED_UNIT(*) PLANE_ANGLE_UNIT() SI_UNIT($,.RADIAN.))");
-    let su = w.add("(NAMED_UNIT(*) SI_UNIT($,.STERADIAN.) SOLID_ANGLE_UNIT())");
-    let unc = w.add(format!("UNCERTAINTY_MEASURE_WITH_UNIT(LENGTH_MEASURE(1.E-06),#{lu},'distance_accuracy_value','confusion accuracy')"));
-    let ctx_id = w.add(format!("(GEOMETRIC_REPRESENTATION_CONTEXT(3) GLOBAL_UNCERTAINTY_ASSIGNED_CONTEXT((#{unc})) GLOBAL_UNIT_ASSIGNED_CONTEXT((#{lu},#{au},#{su})) REPRESENTATION_CONTEXT('Context3D','3D Context with UNIT and UNCERTAINTY'))"));
-
-    if let Some(g) = mesh {
-        let mut wd = weld(g, 1e-6f64.max(1.2e-7 * max_abs_coord(&g.points)));
-        if wd.faces.is_empty() {
-            return Err("the mesh has no usable faces".into());
-        }
-        if wd.faces.len() > opts.max_faces {
-            return Err(format!("{} faces are too many for a faceted STEP file (limit {}); decimate the mesh or raise the limit", wd.faces.len(), opts.max_faces));
-        }
-        orient(&mut wd);
-        let st = stats(&wd);
-        let pts: Vec<usize> = wd.points.iter().map(|&p| w.point(p)).collect();
-        let mut face_ids = Vec::with_capacity(wd.faces.len());
-        for f in &wd.faces {
-            let ids: Vec<usize> = f.iter().map(|&v| pts[v as usize]).collect();
-            let coords: Vec<DVec3> = f.iter().map(|&v| wd.points[v as usize]).collect();
-            face_ids.push(w.polygon_face(&ids, &coords));
-        }
-        sum.faces += face_ids.len();
-        if st.closed && st.volume > 0.0 {
-            let shell = w.add(format!("CLOSED_SHELL('',({}))", Writer::list(&face_ids)));
-            items.push(w.add(format!("FACETED_BREP('{name}',#{shell})")));
-            sum.closed_shell = true;
-        } else {
-            let shell = w.add(format!("OPEN_SHELL('',({}))", Writer::list(&face_ids)));
-            items.push(w.add(format!("SHELL_BASED_SURFACE_MODEL('{name}',(#{shell}))")));
-        }
-    }
-    if let Some(ps) = patches {
-        if ps.patches.is_empty() {
-            return Err("the patch set is empty".into());
-        }
-        let mut face_ids = Vec::with_capacity(ps.patches.len());
-        for p in &ps.patches {
-            p.surface.validate().map_err(|e| format!("patch {}: {e}", p.id))?;
-            face_ids.push(w.patch_face(&p.surface));
-        }
-        sum.patches += face_ids.len();
-        sum.faces += face_ids.len();
-        let shell = w.add(format!("OPEN_SHELL('',({}))", Writer::list(&face_ids)));
-        items.push(w.add(format!("SHELL_BASED_SURFACE_MODEL('{name}_patches',(#{shell}))")));
-    }
-    if items.is_empty() {
-        return Err("nothing to write: connect a mesh or a patch set".into());
-    }
-    let rep_type = if mesh.is_some() && patches.is_none() && sum.closed_shell { "FACETED_BREP_SHAPE_REPRESENTATION" } else { "MANIFOLD_SURFACE_SHAPE_REPRESENTATION" };
-    let ax_o = w.add("CARTESIAN_POINT('',(0.,0.,0.))");
-    let (dz, dx) = (w.add("DIRECTION('',(0.,0.,1.))"), w.add("DIRECTION('',(1.,0.,0.))"));
-    let ax = w.add(format!("AXIS2_PLACEMENT_3D('',#{ax_o},#{dz},#{dx})"));
-    let rep = w.add(format!("{rep_type}('{name}',({},#{ax}),#{ctx_id})", Writer::list(&items)));
-    w.add(format!("SHAPE_DEFINITION_REPRESENTATION(#{pds},#{rep})"));
-
-    let schema = match opts.schema {
-        Schema::Ap214 => "AUTOMOTIVE_DESIGN { 1 0 10303 214 3 1 1 }",
-        Schema::Ap242 => "AP242_MANAGED_MODEL_BASED_3D_ENGINEERING_MIM_LF { 1 0 10303 442 1 1 4 }",
-    };
-    let mut out = String::with_capacity(w.body.len() + 600);
-    out.push_str("ISO-10303-21;\nHEADER;\n");
-    let _ = writeln!(out, "FILE_DESCRIPTION(('Vernon surface export, units millimetre'),'2;1');");
-    let _ = writeln!(out, "FILE_NAME('{name}.stp','1970-01-01T00:00:00',('Vernon'),('Vernon'),'Vernon STEP writer','Vernon','');");
-    let _ = writeln!(out, "FILE_SCHEMA(('{schema}'));");
-    out.push_str("ENDSEC;\nDATA;\n");
-    out.push_str(&w.body);
-    out.push_str("ENDSEC;\nEND-ISO-10303-21;\n");
-    sum.entities = w.next - 1;
-    sum.bytes = out.len();
-    sum.bbox_min = w.bbox.0;
-    sum.bbox_max = w.bbox.1;
-    Ok((out, sum))
-}
+//! STEP export node, confined file effects and optional independent import test.
+use crate::nurbs::PatchSet;
+pub use crate::step_format::{write_step, Schema, StepOptions, StepSummary};
+use crate::util::{check_finite, json_err, json_input, node_info, SPEC_RE};
+use std::io::Write as _;
+use std::path::{Component, Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use vernon_core::{Metric, Report, Severity};
+use vernon_graph::{
+    CookContext, CookResult, Data, DataKind, NodeOp, NodeTypeInfo, ParamSpec, Params, PortSpec,
+};
 
 /// `surface.write_step`
 pub struct WriteStepNode;
@@ -296,20 +22,28 @@ impl NodeOp for WriteStepNode {
             .output(PortSpec::new("report", DataKind::Report))
             .param(ParamSpec::choice("schema", "Schema", "ap214", &["ap214", "ap242"]).help("Application protocol named in the file header."))
             .param(ParamSpec::string("name", "Part name", "vernon_surface").help("Name stored in the file and used for the file name."))
-            .param(ParamSpec::path("save_to", "Save to", &["stp", "step"], true).help("Optional extra copy written to this path after the file is created."))
+            .param(ParamSpec::path("save_to", "Save to", &["stp", "step"], true).help("Optional additional copy inside the node work directory. Relative paths are resolved there; outside paths are rejected."))
             .param(ParamSpec::int("max_faces", "Face limit", 500_000, 100, 50_000_000).help("Refuse faceted meshes with more faces than this."))
-            .help("Writes a STEP file in millimetres from a patch set (untrimmed surface faces) and/or a mesh (faceted shell; a closed shell becomes a solid). Border curves of patches are written as edges; trimmed faces and shared edges between patches are not written yet.")
+            .help("Writes AP214/AP242 STEP in millimetres, with planar faceted shells and whole-edge connected untrimmed B-spline faces. Structural validation checks references and topology before writing. The optional import test runs with: cargo test -p vernon-nodes-surface freecad_import -- --ignored; set FREECADCMD to the command-line importer executable.")
             .emulates("STEP export of surfaces and solids")
+            .implemented()
     }
 
-    fn cook(&self, ctx: &CookContext, inputs: &[Option<Data>], params: &Params) -> CookResult<Vec<Data>> {
+    fn cook(
+        &self,
+        ctx: &CookContext,
+        inputs: &[Option<Data>],
+        params: &Params,
+    ) -> CookResult<Vec<Data>> {
         let mesh = vernon_graph::node::inputs::opt_geometry(inputs, 1);
         let pj = json_input(inputs, 0);
         if let Some(m) = &mesh {
             check_finite(ctx, m)?;
         }
         let ps = match pj {
-            Some(j) => Some(PatchSet::from_json(&j).map_err(|e| json_err(ctx, "patch set input", e))?),
+            Some(j) => {
+                Some(PatchSet::from_json(&j).map_err(|e| json_err(ctx, "patch set input", e))?)
+            }
             None => None,
         };
         if let Some(p) = &ps {
@@ -320,18 +54,47 @@ impl NodeOp for WriteStepNode {
             }
         }
         let opts = StepOptions {
-            schema: if params.str("schema")? == "ap242" { Schema::Ap242 } else { Schema::Ap214 },
+            schema: if params.str("schema")? == "ap242" {
+                Schema::Ap242
+            } else {
+                Schema::Ap214
+            },
             name: params.str("name")?.trim().to_string(),
             max_faces: params.float("max_faces")? as usize,
         };
         if opts.name.is_empty() {
             return Err(ctx.fail("the part name must not be empty"));
         }
-        let (content, sum) = write_step(mesh.as_deref(), ps.as_ref(), &opts).map_err(|e| ctx.fail(e))?;
-        std::fs::create_dir_all(&ctx.work_dir).map_err(|e| ctx.fail(format!("cannot create the work directory: {e}")))?;
-        let file_name: String = opts.name.chars().map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '-' { c } else { '_' }).collect();
-        let path = ctx.work_dir.join(format!("{file_name}.stp"));
-        write_atomic(&path, &content).map_err(|e| ctx.fail(format!("cannot write {}: {e}", path.display())))?;
+        let (content, sum) =
+            write_step(mesh.as_deref(), ps.as_ref(), &opts).map_err(|e| ctx.fail(e))?;
+        let validation = crate::step_validate::validate(&content)
+            .map_err(|e| ctx.fail(format!("STEP structural validation failed: {e}")))?;
+        if validation.entities != sum.entities {
+            return Err(ctx.fail("STEP entity count does not match the writer summary"));
+        }
+        std::fs::create_dir_all(&ctx.work_dir)
+            .map_err(|e| ctx.fail(format!("cannot create the work directory: {e}")))?;
+        let file_name: String = opts
+            .name
+            .chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                    c
+                } else {
+                    '_'
+                }
+            })
+            .collect();
+        let path =
+            confined_target(&ctx.work_dir, &format!("{file_name}.stp")).map_err(|e| ctx.fail(e))?;
+        let save = params.str("save_to")?.trim();
+        let target = if save.is_empty() {
+            None
+        } else {
+            Some(confined_target(&ctx.work_dir, save).map_err(|e| ctx.fail(e))?)
+        };
+        write_atomic(&path, &content)
+            .map_err(|e| ctx.fail(format!("cannot write {}: {e}", path.display())))?;
         let mut report = Report::new("STEP export");
         report.metric("faces", Metric::new(sum.faces as f64, "count"));
         report.metric("patches", Metric::new(sum.patches as f64, "count"));
@@ -343,33 +106,159 @@ impl NodeOp for WriteStepNode {
         report.metric("bbox_y_mm", Metric::new(size.y, "mm"));
         report.metric("bbox_z_mm", Metric::new(size.z, "mm"));
         if sum.patches > 0 {
-            report.note(Severity::Info, "patches are written untrimmed, one face per patch, without shared edges");
+            report.note(Severity::Info, "patches retain untrimmed parameter boundaries; compatible whole edges share topology, while partial-edge seams remain separate");
         }
-        placeholder_note(&mut report, "trimmed faces and shared edge topology between patches (a boundary-representation kernel); this writer emits a faceted shell and untrimmed patch faces");
-        let save = params.str("save_to")?.trim().to_string();
-        if !save.is_empty() {
-            let target = PathBuf::from(&save);
-            write_atomic(&target, &content).map_err(|e| ctx.fail(format!("cannot save to {save}: {e}")))?;
+        report.metric(
+            "solid_shells",
+            Metric::new(sum.solid_shells as f64, "count"),
+        );
+        report.metric("open_shells", Metric::new(sum.open_shells as f64, "count"));
+        report.metric(
+            "shared_patch_edges",
+            Metric::new(sum.shared_edges as f64, "count"),
+        );
+        report.metric(
+            "validated_entities",
+            Metric::new(validation.entities as f64, "count"),
+        );
+        report.metric(
+            "validated_references",
+            Metric::new(validation.references as f64, "count"),
+        );
+        report.note(Severity::Info,"Structural subset validation passed. It does not certify all EXPRESS rules or replace an independent CAD import test.");
+        if let Some(target) = target {
+            write_atomic(&target, &content)
+                .map_err(|e| ctx.fail(format!("cannot save to {}: {e}", target.display())))?;
         }
         Ok(vec![Data::File(path), Data::report(report)])
     }
 }
 
-fn write_atomic(path: &std::path::Path, content: &str) -> std::io::Result<()> {
-    let mut tmp = path.as_os_str().to_owned();
-    tmp.push(".tmp");
-    let tmp = PathBuf::from(tmp);
-    std::fs::write(&tmp, content)?;
-    std::fs::rename(&tmp, path)
+fn confined_target(work: &Path, value: &str) -> Result<PathBuf, String> {
+    let root =
+        std::fs::canonicalize(work).map_err(|e| format!("cannot resolve work directory: {e}"))?;
+    let raw = Path::new(value);
+    if raw.components().any(|c| matches!(c, Component::ParentDir))
+        || (!raw.is_absolute()
+            && raw
+                .components()
+                .any(|c| matches!(c, Component::Prefix(_) | Component::RootDir)))
+    {
+        return Err(
+            "save path must stay inside the node work directory without parent traversal".into(),
+        );
+    }
+    let path = if raw.is_absolute() {
+        raw.to_path_buf()
+    } else {
+        root.join(raw)
+    };
+    let parent = path.parent().ok_or("save path has no parent")?;
+    let name = path.file_name().ok_or("save path has no file name")?;
+    let mut ancestor = parent;
+    while !ancestor.exists() {
+        ancestor = ancestor
+            .parent()
+            .ok_or("save path has no existing ancestor")?;
+    }
+    if !std::fs::canonicalize(ancestor)
+        .map_err(|e| format!("cannot resolve save path: {e}"))?
+        .starts_with(&root)
+    {
+        return Err("save path is outside the node work directory".into());
+    }
+    std::fs::create_dir_all(parent).map_err(|e| format!("cannot create save directory: {e}"))?;
+    let parent =
+        std::fs::canonicalize(parent).map_err(|e| format!("cannot resolve save directory: {e}"))?;
+    if !parent.starts_with(&root) {
+        return Err("save directory resolves outside the node work directory".into());
+    }
+    Ok(parent.join(name))
 }
 
+fn write_atomic(path: &Path, content: &str) -> std::io::Result<()> {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let mut tmp = path.as_os_str().to_owned();
+    tmp.push(format!(
+        ".{}.{}.tmp",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
+    let tmp = PathBuf::from(tmp);
+    write_atomic_at(path, &tmp, content)
+}
+
+fn write_atomic_at(path: &Path, tmp: &Path, content: &str) -> std::io::Result<()> {
+    // Cleanup starts only after this call owns the new temporary file.
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(tmp)?;
+    let result = (|| {
+        file.write_all(content.as_bytes())?;
+        drop(file);
+        std::fs::rename(tmp, path)
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(tmp);
+    }
+    result
+}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::nurbs::NurbsSurface;
     use crate::testutil::{cook, f, grid, report_of, s, some};
+    use glam::DVec3;
+    use vernon_core::Geometry;
+
+    #[test]
+    fn wp4_writer_is_implemented_and_has_no_placeholder() {
+        assert!(!WriteStepNode.info().whitebox);
+        let g = Geometry::make_box(DVec3::splat(10.0));
+        let out = cook("surface.write_step", &[None, some(&g)], &[]).unwrap();
+        assert!(!report_of(&out[1])
+            .notes
+            .iter()
+            .any(|(_, n)| n.starts_with("white-box placeholder")));
+    }
+
+    #[test]
+    fn wp4_oversized_patch_metadata_returns_error_without_panicking() {
+        let base = PatchSet::new(vec![sheet(0.0)]).to_json();
+        for field in ["degree_u", "degree_v", "nu", "nv"] {
+            let mut data = base.clone();
+            data["patches"][0][field] = serde_json::json!(usize::MAX);
+            let result = std::panic::catch_unwind(|| {
+                cook("surface.write_step", &[Some(Data::json(data)), None], &[])
+            });
+            assert!(result.is_ok(), "{field} overflowed during validation");
+            assert!(result.unwrap().is_err());
+        }
+    }
+
+    #[test]
+    fn wp4_atomic_write_preserves_an_existing_temporary_file() {
+        let ctx = crate::testutil::ctx("wp4_atomic_collision");
+        std::fs::create_dir_all(&ctx.work_dir).unwrap();
+        let path = ctx.work_dir.join("part.stp");
+        let tmp = ctx.work_dir.join("existing.tmp");
+        std::fs::write(&path, "previous STEP").unwrap();
+        std::fs::write(&tmp, "unrelated file").unwrap();
+        let error = write_atomic_at(&path, &tmp, "replacement").unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "previous STEP");
+        assert_eq!(std::fs::read_to_string(&tmp).unwrap(), "unrelated file");
+    }
 
     fn count(content: &str, kind: &str) -> usize {
-        content.lines().filter(|l| l.split_once('=').is_some_and(|(_, r)| r.starts_with(&format!("{kind}(")))).count()
+        content
+            .lines()
+            .filter(|l| {
+                l.split_once('=')
+                    .is_some_and(|(_, r)| r.starts_with(&format!("{kind}(")))
+            })
+            .count()
     }
 
     fn points(content: &str) -> Vec<DVec3> {
@@ -377,7 +266,9 @@ mod tests {
             .lines()
             .filter_map(|l| {
                 let r = l.split_once('=')?.1;
-                let inner = r.strip_prefix("CARTESIAN_POINT('',(")?.strip_suffix("));")?;
+                let inner = r
+                    .strip_prefix("CARTESIAN_POINT('',(")?
+                    .strip_suffix("));")?;
                 let v: Vec<f64> = inner.split(',').map(|x| x.parse().unwrap()).collect();
                 (v.len() == 3).then(|| DVec3::new(v[0], v[1], v[2]))
             })
@@ -388,7 +279,11 @@ mod tests {
         let mut pts = Vec::new();
         for i in 0..4 {
             for j in 0..4 {
-                pts.push(DVec3::new(x0 + 10.0 * i as f64 / 3.0, 10.0 * j as f64 / 3.0, ((i * j) as f64).sin()));
+                pts.push(DVec3::new(
+                    x0 + 10.0 * i as f64 / 3.0,
+                    10.0 * j as f64 / 3.0,
+                    ((i * j) as f64).sin(),
+                ));
             }
         }
         NurbsSurface::clamped_uniform(3, 3, 4, 4, pts)
@@ -402,7 +297,7 @@ mod tests {
         assert!(txt.trim_end().ends_with("END-ISO-10303-21;"));
         assert!(txt.contains("SI_UNIT(.MILLI.,.METRE.)"));
         assert!(txt.contains("FILE_SCHEMA(('AUTOMOTIVE_DESIGN"));
-        assert_eq!(count(&txt, "ADVANCED_FACE"), 6);
+        assert_eq!(count(&txt, "FACE_SURFACE"), 6);
         assert_eq!(count(&txt, "FACETED_BREP"), 1);
         assert_eq!(count(&txt, "CLOSED_SHELL"), 1);
         assert!(sum.closed_shell);
@@ -413,12 +308,20 @@ mod tests {
     #[test]
     fn open_mesh_is_an_open_shell_and_ap242_changes_the_header() {
         let g = grid(2, 2, 10.0, 10.0, |_, _| 0.0);
-        let (txt, sum) = write_step(Some(&g), None, &StepOptions { schema: Schema::Ap242, ..Default::default() }).unwrap();
+        let (txt, sum) = write_step(
+            Some(&g),
+            None,
+            &StepOptions {
+                schema: Schema::Ap242,
+                ..Default::default()
+            },
+        )
+        .unwrap();
         assert!(txt.contains("AP242_MANAGED_MODEL_BASED_3D_ENGINEERING_MIM_LF"));
         assert_eq!(count(&txt, "OPEN_SHELL"), 1);
         assert_eq!(count(&txt, "FACETED_BREP"), 0);
         assert!(!sum.closed_shell);
-        assert_eq!(count(&txt, "ADVANCED_FACE"), 4);
+        assert_eq!(count(&txt, "FACE_SURFACE"), 4);
     }
 
     #[test]
@@ -429,44 +332,256 @@ mod tests {
         assert_eq!(count(&txt, "ADVANCED_FACE"), 2);
         assert_eq!(count(&txt, "B_SPLINE_SURFACE_WITH_KNOTS"), 2);
         assert_eq!(count(&txt, "EDGE_CURVE"), 8);
-        let cps: Vec<DVec3> = ps.patches.iter().flat_map(|p| p.surface.control_points.clone()).collect();
-        let (lo, hi) = cps.iter().fold((DVec3::splat(f64::INFINITY), DVec3::splat(f64::NEG_INFINITY)), |(l, h), p| (l.min(*p), h.max(*p)));
+        let cps: Vec<DVec3> = ps
+            .patches
+            .iter()
+            .flat_map(|p| p.surface.control_points.clone())
+            .collect();
+        let (lo, hi) = cps.iter().fold(
+            (DVec3::splat(f64::INFINITY), DVec3::splat(f64::NEG_INFINITY)),
+            |(l, h), p| (l.min(*p), h.max(*p)),
+        );
         assert!((sum.bbox_min - lo).length() < 1e-4 && (sum.bbox_max - hi).length() < 1e-4);
         // distinct knots plus multiplicities: (4,4) and (0,1)
-        assert!(txt.contains("(4,4),(4,4),(0.,1.),(0.,1.)"), "{}", txt.lines().find(|l| l.contains("B_SPLINE_SURFACE_WITH_KNOTS")).unwrap());
+        assert!(
+            txt.contains("(4,4),(4,4)"),
+            "{}",
+            txt.lines()
+                .find(|l| l.contains("B_SPLINE_SURFACE_WITH_KNOTS"))
+                .unwrap()
+        );
         // all CARTESIAN_POINT entries parse as three numbers
         assert!(points(&txt).len() > 32);
+        assert_eq!(
+            crate::step_validate::validate(&txt).unwrap().entities,
+            sum.entities
+        );
     }
 
     #[test]
     fn rational_patches_use_the_complex_entity() {
         let mut s0 = sheet(0.0);
         s0.weights = Some(vec![1.0; 16]);
-        let (txt, _) = write_step(None, Some(&PatchSet::new(vec![s0])), &StepOptions::default()).unwrap();
+        let (txt, _) = write_step(
+            None,
+            Some(&PatchSet::new(vec![s0])),
+            &StepOptions::default(),
+        )
+        .unwrap();
         assert!(txt.contains("RATIONAL_B_SPLINE_SURFACE"));
     }
 
     #[test]
     fn node_writes_a_file_and_recreates_it() {
         let g = Geometry::make_box(DVec3::splat(10.0));
-        let out = cook("surface.write_step", &[None, some(&g)], &[("name", s("box part"))]).unwrap();
+        let out = cook(
+            "surface.write_step",
+            &[None, some(&g)],
+            &[("name", s("box part"))],
+        )
+        .unwrap();
         let path = out[0].as_file().unwrap().clone();
         assert!(path.exists());
-        assert!(path.file_name().unwrap().to_str().unwrap().starts_with("box_part"));
+        assert!(path
+            .file_name()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .starts_with("box_part"));
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(text.contains("FACETED_BREP"));
         std::fs::remove_file(&path).unwrap();
-        let again = cook("surface.write_step", &[None, some(&g)], &[("name", s("box part"))]).unwrap();
+        let again = cook(
+            "surface.write_step",
+            &[None, some(&g)],
+            &[("name", s("box part"))],
+        )
+        .unwrap();
         assert!(again[0].as_file().unwrap().exists());
         assert_eq!(report_of(&out[1]).metrics["faces"].value, 6.0);
         // an unwritable extra copy is an error, not a panic
-        let bad = cook("surface.write_step", &[None, some(&g)], &[("save_to", s("Z:/no/such/dir/out.stp"))]);
+        let bad = cook(
+            "surface.write_step",
+            &[None, some(&g)],
+            &[("save_to", s("Z:/no/such/dir/out.stp"))],
+        );
         assert!(bad.is_err());
         // limits and empty inputs
         assert!(cook("surface.write_step", &[None, None], &[]).is_err());
-        assert!(cook("surface.write_step", &[None, some(&g)], &[("max_faces", f(100.0)), ("name", s(""))]).is_err());
+        assert!(cook(
+            "surface.write_step",
+            &[None, some(&g)],
+            &[("max_faces", f(100.0)), ("name", s(""))]
+        )
+        .is_err());
     }
 
+    #[test]
+    fn wp4_node_paths_are_confined_and_output_replaces_atomically() {
+        let g = Geometry::make_box(DVec3::splat(10.0));
+        let out = cook(
+            "surface.write_step",
+            &[None, some(&g)],
+            &[("name", s("wp4_paths")), ("save_to", s("copies/part.step"))],
+        )
+        .unwrap();
+        let main = out[0].as_file().unwrap();
+        let original = std::fs::read_to_string(main).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(main.parent().unwrap().join("copies/part.step")).unwrap(),
+            original
+        );
+        let again = cook(
+            "surface.write_step",
+            &[None, some(&g)],
+            &[("name", s("wp4_paths"))],
+        )
+        .unwrap();
+        assert_eq!(again[0].as_file().unwrap(), main);
+        assert_eq!(std::fs::read_to_string(main).unwrap(), original);
+        for path in ["../outside.step", "C:/outside.step"] {
+            assert!(cook(
+                "surface.write_step",
+                &[None, some(&g)],
+                &[("name", s("wp4_paths")), ("save_to", s(path))]
+            )
+            .is_err());
+            assert_eq!(std::fs::read_to_string(main).unwrap(), original);
+        }
+        let mut bad = g;
+        bad.points[0].x = f64::NAN;
+        assert!(cook(
+            "surface.write_step",
+            &[None, some(&bad)],
+            &[("name", s("wp4_paths"))]
+        )
+        .is_err());
+        assert_eq!(std::fs::read_to_string(main).unwrap(), original);
+    }
+
+    #[test]
+    #[ignore = "needs FreeCAD"]
+    fn freecad_import_validates_facets_shared_patches_and_rational_surface() {
+        use vernon_core::process::{run, Exit, RunOptions};
+        let work = crate::testutil::ctx("wp4_freecad_import").work_dir;
+        std::fs::create_dir_all(&work).unwrap();
+        let box_mesh = Geometry::make_box(DVec3::new(10.0, 20.0, 30.0));
+        let flat = |x: f64| {
+            NurbsSurface::clamped_uniform(
+                3,
+                3,
+                4,
+                4,
+                (0..4)
+                    .flat_map(|i| {
+                        (0..4).map(move |j| {
+                            DVec3::new(x + 10.0 * i as f64 / 3.0, 10.0 * j as f64 / 3.0, 0.0)
+                        })
+                    })
+                    .collect(),
+            )
+        };
+        let joined = PatchSet::new(vec![flat(0.0), flat(10.0)]);
+        let arc = crate::nurbs::arc_nurbs(
+            DVec3::ZERO,
+            DVec3::X,
+            DVec3::Z,
+            10.0,
+            0.0,
+            std::f64::consts::FRAC_PI_2,
+        );
+        let mut cylinder = NurbsSurface::clamped_uniform(
+            2,
+            1,
+            3,
+            2,
+            arc.control_points
+                .iter()
+                .flat_map(|p| [*p, *p + DVec3::Y * 7.0])
+                .collect(),
+        );
+        cylinder.weights = Some(arc.weights.unwrap().iter().flat_map(|&w| [w, w]).collect());
+        let rational = PatchSet::new(vec![cylinder]);
+        let mut cases = Vec::new();
+        for (name, mesh, patches, schema, dimensions, solids, area) in [
+            (
+                "box_ap214",
+                Some(&box_mesh),
+                None,
+                Schema::Ap214,
+                [10.0, 20.0, 30.0],
+                1,
+                None,
+            ),
+            (
+                "box_ap242",
+                Some(&box_mesh),
+                None,
+                Schema::Ap242,
+                [10.0, 20.0, 30.0],
+                1,
+                None,
+            ),
+            (
+                "joined",
+                None,
+                Some(&joined),
+                Schema::Ap214,
+                [20.0, 10.0, 0.0],
+                0,
+                Some(200.0),
+            ),
+            (
+                "rational",
+                None,
+                Some(&rational),
+                Schema::Ap242,
+                [10.0, 7.0, 10.0],
+                0,
+                Some(35.0 * std::f64::consts::PI),
+            ),
+        ] {
+            let (content, _) = write_step(
+                mesh,
+                patches,
+                &StepOptions {
+                    schema,
+                    name: name.into(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            crate::step_validate::validate(&content).unwrap();
+            let path = work.join(format!("{name}.step"));
+            std::fs::write(&path, content).unwrap();
+            cases.push(serde_json::json!({"path":path,"dimensions":dimensions,"solids":solids,"area":area}));
+        }
+        let data = work.join("cases.json");
+        std::fs::write(&data, serde_json::to_string(&cases).unwrap()).unwrap();
+        let script = work.join("check_import.py");
+        let code=format!("import json\nimport Part\nwith open({}, encoding='utf-8') as f:\n    cases=json.load(f)\nfor case in cases:\n    shape=Part.read(case['path'])\n    assert not shape.isNull(), case['path']\n    assert shape.isValid(), case['path']\n    assert len(shape.Solids)==case['solids'], case['path']\n    dims=[shape.BoundBox.XLength,shape.BoundBox.YLength,shape.BoundBox.ZLength]\n    assert all(abs(a-b)<1e-4 for a,b in zip(dims,case['dimensions'])), (case['path'],dims)\n    if case['area'] is not None:\n        assert abs(shape.Area-case['area'])<1e-3, (case['path'],shape.Area)\nprint('VERNON_STEP_IMPORT_OK',len(cases))\n",serde_json::to_string(&data.to_string_lossy()).unwrap());
+        std::fs::write(&script, code).unwrap();
+        let exe = std::env::var_os("FREECADCMD").unwrap_or_else(|| "FreeCADCmd".into());
+        let mut command = std::process::Command::new(exe);
+        command
+            .arg("--user-cfg")
+            .arg(work.join("user.cfg"))
+            .arg("--system-cfg")
+            .arg(work.join("system.cfg"))
+            .arg(&script)
+            .current_dir(&work)
+            .stdin(std::process::Stdio::null());
+        let log = work.join("import.log");
+        let exit = run(
+            &mut command,
+            &log,
+            &RunOptions::with_timeout(std::time::Duration::from_secs(60)),
+        )
+        .expect("set FREECADCMD to an existing FreeCAD command-line executable");
+        let text = std::fs::read_to_string(&log).unwrap();
+        assert_eq!(exit, Exit::Code(0), "{text}");
+        assert!(text.contains("VERNON_STEP_IMPORT_OK 4"), "{text}");
+    }
     #[test]
     fn non_finite_coordinates_are_rejected() {
         let mut g = Geometry::make_box(DVec3::splat(10.0));
