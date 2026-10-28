@@ -129,6 +129,8 @@ impl NodeOp for ProfileBuild {
     fn info(&self) -> NodeTypeInfo {
         info("print.profile_build", "Profile Builder", "Write the process, printer and filament preset files for the slicer from a few high-level choices.")
             .emulates("slicer preset files for command-line runs")
+            .implemented()
+            .param(ParamSpec::choice("format", "Preset format", "json", &["json", "ini"]).help("JSON presets for the default runner, or a documented INI subset for a separate compatible command-line slicer. Files are parsed and checked before writing; external import is not performed."))
             .param(ParamSpec::choice("flavour", "G-code flavour", "klipper", &FLAVOURS).help("Dialect of the output G-code."))
             .param(ParamSpec::choice("printer", "Printer preset", "bed_300", &PRINTER_IDS).help("Build volume preset; custom uses the bed size below."))
             .param(ParamSpec::vec3("bed", "Custom bed size", glam::DVec3::new(256.0, 256.0, 256.0)).unit("mm").help("Used when the preset is custom."))
@@ -147,7 +149,7 @@ impl NodeOp for ProfileBuild {
             .param(ParamSpec::float("pressure_advance", "Pressure advance", 0.0, 0.0, 2.0).help("Pressure-advance (linear advance) factor from a calibration print; 0 leaves it off."))
             .param(ParamSpec::float("flow_ratio", "Flow ratio", 1.0, 0.8, 1.2).help("Extrusion multiplier from a calibration print; 1 is as designed."))
             .param(ParamSpec::float("max_volumetric_speed", "Max volumetric speed", 0.0, 0.0, 60.0).unit("mm³/s").help("Largest melt flow the hot end keeps up with, from a calibration print; 0 sets no limit."))
-            .param(ParamSpec::bool("z_anti_alias", "Z anti-aliasing", false).help("Vary the surface of shallow slopes between layers to hide the staircase; the remedy for what the stair-step estimate finds."))
+            .param(ParamSpec::bool("z_anti_alias", "Z anti-aliasing", false).help("Reserved layer surface modulation request. Rejected until its preset key is verified against the target format."))
             .output(PortSpec::new("profiles", DataKind::Json))
             .output(PortSpec::new("report", DataKind::Report))
     }
@@ -188,12 +190,13 @@ impl NodeOp for ProfileBuild {
         if spec.layer_height > spec.nozzle_mm * 0.8 {
             return Err(ctx.fail("layer height must stay below 80 % of the nozzle diameter"));
         }
-        let (process, printer, filament) = slicer::build_profiles(&spec);
+        let ini = p.str("format")? == "ini";
+        let documents = crate::profiles::documents(&spec, ini).map_err(|e| ctx.fail(e))?;
         let dir = work_dir(ctx)?;
         let mut paths = Vec::new();
-        for (name, doc) in [("process.json", &process), ("printer.json", &printer), ("filament.json", &filament)] {
+        for (name, text) in documents {
             let f = dir.join(name);
-            std::fs::write(&f, serde_json::to_string_pretty(doc).map_err(|e| ctx.fail(e.to_string()))?)?;
+            std::fs::write(&f, text)?;
             paths.push(f);
         }
         let m = material(&spec.material);
@@ -217,11 +220,13 @@ impl NodeOp for ProfileBuild {
         if spec.pellet {
             rep.metric("equivalent_filament_diameter_mm", Metric::new(slicer::pellet_diameter(spec.pellet_coef), "mm"));
         }
-        placeholder(&mut rep, "the preset key names follow the public preset layout from memory; check them against the installed slicer before relying on a run");
+        rep.metric("round_trip_validated", Metric::new(1.0, "bool"));
+        rep.note(Severity::Info, "Preset subset parsed and validated against documented fields. A successful import by an external slicer has not been checked.");
         let out = json!({
             "process": s(&paths[0]), "printer": s(&paths[1]), "filament": s(&paths[2]),
             "load_settings": [s(&paths[0]), s(&paths[1])], "load_filaments": [s(&paths[2])],
             "flavour": spec.flavour, "bed_mm": v3_json(bed),
+            "format": if ini { "ini" } else { "json" },
         });
         Ok(vec![Data::json(out), Data::report(rep)])
     }
@@ -286,6 +291,7 @@ impl NodeOp for SliceExternal {
         };
         let (mut settings, mut filaments) = (Vec::new(), Vec::new());
         if let Some(j) = inp.get(2).and_then(|d| d.as_ref()).and_then(|d| d.as_json()) {
+            if j.get("format").and_then(Value::as_str) == Some("ini") { return Err(ctx.fail("the default slice runner takes JSON presets; use INI presets with a compatible separate command-line runner")); }
             settings = json_paths(j, "load_settings");
             filaments = json_paths(j, "load_filaments");
         } else {
@@ -438,9 +444,15 @@ impl NodeOp for FlavourCheck {
     fn info(&self) -> NodeTypeInfo {
         info("print.flavour_check", "Flavour Conformance", "Check that a G-code file only uses commands of the chosen firmware dialect and that object-cancel markers are well formed.")
             .emulates("G-code dialect validation")
+            .implemented()
             .input(PortSpec::new("gcode", DataKind::File))
             .param(ParamSpec::choice("flavour", "Flavour", "klipper", &FLAVOURS).help("Dialect the file must follow."))
             .param(ParamSpec::bool("strict", "Strict", false).help("Report violations as errors instead of warnings."))
+            .param(ParamSpec::vec3("bed", "Build volume", glam::DVec3::splat(300.0)).unit("mm").help("Cartesian volume from zero to these axis limits; full homing is assumed to establish zero."))
+            .param(ParamSpec::float("max_nozzle_c", "Maximum nozzle temperature", 320.0, 0.0, 600.0).unit("deg C").help("Heater targets above this value fail the check."))
+            .param(ParamSpec::float("max_bed_c", "Maximum bed temperature", 130.0, 0.0, 250.0).unit("deg C").help("Bed targets above this value fail the check."))
+            .param(ParamSpec::float("max_chamber_c", "Maximum chamber temperature", 90.0, 0.0, 150.0).unit("deg C").help("Chamber targets above this value fail the check."))
+            .param(ParamSpec::choice("extrusion_mode", "Expected extrusion mode", "auto", &["auto", "relative", "absolute"]).help("Auto follows firmware mode commands; other choices require each extrusion move to use the requested mode."))
             .output(PortSpec::new("violations", DataKind::Json))
             .output(PortSpec::new("report", DataKind::Report))
     }
@@ -448,17 +460,26 @@ impl NodeOp for FlavourCheck {
     fn cook(&self, ctx: &CookContext, inp: &[Option<Data>], p: &Params) -> CookResult<Vec<Data>> {
         let path = file_input(inp, 0, "gcode")?;
         let flavour = p.str("flavour")?;
-        let v = gcode::check_flavour(open_gcode(ctx, &path)?, flavour);
+        let bed = p.vec3("bed")?;
+        if !bed.is_finite() || bed.min_element() <= 0.0 { return Err(ctx.fail("build volume must have three finite positive dimensions")); }
+        let opts=crate::gcode_check::CheckOptions{flavour,bed,max_nozzle_c:p.float("max_nozzle_c")?,max_bed_c:p.float("max_bed_c")?,max_chamber_c:p.float("max_chamber_c")?,relative_e:match p.str("extrusion_mode")?{"relative"=>Some(true),"absolute"=>Some(false),_=>None}};
+        if [opts.max_nozzle_c,opts.max_bed_c,opts.max_chamber_c].iter().any(|t|!t.is_finite()||*t<0.0){return Err(ctx.fail("heater limits must be finite nonnegative Celsius values"));}
+        let mut v = crate::gcode_check::check(open_gcode(ctx, &path)?, &opts);
+        v.extend(gcode::check_flavour(open_gcode(ctx, &path)?, flavour).into_iter().map(|x|crate::gcode_check::Issue{line:x.line,error:false,message:x.message}));
         let defines = gcode::count_object_defines(open_gcode(ctx, &path)?);
         let mut rep = Report::new("Flavour conformance");
-        rep.metric("violation_count", Metric::new(v.len() as f64, "count").with_limit(0.0, true));
+        let strict=p.bool("strict")?;
+        let errors=v.iter().filter(|x|x.error||strict).count();
+        rep.metric("violation_count", Metric::new(v.len() as f64, "count"));
+        rep.metric("error_count", Metric::new(errors as f64, "count").with_limit(0.0, true));
+        rep.metric("warning_count", Metric::new((v.len()-errors) as f64, "count"));
         rep.metric("object_define_count", Metric::new(defines as f64, "count"));
-        let sev = if p.bool("strict")? { Severity::Error } else { Severity::Warning };
         for x in v.iter().take(50) {
+            let sev = if x.error || strict { Severity::Error } else { Severity::Warning };
             rep.note(sev, if x.line > 0 { format!("line {}: {}", x.line, x.message) } else { x.message.clone() });
         }
-        placeholder(&mut rep, "only object-cancel markers, pressure-advance commands and firmware-specific commands are checked; the full command tables per firmware are not yet covered");
-        let j = Value::Array(v.iter().map(|x| json!({"line": x.line, "message": x.message})).collect());
+        rep.note(Severity::Info,"Checks a documented Cartesian single-tool subset. Unknown macros warn; unsupported coordinate changes prevent a successful bounds check on subsequent moves. Runtime firmware configuration is not inspected.");
+        let j = Value::Array(v.iter().map(|x| json!({"line": x.line, "message": x.message,"severity":if x.error||strict{"error"}else{"warning"}})).collect());
         Ok(vec![Data::json(j), Data::report(rep)])
     }
 }
@@ -545,7 +566,7 @@ pub struct ScriptBridge;
 
 impl NodeOp for ScriptBridge {
     fn info(&self) -> NodeTypeInfo {
-        info("print.script_bridge", "Script Bridge", "Write a small example plugin script that marks where a slicer's scripting hooks would call back into this graph.")
+        info("print.script_bridge", "Script Bridge", "Write a placeholder script for the 2.5.0-alpha Python plugin API, checked against public documentation on 2026-10-28. The interface remains unstable; hooks are not implemented.")
             .emulates("slicer scripting plugin interface")
             .input(PortSpec::optional("graph", DataKind::Json))
             .param(ParamSpec::string("name", "Plugin name", "vernon_hook").help("File name stem of the script."))
@@ -637,7 +658,7 @@ mod tests {
         assert!(!rep.notes.iter().any(|(s, t)| *s == Severity::Warning && t.contains("chamber")));
         let j = out[0].as_json().unwrap();
         let filament: Value = serde_json::from_str(&std::fs::read_to_string(j["filament"].as_str().unwrap()).unwrap()).unwrap();
-        assert_eq!(filament["chamber_temperatures"][0], "60");
+        assert_eq!(filament["chamber_temperature"][0], "60");
         assert_eq!(filament["pressure_advance"][0], "0.05");
         // A cold chamber for ASA is a warning, not a failure.
         let cold = cook(&ProfileBuild, "prof_cold", &[], &[]).unwrap();
@@ -699,6 +720,32 @@ mod tests {
         let bad = cook(&FlavourCheck, "fc_m", &[Some(Data::File(f))], &[("flavour", ParamValue::Str("marlin".into())), ("strict", ParamValue::Bool(true))]).unwrap();
         assert!(metric(&bad[1], "violation_count") > 0.0);
         assert!(!bad[1].as_report().unwrap().passes());
+    }
+
+    #[test]
+    fn wp5_flavour_checks_unknown_commands_and_physical_bounds() {
+        let file = write_gcode("wp5_unknown", "M83\nG1X10Y20Z0.2E1\nM99999\n");
+        let out = cook(&FlavourCheck, "wp5_unknown", &[Some(Data::File(file))], &[]).unwrap();
+        let report = out[1].as_report().unwrap();
+        assert!(report.metrics["violation_count"].value > 0.0);
+        assert!(report.passes(), "unknown commands warn in non-strict mode");
+        let file = write_gcode("wp5_limits", "G90\nM83\nG1X301Y20\nM104S400\n");
+        let out = cook(&FlavourCheck, "wp5_limits", &[Some(Data::File(file))], &[]).unwrap();
+        assert!(!out[1].as_report().unwrap().passes());
+        assert!(out[1].as_report().unwrap().metrics["error_count"].value >= 2.0);
+    }
+
+    #[test]
+    fn wp5_profile_build_can_emit_round_trippable_ini() {
+        let out = cook(&ProfileBuild, "wp5_ini", &[], &[("format", ParamValue::Str("ini".into()))]).unwrap();
+        let paths = out[0].as_json().unwrap();
+        for key in ["process", "printer", "filament"] {
+            let path = Path::new(paths[key].as_str().unwrap());
+            assert_eq!(path.extension().unwrap(), "ini");
+            let text = std::fs::read_to_string(path).unwrap();
+            assert!(text.lines().any(|l| l.contains(" = ")));
+        }
+        assert!(out[1].as_report().unwrap().notes.iter().all(|(_, s)| !s.starts_with("white-box placeholder")));
     }
 
     #[test]

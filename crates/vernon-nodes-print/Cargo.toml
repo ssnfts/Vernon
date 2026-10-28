@@ -12,3 +12,7 @@ vernon-io.workspace = true
 glam.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+robust = "1.2"
+
+[dev-dependencies]
+vernon-nodes-geo = { path = "../vernon-nodes-geo" }

@@ -76,7 +76,6 @@ pub fn build_profiles(s: &ProfileSpec) -> (Value, Value, Value) {
         "sparse_infill_density": format!("{}%", num(s.infill_pct)),
         "top_shell_layers": "5",
         "bottom_shell_layers": "4",
-        "z_anti_aliasing": on(s.z_anti_alias),
     });
     let printer = json!({
         "type": "machine",
@@ -107,9 +106,9 @@ pub fn build_profiles(s: &ProfileSpec) -> (Value, Value, Value) {
         "hot_plate_temp": [num(m.bed_c)],
         "filament_density": [num(m.density)],
         "filament_diameter": [if s.pellet { num(pellet_diameter(s.pellet_coef)) } else { "1.75".to_string() }],
-        "activate_chamber_temp_control": on(s.chamber_c > 0.0),
-        "chamber_temperatures": [num(s.chamber_c)],
-        "enable_pressure_advance": on(s.pressure_advance > 0.0),
+        "activate_chamber_temp_control": [on(s.chamber_c > 0.0)],
+        "chamber_temperature": [num(s.chamber_c)],
+        "enable_pressure_advance": [on(s.pressure_advance > 0.0)],
         "pressure_advance": [num(s.pressure_advance)],
         "filament_flow_ratio": [num(s.flow_ratio)],
         "filament_max_volumetric_speed": [num(s.max_volumetric_speed)],
@@ -345,18 +344,19 @@ mod tests {
         s.max_volumetric_speed = 12.0;
         s.z_anti_alias = true;
         let (p, m, f) = build_profiles(&s);
-        assert_eq!(p["z_anti_aliasing"], "1");
+        assert!(p.get("z_anti_aliasing").is_none());
         assert_eq!(m["support_chamber_temp_control"], "1");
-        assert_eq!(f["activate_chamber_temp_control"], "1");
-        assert_eq!(f["chamber_temperatures"][0], "60");
-        assert_eq!(f["enable_pressure_advance"], "1");
+        assert_eq!(f["activate_chamber_temp_control"][0], "1");
+        assert_eq!(f["chamber_temperature"][0], "60");
+        assert_eq!(f["enable_pressure_advance"][0], "1");
         assert_eq!(f["pressure_advance"][0], "0.04");
         assert_eq!(f["filament_flow_ratio"][0], "0.97");
         assert_eq!(f["filament_max_volumetric_speed"][0], "12");
         // Left at their defaults they switch themselves off.
         let (p, m, f) = build_profiles(&spec());
-        assert_eq!((p["z_anti_aliasing"].as_str(), m["support_chamber_temp_control"].as_str()), (Some("0"), Some("0")));
-        assert_eq!((f["activate_chamber_temp_control"].as_str(), f["enable_pressure_advance"].as_str()), (Some("0"), Some("0")));
+        assert!(p.get("z_anti_aliasing").is_none());
+        assert_eq!(m["support_chamber_temp_control"], "0");
+        assert_eq!((f["activate_chamber_temp_control"][0].as_str(), f["enable_pressure_advance"][0].as_str()), (Some("0"), Some("0")));
     }
 
     #[test]

@@ -173,7 +173,7 @@ pub fn writes_files(info: &NodeTypeInfo) -> bool {
 }
 
 /// Size and modification time of a file or folder, `None` when missing.
-fn file_stamp(path: &str) -> Option<(u64, std::time::SystemTime)> {
+fn file_stamp(path: impl AsRef<std::path::Path>) -> Option<(u64, std::time::SystemTime)> {
     let meta = std::fs::metadata(path).ok()?;
     Some((meta.len(), meta.modified().ok()?))
 }
@@ -422,7 +422,7 @@ impl Graph {
         for spec in &info.params {
             if let (ParamKind::Path { save: false, .. }, Some(ParamValue::Str(s))) = (&spec.kind, node.params.get(&spec.name)) {
                 if !s.trim().is_empty() {
-                    file_stamp(&self.resolve_path(s, false)).hash(&mut hasher);
+                    file_stamp(self.resolve_path(s, false)).hash(&mut hasher);
                 }
             }
         }
@@ -447,6 +447,12 @@ impl Graph {
                     let data = outs.get(*out).cloned().ok_or_else(|| {
                         CookError::Other(format!("node {src} has no output {out}"))
                     })?;
+                    // A stable producer signature does not imply stable file
+                    // contents: external programs can replace a connected file.
+                    if let Data::File(path) = &data {
+                        path.hash(&mut hasher);
+                        file_stamp(path).hash(&mut hasher);
+                    }
                     inputs.push(Some(data));
                 }
                 None => {
@@ -613,16 +619,24 @@ impl Graph {
         self.visits
     }
 
-    /// A hash of the size and time stamp of every file the graph's nodes
-    /// read. The app polls it to cook again when such a file changes.
+    /// A hash of read-path parameters and cached File outputs, including
+    /// their sizes and modification times. The app polls it to cook again
+    /// when a connected file changes without a producer parameter edit.
     pub fn read_files_stamp(&self, registry: &Registry) -> u64 {
         let mut h = DefaultHasher::new();
-        for node in self.nodes.values() {
+        for (id, node) in &self.nodes {
+            if let Some(CacheEntry { result: Ok(outputs), .. }) = self.cache.get(id) {
+                for (index, output) in outputs.iter().enumerate() {
+                    if let Data::File(path) = output {
+                        (id, index, path, file_stamp(path)).hash(&mut h);
+                    }
+                }
+            }
             let Some(info) = registry.info(&node.type_id) else { continue };
             for spec in &info.params {
                 if let (ParamKind::Path { save: false, .. }, Some(ParamValue::Str(s))) = (&spec.kind, node.params.get(&spec.name)) {
                     if !s.trim().is_empty() {
-                        file_stamp(&self.resolve_path(s, false)).hash(&mut h);
+                        file_stamp(self.resolve_path(s, false)).hash(&mut h);
                     }
                 }
             }
@@ -1195,6 +1209,59 @@ mod tests {
             std::fs::write(p.str("file")?, format!("{}", geo.points.len()))?;
             Ok(vec![Data::Geometry(geo)])
         }
+    }
+
+    struct FilePathOp(PathBuf, Arc<AtomicUsize>);
+    impl NodeOp for FilePathOp {
+        fn info(&self) -> NodeTypeInfo {
+            NodeTypeInfo::new("geo.file_path", "File Path", Stage::Geometry)
+                .output(PortSpec::new("file", DataKind::File)).implemented()
+        }
+        fn cook(&self, _: &CookContext, _: &[Option<Data>], _: &Params) -> CookResult<Vec<Data>> {
+            self.1.fetch_add(1, Ordering::SeqCst);
+            Ok(vec![Data::File(self.0.clone())])
+        }
+    }
+
+    struct FileInputReadOp(Arc<AtomicUsize>);
+    impl NodeOp for FileInputReadOp {
+        fn info(&self) -> NodeTypeInfo {
+            NodeTypeInfo::new("geo.file_input_read", "Read Connected File", Stage::Geometry)
+                .input(PortSpec::new("file", DataKind::File))
+                .output(PortSpec::new("geometry", DataKind::Geometry)).implemented()
+        }
+        fn cook(&self, _: &CookContext, ins: &[Option<Data>], _: &Params) -> CookResult<Vec<Data>> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            let path=ins[0].as_ref().unwrap().as_file().unwrap();
+            let n=std::fs::read(path)?.len() as f64;
+            Ok(vec![Data::geometry(Geometry::make_box(DVec3::splat(n)))])
+        }
+    }
+
+    #[test]
+    fn connected_files_join_the_signature_and_poll_stamp() {
+        let dir=std::env::temp_dir().join(format!("vernon-graph-connected-files-{}",std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path=dir.join("input.gcode");std::fs::write(&path,"abc").unwrap();
+        let produces=Arc::new(AtomicUsize::new(0));let reads=Arc::new(AtomicUsize::new(0));
+        let mut reg=Registry::new();reg.add(FilePathOp(path.clone(),produces.clone()));reg.add(FileInputReadOp(reads.clone()));
+        let mut g=Graph::new();let source=g.add_node(&reg,"geo.file_path").unwrap();let reader=g.add_node(&reg,"geo.file_input_read").unwrap();
+        g.connect(source,0,reader,0).unwrap();
+        let size=|g:&mut Graph|g.cook_output(&reg,reader,0).unwrap().as_geometry().unwrap().bounds().size().x;
+        assert_eq!(size(&mut g),3.0);let stamp=g.read_files_stamp(&reg);
+        assert_eq!(size(&mut g),3.0);assert_eq!(g.read_files_stamp(&reg),stamp);
+        assert_eq!((produces.load(Ordering::SeqCst),reads.load(Ordering::SeqCst)),(1,1));
+        std::fs::write(&path,"abcdefghi").unwrap();
+        assert_ne!(g.read_files_stamp(&reg),stamp,"connected output is watched even when producer parameters are unchanged");
+        assert_eq!(size(&mut g),9.0,"connected file metadata must invalidate the reader");
+        assert_eq!((produces.load(Ordering::SeqCst),reads.load(Ordering::SeqCst)),(1,2));
+        assert_eq!(size(&mut g),9.0);assert_eq!(reads.load(Ordering::SeqCst),2);
+        std::fs::remove_file(&path).unwrap();let deleted=g.read_files_stamp(&reg);
+        assert!(g.cook(&reg,reader).is_err(),"deleting a connected file invalidates successful cached data");
+        std::fs::write(&path,"xyz").unwrap();assert_ne!(g.read_files_stamp(&reg),deleted);
+        assert_eq!(size(&mut g),3.0,"recreating the file invalidates its cached read error");
+        assert_eq!((produces.load(Ordering::SeqCst),reads.load(Ordering::SeqCst)),(1,4));
+        let _=std::fs::remove_dir_all(&dir);
     }
 
     #[test]

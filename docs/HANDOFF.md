@@ -6,7 +6,43 @@ of done. This document lists the remaining work as ordered **work packages
 (WP)**. Do them in order, one commit each. Every WP ends with the full
 definition-of-done check from `AGENTS.md`.
 
-## Progress — 2026-10-28 (WP4)
+## Progress — 2026-10-28 (WP5)
+
+WP1–WP5 are implemented under their documented contracts; WP6 (conservative
+watertight wrap) is next. The registry contains 197 nodes: 183 implemented
+and 14 white-box. Split/Print has 25 implemented nodes and one placeholder,
+the deferred script bridge. Full workspace verification: 1,109 passed,
+zero failed, seven ignored; build and all-target Clippy clean. The demo cooks
+36 nodes with zero failures and two expected gates. The catalogue was
+regenerated, final reviews found no remaining blocker, and GPU app launch
+plus the Split/Print ribbon were checked visually.
+
+Body-line cuts follow the actual projected piecewise-linear curtain, with
+component selection, shared-edge splitting, planar cap regions and fresh
+seam ids. The actual 3 mm car-panel shell gives two closed, consistently
+wound manifold pieces and preserves volume to about 1.8e-14 relative error.
+Guides must be monotone in the projected frame; poorly conditioned cuts
+reject rather than return damaged solids. Selection applies to whole touched
+components, leaving untouched components intact.
+
+Smart partition uses bounded cutting-plane beam search with actual bed-fit
+checks. The 1200×600×300 mm box on a 350³ mm bed produces eight fitting
+parts, 10,200 mm seam perimeter and 46 mm minimum fit margin. No global
+minimum-part-count proof is claimed. Snap joints now generate cantilever
+hooks and mating recesses and gate the rectangular-beam strain formula.
+The initial printed-material strain allowances are explicitly assumed
+screening values; physical coupon validation remains pending.
+
+G-code conformance now checks five firmware dialects, motion/arc bounds,
+temperature limits, extrusion modes and numbered object markers. Unsupported
+coordinate state prevents a subsequent passing bounds check. Profile Build
+writes and round-trip validates JSON or a documented INI subset. Successful
+external slicer import remains unverified; the unstable scripting bridge
+remains white-box. Connected File consumers and file polling now include
+size/mtime metadata so external edits can invalidate the cached reader.
+See the [WP5 contracts, measurements and limits](specs/native-print-tools.md).
+
+## WP4 checkpoint — 2026-10-28
 
 WP1–WP4 are implemented under their documented contracts; WP5 (split/print)
 is next. The registry contains 197 nodes: 177 implemented and 20 white-box.

@@ -286,9 +286,51 @@ pub fn print_material(id: &str) -> Option<&'static PrintMaterial> {
     PRINT_MATERIALS.iter().find(|m| norm(m.id) == want || norm(m.name) == want)
 }
 
+/// Initial snap-strain screening allowance, percent, for a printed material.
+/// These are deliberately assumed values, not a filament certification or
+/// a transfer of molded-material strain limits to a printed joint. The
+/// rectangular cantilever method is from Covestro, Snap-Fit Joints for Plastic,
+/// table 1; its table 2 applies to specific molded grades at 23 C. Actual print
+/// orientation, temperature, conditioning, cycles and root concentration need
+/// coupons before relying on these screening limits.
+/// Source: https://solutions.covestro.com/-/media/covestro/solution-center/brands/downloads/imported/1557218421.pdf
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+pub struct SnapStrainAllowance {
+    pub material_id: &'static str,
+    pub allowable_pct: f64,
+    pub source: Source,
+    pub basis: &'static str,
+}
+
+pub const SNAP_STRAIN_ALLOWANCES: [SnapStrainAllowance; 6] = [
+    SnapStrainAllowance {material_id:"pla",allowable_pct:1.0,source:Source::Assumed,basis:"initial room-temperature printed PLA screening assumption"},
+    SnapStrainAllowance {material_id:"petg",allowable_pct:2.0,source:Source::Assumed,basis:"initial room-temperature printed PETG screening assumption"},
+    SnapStrainAllowance {material_id:"asa",allowable_pct:2.0,source:Source::Assumed,basis:"initial room-temperature printed ASA screening assumption"},
+    SnapStrainAllowance {material_id:"pet_cf",allowable_pct:0.6,source:Source::Assumed,basis:"initial room-temperature filled-polyester screening assumption"},
+    SnapStrainAllowance {material_id:"paht_cf",allowable_pct:1.0,source:Source::Assumed,basis:"initial room-temperature filled-nylon screening assumption"},
+    SnapStrainAllowance {material_id:"ppa_cf",allowable_pct:0.8,source:Source::Assumed,basis:"initial room-temperature filled-PPA screening assumption"},
+];
+
+pub fn snap_strain_allowance(id: &str) -> Option<&'static SnapStrainAllowance> {
+    let material = print_material(id)?;
+    SNAP_STRAIN_ALLOWANCES.iter().find(|entry| entry.material_id==material.id)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn snap_screening_table_covers_each_print_material_and_labels_assumptions() {
+        for material in PRINT_MATERIALS {
+            let limit = snap_strain_allowance(material.name).unwrap();
+            assert_eq!(limit.material_id,material.id);
+            assert!(limit.allowable_pct.is_finite() && limit.allowable_pct>0.0 && limit.allowable_pct<5.0);
+            assert_eq!(limit.source,Source::Assumed);
+            assert!(limit.basis.contains("assumption"));
+        }
+        assert!(snap_strain_allowance("unknown").is_none());
+    }
 
     #[test]
     fn lookup_and_conventions() {

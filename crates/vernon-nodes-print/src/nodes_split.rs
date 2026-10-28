@@ -1,5 +1,5 @@
-//! Partition nodes: grid split to fit a bed, smart partition (placeholder
-//! search), connectivity / attribute splitting, part extraction and labels.
+//! Partition nodes: grid split, bounded BSP search, connectivity / attribute
+//! splitting, part extraction and labels.
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -9,7 +9,7 @@ use vernon_core::{Aabb, AttribArray, Geometry, Metric, Report, Severity};
 use vernon_graph::node::inputs;
 use vernon_graph::{CookContext, CookResult, Data, DataKind, NodeOp, NodeTypeInfo, ParamSpec, Params, PortSpec};
 
-use crate::common::{info, placeholder, printer_bed, v3_json, PRINTER_IDS};
+use crate::common::{info, printer_bed, v3_json, PRINTER_IDS};
 use crate::cut::{cross_section_area, cut_mesh, Plane};
 use crate::mesh::{self, PART};
 
@@ -308,13 +308,14 @@ impl NodeOp for SmartPartition {
         grid_params(
             info("print.smart_partition", "Smart Partition", "Search for a split with few parts, small seams and hidden seam lines.")
                 .emulates("optimised partitioning of large models for printing")
+                .implemented()
                 .input(PortSpec::new("mesh", DataKind::Geometry))
                 .input(PortSpec::optional("guide", DataKind::Geometry))
                 .param(ParamSpec::int("beam_width", "Beam width", 8, 1, 64).help("Number of candidate splits kept at each step."))
                 .param(ParamSpec::float("w_parts", "Weight: part count", 1.0, 0.0, 100.0).help("Cost per part."))
                 .param(ParamSpec::float("w_seam", "Weight: seam area", 0.001, 0.0, 100.0).help("Cost per mm2 of seam."))
                 .param(ParamSpec::float("w_visible", "Weight: visible seam", 0.01, 0.0, 100.0).help("Cost per mm of seam on show surfaces."))
-                .param(ParamSpec::float("w_fragile", "Weight: fragility", 1.0, 0.0, 100.0).help("Cost per fragile part."))
+                .param(ParamSpec::float("w_fragile", "Weight: fragility", 1.0, 0.0, 100.0).help("Cost per interface whose hydraulic radius is below 2 mm; a connector feasibility proxy."))
                 .param(ParamSpec::float("w_unused", "Weight: unused volume", 1e-6, 0.0, 100.0).help("Cost per mm3 of unused bed volume."))
                 .output(PortSpec::new("parts", DataKind::Geometry))
                 .output(PortSpec::new("report", DataKind::Report)),
@@ -328,22 +329,62 @@ impl NodeOp for SmartPartition {
         if (bed - DVec3::splat(2.0 * margin)).min_element() <= 0.0 {
             return Err(ctx.fail("the margin leaves no usable bed volume"));
         }
-        let plan = grid_plan(&geo.bounds(), GridMode::ByBed, bed, margin, [1; 3], DVec3::ZERO, DVec3::ZERO);
-        let r = grid_split(ctx, &geo, &plan, false, 0.0)?;
-        let mut rep = grid_report("Smart partition", &r);
-        let used: f64 = (0..r.part_count as i64)
-            .map(|i| mesh::signed_volume(&mesh::extract_part(&r.geo, i)).abs())
-            .sum();
-        let unused = (r.part_count as f64 * plan.usable.x * plan.usable.y * plan.usable.z - used).max(0.0);
-        let cost_parts = p.float("w_parts")? * r.part_count as f64;
-        let cost_seam = p.float("w_seam")? * r.seam_area;
-        let cost_unused = p.float("w_unused")? * unused;
-        rep.metric("cost_parts", Metric::new(cost_parts, "cost"));
-        rep.metric("cost_seam", Metric::new(cost_seam, "cost"));
-        rep.metric("cost_unused", Metric::new(cost_unused, "cost"));
-        rep.metric("cost_total", Metric::new(cost_parts + cost_seam + cost_unused, "cost"));
-        placeholder(&mut rep, "the even grid stands in for the search; the real algorithm runs a beam search over recursive plane cuts scored by the weighted cost");
-        Ok(vec![Data::geometry(r.geo), Data::report(rep)])
+        let guide=inputs::opt_geometry(inp,1);
+        let o=crate::partition::Options{bed,margin,beam_width:p.int("beam_width")? as usize,
+            weights:[p.float("w_parts")?,p.float("w_seam")?,p.float("w_visible")?,p.float("w_fragile")?,p.float("w_unused")?]};
+        let r=crate::partition::search(&geo,guide.as_deref(),&o).map_err(|e|ctx.fail(e))?;
+        let mut rep=Report::new("Smart partition");
+        for key in ["parts","part_count"]{rep.metric(key,Metric::new(r.parts as f64,"count"));}
+        rep.metric("plane_count",Metric::new(r.cuts as f64,"count"));
+        rep.metric("seam_area_mm2",Metric::new(r.seam_area,"mm2"));
+        rep.metric("seam_length_mm",Metric::new(r.seam_length,"mm"));
+        for key in ["min_fit_margin_mm","fit_margin_mm"]{rep.metric(key,Metric::new(r.min_fit_margin,"mm").with_limit(0.0,false));}
+        for (i,key) in ["cost_parts","cost_seam","cost_visible","cost_fragile","cost_unused"].iter().enumerate(){rep.metric(*key,Metric::new(r.costs[i],"cost"));}
+        rep.metric("cost_total",Metric::new(r.costs.iter().sum(),"cost"));
+        rep.metric("search_evaluations",Metric::new(r.evaluations as f64,"count"));
+        rep.metric("search_evaluation_limit",Metric::new(crate::partition::MAX_EVALUATIONS as f64,"count"));
+        rep.metric("search_part_limit",Metric::new(crate::partition::MAX_PARTS as f64,"count"));
+        rep.metric("search_limited",Metric::new(f64::from(r.limited),""));
+        rep.metric("guide_samples",Metric::new(r.guide_samples as f64,"count"));
+        rep.note(Severity::Info,"Finite BSP beam search validates actual capped parts against orientation-aware bed fit. It does not prove a global minimum part count. Seams use sampled body-line distance and mesh dihedral angles; connector feasibility is a hydraulic-radius proxy, not a connector placement proof.");
+        if r.limited {rep.note(Severity::Warning,"Search reached its evaluation budget; returning the best complete fitting plan found.");}
+        Ok(vec![Data::geometry(r.geometry),Data::report(rep)])
+    }
+}
+
+#[cfg(test)]
+mod wp5_partition_tests {
+    use super::*;
+    use crate::common::testutil::cook;
+    use crate::mesh::testutil::tri_box;
+    use vernon_graph::ParamValue;
+
+    #[test]
+    fn wp5_smart_partition_search_fits_large_box() {
+        let g = tri_box(DVec3::ZERO, DVec3::new(1200.0, 600.0, 300.0));
+        let out = cook(&SmartPartition, "wp5_partition", &[Some(Data::geometry(g.clone()))], &[
+            ("printer", ParamValue::Str("custom".into())),
+            ("bed", ParamValue::Vec3(DVec3::splat(350.0))),
+        ]).unwrap();
+        let report = out[1].as_report().unwrap();
+        assert!(report.metrics.contains_key("parts"));
+        assert!(report.metrics["search_evaluations"].value > 1.0);
+        assert!(report.metrics["seam_length_mm"].value > 0.0);
+        assert!(report.metrics["min_fit_margin_mm"].value >= -1e-8);
+        assert!(!SmartPartition.info().whitebox);
+        let parts = out[0].as_geometry().unwrap();
+        assert!((mesh::signed_volume(parts) / mesh::signed_volume(&g) - 1.0).abs() < 0.005);
+        assert_eq!(mesh::open_edges_by_part(parts), 0);
+        let options=crate::fit::FitOptions {bed:DVec3::splat(350.),margin:2.,search:crate::orient::Search::Axis,z_spin:true,allow_scaling:false,min_scale:1.,placement:crate::fit::Placement::Centre,orient:crate::orient::OrientParams{layer_h:0.2,theta_o_deg:45.,loads:vec![],k:1.,weights:[0.;4]}};
+        for id in mesh::unique_parts(parts) {
+            let piece=mesh::extract_part(parts,id);
+            piece.validate().unwrap();
+            assert_eq!(mesh::edge_stats(&piece).non_manifold,0);
+            let fit=crate::fit::fit_part(&piece.points,&crate::orient::Tris::new(&piece),&options).unwrap();
+            assert!(fit.fits && fit.extent.cmple(DVec3::splat(346.+1e-8)).all());
+        }
+        eprintln!("parts={} seam={} min_margin={} evaluations={}",report.metrics["parts"].value,report.metrics["seam_length_mm"].value,report.metrics["min_fit_margin_mm"].value,report.metrics["search_evaluations"].value);
+        assert!(report.passes());
     }
 }
 

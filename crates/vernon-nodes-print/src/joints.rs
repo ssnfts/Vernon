@@ -109,6 +109,9 @@ pub struct Prism2 {
     pub base: Vec<DVec2>,
     pub top: Vec<DVec2>,
     pub depth: f64,
+    /// Additional cross-sections, in strictly increasing depth order. Empty
+    /// preserves the ordinary two-ring prism used by the other joint types.
+    pub intermediate: Vec<(f64, Vec<DVec2>)>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -127,7 +130,7 @@ pub fn circle_prism(c: DVec2, r: f64, depth: f64, sides: usize) -> Prism2 {
             c + DVec2::new(a.cos(), a.sin()) * r
         })
         .collect();
-    Prism2 { base: ring.clone(), top: ring, depth }
+    Prism2 { base: ring.clone(), top: ring, depth, intermediate: Vec::new() }
 }
 
 /// Trapezoid prism: a rectangle of half-width `half_w0` at the cap that grows
@@ -148,7 +151,7 @@ pub fn trapezoid_prism(c: DVec2, dir: DVec2, half_w0: f64, half_w1: f64, half_le
         base.reverse();
         top.reverse();
     }
-    Prism2 { base, top, depth }
+    Prism2 { base, top, depth, intermediate: Vec::new() }
 }
 
 /// Free-end width of a dovetail with neck `w`, depth `d` and flap angle `a_deg`.
@@ -214,7 +217,11 @@ pub fn cylinder_mesh(center: DVec3, axis: DVec3, r: f64, len: f64, sides: usize)
 
 fn outline_samples(shape: &JointShape) -> Vec<DVec2> {
     let mut out = Vec::new();
-    for ring in [&shape.a.base, &shape.a.top, &shape.b.base, &shape.b.top] {
+    for ring in [&shape.a.base, &shape.a.top, &shape.b.base, &shape.b.top]
+        .into_iter()
+        .chain(shape.a.intermediate.iter().map(|(_, ring)| ring))
+        .chain(shape.b.intermediate.iter().map(|(_, ring)| ring))
+    {
         let n = ring.len();
         for i in 0..n {
             let (p, q) = (ring[i], ring[(i + 1) % n]);
@@ -332,6 +339,7 @@ struct Add {
     /// End outline in the cap plane (same vertex count as `base`); it is displaced by `top_off`.
     top: Vec<DVec3>,
     top_off: DVec3,
+    intermediate: Vec<(Vec<DVec3>, DVec3)>,
     tag: i64,
 }
 
@@ -352,11 +360,19 @@ fn push_tri(g: &mut Geometry, ids: [u32; 3], part: i64, cap: i64, joint: i64) {
 fn add_prism(g: &mut Geometry, a: &Add, part: i64) -> Vec<u32> {
     let n = a.base.len();
     let b: Vec<u32> = a.base.iter().map(|&p| g.add_point(p)).collect();
+    let mut last = b.clone();
+    let mut rings: Vec<Vec<u32>> = a.intermediate.iter().map(|(ring, offset)| {
+        ring.iter().map(|&p| g.add_point(p + *offset)).collect()
+    }).collect();
     let t: Vec<u32> = a.top.iter().map(|&p| g.add_point(p + a.top_off)).collect();
-    for i in 0..n {
-        let j = (i + 1) % n;
-        push_tri(g, [b[i], b[j], t[j]], part, 0, a.tag);
-        push_tri(g, [b[i], t[j], t[i]], part, 0, a.tag);
+    rings.push(t.clone());
+    for ring in rings {
+        for i in 0..n {
+            let j = (i + 1) % n;
+            push_tri(g, [last[i], last[j], ring[j]], part, 0, a.tag);
+            push_tri(g, [last[i], ring[j], ring[i]], part, 0, a.tag);
+        }
+        last = ring;
     }
     for i in 1..n - 1 {
         push_tri(g, [t[0], t[i], t[i + 1]], part, 0, a.tag);
@@ -411,7 +427,9 @@ pub fn apply_joints(geo: &Geometry, spec: &JointSpec) -> JointOutcome {
                     ] {
                         if kind == Kind::Pocket {
                             let tris = tri_cache.entry(idx).or_insert_with(|| host_triangles(geo, reg));
-                            let pts: Vec<DVec3> = prism.base.iter().chain(prism.top.iter()).map(|&q| frame.p3(q)).collect();
+                            let pts: Vec<DVec3> = prism.base.iter().chain(prism.top.iter())
+                                .chain(prism.intermediate.iter().flat_map(|(_, ring)| ring.iter()))
+                                .map(|&q| frame.p3(q)).collect();
                             if !depth_clear(tris, &pts, dir, prism.depth + spec.wall_min) {
                                 ok = false;
                             }
@@ -433,7 +451,12 @@ pub fn apply_joints(geo: &Geometry, spec: &JointSpec) -> JointOutcome {
                             top.reverse();
                         }
                         let sign = if kind == Kind::Protrude { 1.0 } else { -1.0 };
-                        adds.entry(idx).or_default().push(Add { base: ring, top, top_off: host_n * (sign * prism.depth), tag });
+                        let intermediate = prism.intermediate.iter().map(|(depth, points)| {
+                            let mut ring: Vec<DVec3> = points.iter().map(|&q| frame.p3(q)).collect();
+                            if reverse { ring.reverse(); }
+                            (ring, host_n * (sign * *depth))
+                        }).collect();
+                        adds.entry(idx).or_default().push(Add { base: ring, top, top_off: host_n * (sign * prism.depth), intermediate, tag });
                     }
                     if let Some((r, len)) = shape.pin {
                         let mut pin = cylinder_mesh(frame.p3(cand.c), ra.normal, r, len, spec.pin_sides.max(8));

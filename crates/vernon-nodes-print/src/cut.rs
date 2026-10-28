@@ -234,6 +234,15 @@ pub fn cut_mesh(geo: &Geometry, plane: &Plane, eps_rel: f64, cap: bool, cap_id: 
     let bounds = geo.bounds();
     let diag = bounds.size().length().max(1e-9);
     let eps = (eps_rel * diag).max(1e-12);
+    cut_mesh_absolute(geo, plane, eps, cap, cap_id)
+}
+
+/// The same clipping operation with a caller-owned physical distance tolerance.
+/// Coordinate transforms must not redefine that tolerance from transformed bounds.
+pub(crate) fn cut_mesh_absolute(geo: &Geometry, plane: &Plane, eps: f64, cap: bool, cap_id: i64) -> Result<CutResult, CutError> {
+    if !eps.is_finite() || eps <= 0.0 {
+        return Err(CutError { code: "E_TOLERANCE", message: "cut tolerance must be finite and positive".into() });
+    }
     // Signed distances, snapped to zero near the plane.
     let mut s: HashMap<u32, f64> = HashMap::new();
     for (_, tri) in geo.triangles() {
@@ -418,6 +427,31 @@ pub struct CutAll {
 
 /// Cut every part of `geo` by the planes in order. Pieces that end up empty are dropped.
 pub fn cut_all(geo: &Geometry, planes: &[Plane], eps_rel: f64, cap: bool, keep: Keep) -> Result<CutAll, CutError> {
+    let cap_start = next_cap_id(geo, planes.len())?;
+    cut_all_with_cap_start(geo, planes, eps_rel, cap, keep, cap_start)
+}
+
+/// Reserve a fresh, contiguous cap-id range from the complete input, before
+/// any region selection removes untouched parts from the cutting operation.
+pub(crate) fn next_cap_id(geo: &Geometry, count: usize) -> Result<i64, CutError> {
+    if count == 0 {
+        return Ok(1);
+    }
+    let max = geo.prim_attribs.ints(CAP).ok()
+        .and_then(|ids| ids.iter().max().copied()).unwrap_or(0).max(0);
+    let start = max.checked_add(1).ok_or_else(|| CutError {
+        code: "E_CAP_ID", message: "cap id overflow".into(),
+    })?;
+    let remaining = i64::try_from(count - 1).map_err(|_| CutError {
+        code: "E_CAP_ID", message: "cap id overflow".into(),
+    })?;
+    start.checked_add(remaining).ok_or_else(|| CutError {
+        code: "E_CAP_ID", message: "cap id overflow".into(),
+    })?;
+    Ok(start)
+}
+
+pub(crate) fn cut_all_with_cap_start(geo: &Geometry, planes: &[Plane], eps_rel: f64, cap: bool, keep: Keep, cap_start: i64) -> Result<CutAll, CutError> {
     if planes.len() > 62 {
         return Err(CutError { code: "E_TOO_MANY_PLANES", message: "at most 62 planes per cut node".into() });
     }
@@ -431,7 +465,7 @@ pub fn cut_all(geo: &Geometry, planes: &[Plane], eps_rel: f64, cap: bool, keep: 
     for (k, plane) in planes.iter().enumerate() {
         let mut next = Vec::with_capacity(pieces.len() * 2);
         for piece in pieces {
-            let r = cut_mesh(&piece.geo, plane, eps_rel, cap, k as i64 + 1)?;
+            let r = cut_mesh(&piece.geo, plane, eps_rel, cap, cap_start + k as i64)?;
             cap_area += r.cap_area;
             loops += r.loops;
             foreign += r.foreign_open_edges;

@@ -20,6 +20,11 @@ pub mod package;
 pub mod poly;
 pub mod slicer;
 pub mod upload;
+mod curtain;
+mod gcode_check;
+mod snap;
+mod partition;
+mod profiles;
 
 use vernon_graph::Registry;
 
@@ -138,6 +143,11 @@ mod tests {
                 .iter()
                 .map(|port| match port.kind {
                     DataKind::Json if !port.required => None,
+                    DataKind::Geometry if port.name == "guide" => {
+                        let mut guide=Geometry::from_points(vec![DVec3::new(25.0,0.0,-50.0),DVec3::new(25.0,0.0,150.0)]);
+                        guide.prims.push(vernon_core::Prim::polyline(vec![0,1]));
+                        Some(Data::geometry(guide))
+                    },
                     DataKind::Geometry => Some(Data::geometry(capped_halves())),
                     DataKind::Report => Some(Data::report(vernon_core::Report::new("in"))),
                     DataKind::File if port.name == "package" => Some(Data::File(pkg.clone())),

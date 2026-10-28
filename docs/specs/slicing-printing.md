@@ -7,6 +7,12 @@ Confidence tags: **[doc]** read in a public source this pass, **[report]** taken
 `3D printed body kit toolchain.md`, **[recalled]** general knowledge, verify before
 relying on it, **[design]** a Vernon choice, not a claim about any tool.
 
+The [WP5 native implementation contract](native-print-tools.md) supersedes the
+older white-box proposals below for body-line cuts, cut selection, smart
+partitioning, snap joints, firmware conformance and profile generation. It
+records measured fixtures and supported limits; the script bridge remains
+white-box and external slicer import remains unverified.
+
 ## 1. Scope and reference tools
 
 Stage contract: input is a clean, closed, surfaced body panel (mesh, mm); output is a set

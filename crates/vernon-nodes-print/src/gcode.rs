@@ -260,6 +260,19 @@ pub struct Violation {
     pub message: String,
 }
 
+/// Remove the transport line number and trailing comment/checksum for the
+/// conformance passes. Checksum integrity belongs to the printer transport.
+fn conformance_code(line: &str) -> &str {
+    let mut code = line.split([';', '*']).next().unwrap_or("").trim_start();
+    if matches!(code.as_bytes().first(), Some(b'N' | b'n'))
+        && code.as_bytes().get(1).is_some_and(u8::is_ascii_digit)
+    {
+        let end = code[1..].find(|c: char| !c.is_ascii_digit()).map_or(code.len(), |i| i + 1);
+        code = code[end..].trim_start();
+    }
+    code
+}
+
 /// Check a G-code stream against the dialect of `flavour`.
 pub fn check_flavour<R: BufRead>(reader: R, flavour: &str) -> Vec<Violation> {
     let mut out = Vec::new();
@@ -272,7 +285,7 @@ pub fn check_flavour<R: BufRead>(reader: R, flavour: &str) -> Vec<Violation> {
     };
     for (i, line) in reader.lines().map_while(Result::ok).enumerate() {
         let n = i + 1;
-        let code = line.split(';').next().unwrap_or("");
+        let code = conformance_code(&line);
         let toks: Vec<&str> = code.split_whitespace().collect();
         let Some(first) = toks.first() else { continue };
         let cmd = first.to_ascii_uppercase();
@@ -336,7 +349,9 @@ pub fn check_flavour<R: BufRead>(reader: R, flavour: &str) -> Vec<Violation> {
 
 /// Number of EXCLUDE_OBJECT_DEFINE lines.
 pub fn count_object_defines<R: BufRead>(reader: R) -> usize {
-    reader.lines().map_while(Result::ok).filter(|l| l.trim_start().to_ascii_uppercase().starts_with("EXCLUDE_OBJECT_DEFINE")).count()
+    reader.lines().map_while(Result::ok).filter(|l| {
+        conformance_code(l).split_whitespace().next().is_some_and(|cmd| cmd.eq_ignore_ascii_case("EXCLUDE_OBJECT_DEFINE"))
+    }).count()
 }
 
 #[cfg(test)]
@@ -427,5 +442,23 @@ mod tests {
         assert!(msgs.iter().any(|m| m.contains("defined after")));
         assert!(msgs.iter().any(|m| m.contains("SET_PRESSURE_ADVANCE")));
         assert!(msgs.iter().any(|m| m.contains("never closed")));
+    }
+
+    #[test]
+    fn wp5_numbered_object_markers_preserve_validation_and_counts() {
+        let numbered = "N1 EXCLUDE_OBJECT_DEFINE NAME=a*0\nn2EXCLUDE_OBJECT_DEFINE NAME=b*0\nN3 EXCLUDE_OBJECT_START NAME=a*0\nN4 EXCLUDE_OBJECT_END NAME=a*0\nN5 EXCLUDE_OBJECT_START NAME=b*0\nN6 EXCLUDE_OBJECT_END NAME=b*0\n";
+        assert!(check_flavour(numbered.as_bytes(), "klipper").is_empty());
+        assert_eq!(count_object_defines(numbered.as_bytes()), 2);
+        assert_eq!(check_flavour(numbered.as_bytes(), "marlin").len(), 6);
+    }
+
+    #[test]
+    fn wp5_numbered_object_markers_expose_undefined_mismatched_and_unclosed() {
+        let bad = "N1EXCLUDE_OBJECT_START NAME=a*0\nN2 EXCLUDE_OBJECT_END NAME=b*0\nN3 EXCLUDE_OBJECT_DEFINE NAME=c*0\nN4 EXCLUDE_OBJECT_START NAME=c*0\n";
+        let violations = check_flavour(bad.as_bytes(), "klipper");
+        assert!(violations.iter().any(|v| v.line == 1 && v.message.contains("never defined")));
+        assert!(violations.iter().any(|v| v.line == 2 && v.message.contains("END for b closes object a")));
+        assert!(violations.iter().any(|v| v.line == 3 && v.message.contains("defined after")));
+        assert!(violations.iter().any(|v| v.line == 0 && v.message.contains("object c is never closed")));
     }
 }
