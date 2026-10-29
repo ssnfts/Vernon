@@ -1,5 +1,5 @@
 //! Multi-scan registration: pairwise ICP (point-to-plane, coarse-to-fine),
-//! a coarse principal-axis alignment, a chained multiway alignment and the
+//! feature-based global alignment, robust multiway alignment and the
 //! scan merge nodes (known transforms or shared markers).
 //!
 //! ICP follows the published point-to-plane formulation (spec 3.4): a
@@ -17,6 +17,8 @@ use vernon_graph::{
 };
 
 use crate::linalg::{solve, sym_eigen};
+use crate::global_registration::{global_register, GlobalOutcome, GlobalSettings};
+use crate::pose_graph::{optimize_pose_graph, PoseEdge};
 use crate::scale::{align_points, pair_points};
 use crate::spatial::{estimate_normals, voxel_centroids, voxel_groups, Grid};
 use crate::util::{self, base, mat_from_json, mat_to_json, metric_flag, set_metric_flag};
@@ -461,7 +463,7 @@ impl NodeOp for IcpPair {
 }
 
 // ---------------------------------------------------------------------------
-// Global alignment (white-box)
+// Global alignment
 // ---------------------------------------------------------------------------
 
 /// Right-handed principal axes (columns, longest first) and centroid.
@@ -525,6 +527,30 @@ pub fn principal_axis_guess(src: &[DVec3], tgt: &[DVec3], voxel: f64) -> (DMat4,
 /// Coarse alignment of two scans with unknown relative pose.
 pub struct GlobalAlign;
 
+/// Explicit feature pyramid; every candidate is scored at the same fine ICP scale.
+/// A larger feature neighbourhood is needed to distinguish gently curved panels.
+fn feature_pair(src:&Geometry,tgt:&Geometry,settings:&GlobalSettings,refine:Option<&IcpSettings>)
+    -> Result<(GlobalOutcome,Option<IcpOutcome>,f64),String> {
+    let mut best = None;
+    let mut best_score = f64::INFINITY;
+    let mut failure = String::new();
+    for factor in [1.0,2.0,4.0] {
+        let mut level = settings.clone(); level.voxel *= factor;
+        let coarse = match global_register(src,tgt,&level) { Ok(out)=>out,Err(e)=>{failure=e;continue;} };
+        let refined = if let Some(s)=refine {
+            match icp_align(src,tgt,coarse.transform,s) {
+                Ok(out) if out.fitness >= 0.2 && out.rmse.is_finite()=>Some(out),
+                Ok(_)=>{failure="insufficient refined feature overlap".into();continue;},
+                Err(e)=>{failure=e;continue;},
+            }
+        } else { None };
+        let (fitness,rmse)=refined.as_ref().map_or((coarse.fitness,coarse.rmse),|out|(out.fitness,out.rmse));
+        let score=rmse/fitness.max(0.05);
+        if score < best_score { best_score=score; best=Some((coarse,refined,level.voxel)); }
+    }
+    best.ok_or_else(||format!("feature pyramid did not find a verified pose: {failure}"))
+}
+
 impl NodeOp for GlobalAlign {
     fn info(&self) -> NodeTypeInfo {
         base("capture.global_align", "Global Align")
@@ -533,8 +559,8 @@ impl NodeOp for GlobalAlign {
             .output(PortSpec::new("geometry", DataKind::Geometry))
             .output(PortSpec::new("transform", DataKind::Json))
             .output(PortSpec::new("report", DataKind::Report))
-            .param(ParamSpec::choice("method", "Method", "fpfh_ransac", &["fpfh_ransac", "fgr"]).help("Feature-matching strategy of the finished node."))
-            .param(ParamSpec::float("voxel", "Voxel", 5.0, 0.05, 50.0).unit("mm").help("Voxel size the clouds are thinned to before feature matching. Larger is faster and coarser."))
+            .param(ParamSpec::choice("method", "Method", "fpfh_ransac", &["fpfh_ransac", "fgr"]).help("Feature-matching strategy. The fast alternative is reserved and returns an explicit unsupported-method error."))
+            .param(ParamSpec::float("voxel", "Voxel", 5.0, 0.05, 50.0).unit("mm").help("Finest sampling scale. Feature candidates also use two and four times this voxel; closest-point refinement uses this finest scale. Larger is faster and coarser."))
             .param(ParamSpec::float("normal_r", "Normal radius", 2.0, 0.5, 20.0).unit("x voxel").help("Radius of the neighbourhood used to estimate normals, in voxels."))
             .param(ParamSpec::float("fpfh_r", "Feature radius", 5.0, 1.0, 50.0).unit("x voxel").help("Radius of the neighbourhood used for the shape features, in voxels. Usually larger than the normal radius."))
             .param(ParamSpec::float("dist", "Match distance", 1.5, 0.5, 20.0).unit("x voxel").help("Largest distance, in voxels, at which a matched pair still counts as an inlier of a pose guess."))
@@ -543,8 +569,10 @@ impl NodeOp for GlobalAlign {
             .param(ParamSpec::float("conf", "Confidence", 0.999, 0.5, 0.999_999).help("Confidence, 0.5 to 1, that the best pose has been found. The search stops early when it is reached."))
             .param(ParamSpec::bool("refine", "Refine with ICP", true).help("Refine the coarse pose with a point-to-plane closest-point pass afterwards."))
             .param(ParamSpec::int("seed", "Seed", 0, 0, i64::MAX / 2).help("Random seed. The same seed gives the same result."))
-            .help("Finds a starting pose for two scans that begin far apart. The finished node matches local shape features and verifies by RANSAC or fast global registration; for now it aligns principal axes, tries the four axis flips, and optionally refines with ICP.")
-            .emulates("global registration by FPFH feature matching with RANSAC or fast global registration")
+            .help("Matches local shape histograms and verifies rigid pose hypotheses by deterministic sampling, then optionally refines with closest-point alignment. Sparse, ambiguous or nonoverlapping scans can fail; use adequate sampling and curved overlap.")
+            .emulates("FPFH descriptors and RANSAC registration with point-to-plane ICP refinement")
+            .spec("docs/specs/native-scan-registration.md")
+            .implemented()
     }
 
     fn cook(&self, ctx: &CookContext, inputs: &[Option<Data>], params: &Params) -> CookResult<Vec<Data>> {
@@ -552,41 +580,48 @@ impl NodeOp for GlobalAlign {
         let tgt = inputs::geometry(inputs, 1)?;
         let voxel = params.float("voxel")?;
         util::require_positive(ctx, "voxel", voxel)?;
-        let method = params.str("method")?.to_string();
-        if src.points.len() < 6 || tgt.points.len() < 6 {
-            return Err(ctx.fail("both scans need at least 6 points"));
+        match params.str("method")? {
+            "fpfh_ransac" => {},
+            "fgr" => return Err(ctx.fail("the requested fast global method is not implemented; select fpfh_ransac")),
+            _ => return Err(util::bad_choice(ctx, "method", params.str("method")?)),
         }
-        let (guess, score) = principal_axis_guess(&src.points, &tgt.points, voxel);
+        let settings = GlobalSettings {
+            voxel,
+            normal_radius_factor: params.float("normal_r")?,
+            feature_radius_factor: params.float("fpfh_r")?,
+            dist_factor: params.float("dist")?,
+            sample_size: usize::try_from(params.int("ransac_n")?).map_err(|_|ctx.fail("invalid sample size"))?,
+            iterations: usize::try_from(params.int("iters")?).map_err(|_|ctx.fail("invalid iteration count"))?,
+            confidence: params.float("conf")?,
+            seed: u64::try_from(params.int("seed")?).map_err(|_|ctx.fail("seed must be nonnegative"))?,
+        };
+        let refine_settings=IcpSettings { voxel, coarse_factor:2.0,max_iter:60,overlap:0.5,normal_gate_deg:90.0,
+            normal_radius:settings.normal_radius_factor*voxel,..IcpSettings::default() };
+        let (coarse,refined,feature_voxel)=feature_pair(&src,&tgt,&settings,params.bool("refine")?.then_some(&refine_settings)).map_err(|m|ctx.fail(m))?;
         let mut rep = Report::new("Global Align");
-        rep.metric("start_mean_distance", Metric::new(score, "mm"));
-        let mut result = guess;
+        rep.metric("start_mean_distance", Metric::new(mean_closest(&src.points, &tgt.points, &coarse.transform), "mm"));
+        for (key, value, unit) in [
+            ("feature_matches", coarse.feature_matches as f64, "pairs"),
+            ("source_features", coarse.source_features as f64, "points"),
+            ("target_features", coarse.target_features as f64, "points"),
+            ("hypotheses", coarse.iterations as f64, "count"),
+            ("coarse_correspondences", coarse.correspondences as f64, "pairs"),
+            ("coarse_fitness", coarse.fitness, "-"),
+            ("coarse_rmse_mm", coarse.rmse, "mm"),
+            ("feature_voxel_mm", feature_voxel, "mm"),
+            ("feature_scale_attempts", 3.0, "count"),
+            ("fitness", coarse.fitness, "-"),
+            ("rmse_mm", coarse.rmse, "mm"),
+        ] { rep.metric(key, Metric::new(value, unit)); }
+        let mut result = coarse.transform;
         let mut info_json_v = Value::Null;
-        if params.bool("refine")? {
-            let s = IcpSettings {
-                voxel,
-                coarse_factor: 6.0,
-                max_iter: 40,
-                overlap: 0.5,
-                normal_gate_deg: 90.0,
-                ..IcpSettings::default()
-            };
-            match icp_align(&src, &tgt, guess, &s) {
-                Ok(o) => {
+        if let Some(o) = refined {
                     rep.absorb("", &transform_report("", &o));
+                    rep.metric("rmse_mm", Metric::new(o.rmse, "mm"));
                     info_json_v = info_json(&o.information);
                     result = o.transform;
-                }
-                Err(m) => {
-                    rep.note(Severity::Warning, format!("ICP refinement failed: {m}"));
-                }
-            }
         }
-        util::placeholder(
-            &mut rep,
-            &format!(
-                "principal-axis pre-alignment stands in for the '{method}' feature matching; the real node matches 33-dimensional shape histograms and verifies by sampling"
-            ),
-        );
+        rep.note(Severity::Info, "Coarse overlap is measured on bounded feature keypoints; refined residual is point-to-plane on the ICP voxel cloud. Repeated shapes can remain ambiguous.");
         let geo = placed(&src, result);
         Ok(vec![
             Data::geometry(geo),
@@ -877,12 +912,25 @@ impl NodeOp for MarkerMerge {
 }
 
 // ---------------------------------------------------------------------------
-// Multiway alignment (white-box)
+// Multiway alignment
 // ---------------------------------------------------------------------------
 
 const MULTI_SLOTS: usize = 6;
 
-/// Chained alignment of several overlapping scans.
+/// Measure the final pose without updating it; reporting must follow the graph solve.
+fn measure_registered_pair(src: &Geometry, tgt: &Geometry, transform: DMat4, s: &IcpSettings) -> Result<(f64,f64,usize),String> {
+    let center = util::centroid(&tgt.points);
+    let stage = make_stage(&src.points,&tgt.points,center,s.voxel,s,true);
+    if stage.src.len() < 6 || stage.tgt.len() < 6 { return Err("too few final registration samples".into()); }
+    let current = DMat4::from_translation(-center)*transform*DMat4::from_translation(center);
+    let grid = Grid::build(&stage.tgt,stage.gate);
+    let corrs = find_corr(&stage,&grid,&current,s);
+    if corrs.len() < 6 { return Err("optimized graph lost pairwise overlap".into()); }
+    let (_,_,squared) = accumulate(&stage,&current,&corrs,true);
+    Ok((corrs.len() as f64/stage.src.len() as f64,(squared/corrs.len() as f64).sqrt(),corrs.len()))
+}
+
+/// Joint alignment of several overlapping scans.
 pub struct MultiwayAlign;
 
 impl NodeOp for MultiwayAlign {
@@ -902,84 +950,112 @@ impl NodeOp for MultiwayAlign {
             .param(ParamSpec::float("voxel", "Voxel", 5.0, 0.05, 50.0).unit("mm").help("Voxel size the scans are thinned to before pairwise registration."))
             .param(ParamSpec::float("coarse", "Coarse gate", 15.0, 1.0, 100.0).unit("x voxel").help("Largest correspondence distance of the first pass, in voxels."))
             .param(ParamSpec::float("fine", "Fine gate", 1.5, 0.5, 20.0).unit("x voxel").help("Largest correspondence distance of the final pass, in voxels."))
-            .param(ParamSpec::float("prune", "Edge prune threshold", 0.25, 0.0, 1.0).help("Pose-graph edges whose confidence is below this value (0 to 1) are dropped before optimisation. 0 keeps every edge."))
+            .param(ParamSpec::float("prune", "Edge prune threshold", 0.25, 0.0, 1.0).help("Uncertain edges below this confidence are dropped after robust optimisation, then the retained graph is solved again. 0 retains every edge with robust weights."))
             .param(ParamSpec::choice("solver", "Solver", "lm", &["lm"]).help("Global optimiser for the pose graph. Levenberg-Marquardt is the only one."))
             .param(ParamSpec::int("reference", "Reference scan", 0, 0, 5).help("Index (from 0) of the scan that stays fixed."))
             .param(ParamSpec::bool("auto_loops", "Check loop closure", true).help("Look for loop closures between scans that are not neighbours so drift is spread around the loop."))
             .param(ParamSpec::float("dedupe_voxel", "Resample voxel", 1.0, 0.0, 50.0).unit("mm").help("Merged point clouds keep one averaged point per voxel. 0 keeps every point."))
-            .help("Places several overlapping scans in one frame. The finished node builds a pose graph from pairwise matches, solves it by Levenberg-Marquardt with robust loop edges and prunes bad edges; for now it aligns each scan to its neighbour and reports how far the chain ends from closing.")
+            .help("Registers up to six overlapping scans by shape features and closest points, then jointly optimises rigid poses with information-weighted constraints and robust loop edges. Disconnected or unobservable graphs fail. The selected input slot stays fixed.")
             .emulates("multiway registration with pose-graph optimisation and loop-closure pruning")
+            .spec("docs/specs/native-scan-registration.md")
+            .implemented()
     }
 
     fn cook(&self, ctx: &CookContext, inputs: &[Option<Data>], params: &Params) -> CookResult<Vec<Data>> {
         let voxel = params.float("voxel")?;
         util::require_positive(ctx, "voxel", voxel)?;
+        if params.str("solver")? != "lm" { return Err(util::bad_choice(ctx, "solver", params.str("solver")?)); }
         let mut scans: Vec<std::sync::Arc<Geometry>> = vec![inputs::geometry(inputs, 0)?, inputs::geometry(inputs, 1)?];
+        let mut slots = vec![0usize, 1];
         for k in 2..MULTI_SLOTS {
             if let Some(g) = inputs::opt_geometry(inputs, k) {
                 scans.push(g);
+                slots.push(k);
             }
         }
         let n = scans.len();
-        let r = (params.int("reference")?.max(0) as usize).min(n - 1);
+        let slot = usize::try_from(params.int("reference")?).map_err(|_|ctx.fail("reference must select a connected input slot"))?;
+        let r = slots.iter().position(|s|*s == slot).ok_or_else(||ctx.fail("reference must select a connected input slot"))?;
+        let fine = params.float("fine")?;
+        let coarse = params.float("coarse")?;
+        util::require_positive(ctx, "fine", fine)?;
+        util::require_positive(ctx, "coarse", coarse)?;
+        if coarse < fine { return Err(ctx.fail("coarse gate must be at least the fine gate")); }
+        let dedupe = params.float("dedupe_voxel")?;
+        if !dedupe.is_finite() || dedupe < 0.0 { return Err(ctx.fail("resample voxel must be finite and nonnegative")); }
         let settings = IcpSettings {
             voxel,
-            corr_factor: params.float("fine")?,
-            coarse_factor: (params.float("coarse")? / params.float("fine")?.max(1e-9)).max(1.0),
-            max_iter: 40,
+            corr_factor: fine,
+            coarse_factor: coarse / fine,
+            max_iter: 60,
             overlap: 0.5,
             normal_gate_deg: 90.0,
             ..IcpSettings::default()
         };
         let mut pose = vec![DMat4::IDENTITY; n];
         let mut rep = Report::new("Multiway Align");
-        let mut worst_rmse: f64 = 0.0;
-        let mut edges = 0usize;
-        // Forward chain from the reference, then backward.
-        let order: Vec<(usize, usize)> = (r + 1..n).map(|i| (i, i - 1)).chain((0..r).rev().map(|i| (i, i + 1))).collect();
-        for (i, anchor) in order {
-            let target = placed(&scans[anchor], pose[anchor]);
-            let out = icp_align(&scans[i], &target, DMat4::IDENTITY, &settings)
-                .map_err(|m| ctx.fail(format!("scan_{} onto scan_{}: {m}", i + 1, anchor + 1)))?;
-            pose[i] = out.transform;
-            worst_rmse = worst_rmse.max(out.rmse);
-            edges += 1;
-            rep.metric(format!("edge_{}_{}_fitness", anchor + 1, i + 1), Metric::new(out.fitness, "-"));
-            rep.metric(format!("edge_{}_{}_rmse", anchor + 1, i + 1), Metric::new(out.rmse, "mm"));
-        }
-        rep.metric("edges", Metric::new(edges as f64, "edges"));
-        rep.metric("worst_edge_rmse", Metric::new(worst_rmse, "mm"));
-        if params.bool("auto_loops")? && n >= 3 {
-            let (a, b) = (0, n - 1);
-            let moved = placed(&scans[b], pose[b]);
-            let first = placed(&scans[a], pose[a]);
-            match icp_align(&moved, &first, DMat4::IDENTITY, &settings) {
-                Ok(o) if o.fitness >= 0.05 => {
-                    let c = util::centroid(&moved.points);
-                    let gap = (o.transform.transform_point3(c) - c).length();
-                    rep.metric("loop_closure_gap", Metric::new(gap, "mm"));
-                    rep.metric("loop_closure_fitness", Metric::new(o.fitness, "-"));
-                }
-                _ => {
-                    rep.note(Severity::Info, "the last scan does not overlap the first one enough to measure a loop-closure gap");
-                }
+        let mut edges = Vec::new();
+        let mut fitnesses = Vec::new();
+        let mut rejected = 0usize;
+        let mut last_failure = String::new();
+        for i in 1..n { for j in 0..i {
+            if !params.bool("auto_loops")? && i != j+1 { continue; }
+            let global = GlobalSettings { voxel, seed: (i*MULTI_SLOTS+j) as u64, ..GlobalSettings::default() };
+            let pair = feature_pair(&scans[i], &scans[j], &global, Some(&settings))
+                .and_then(|(_,out,_)|out.ok_or_else(||"missing pair refinement".into()));
+            match pair {
+                Ok(out) if out.fitness >= 0.2 && out.rmse.is_finite() => {
+                    edges.push(PoseEdge { source:i, target:j, transform:out.transform, information:out.information, uncertain:true });
+                    fitnesses.push(out.fitness);
+                },
+                Ok(_) => { rejected += 1; last_failure = "insufficient pairwise overlap".into(); },
+                Err(e) => { rejected += 1; last_failure = e; },
             }
+        } }
+        let mut visited = vec![false; n]; visited[r] = true;
+        // A deterministic maximum-fitness tree initializes the reference gauge.
+        for _ in 1..n {
+            let selected = edges.iter().enumerate().filter(|(_,e)|visited[e.source] != visited[e.target])
+                .max_by(|(a,_),(b,_)|fitnesses[*a].total_cmp(&fitnesses[*b]).then_with(||b.cmp(a)))
+                .map(|(index,_)|index).ok_or_else(||ctx.fail(format!("scan graph is disconnected; last rejected pair: {last_failure}")))?;
+            let e = &mut edges[selected];
+            if visited[e.target] { pose[e.source] = pose[e.target]*e.transform; visited[e.source] = true; }
+            else { pose[e.target] = pose[e.source]*e.transform.inverse(); visited[e.target] = true; }
+            e.uncertain = false;
         }
-        util::placeholder(
-            &mut rep,
-            "chained pairwise ICP stands in for the pose-graph solve; the real node optimises all poses together, down-weights uncertain loop edges and prunes edges below the threshold",
-        );
+        let optimized = optimize_pose_graph(&pose, &edges, r, params.float("prune")?, fine*voxel).map_err(|m|ctx.fail(m))?;
+        pose = optimized.poses;
+        let mut fit_sum = 0.0; let mut squared_sum = 0.0; let mut pair_count = 0usize; let mut retained = 0usize; let mut worst:f64 = 0.0;
+        let mut edge_json = Vec::new();
+        for (k,e) in edges.iter().enumerate() {
+            let weight = optimized.weights[k];
+            edge_json.push(json!({ "source_slot": slots[e.source], "target_slot": slots[e.target], "transform": mat_to_json(&e.transform), "information": info_json(&e.information), "uncertain":e.uncertain, "confidence":weight }));
+            if weight == 0.0 { continue; }
+            let relative = pose[e.target].inverse()*pose[e.source];
+            let (fitness, rmse, count) = measure_registered_pair(&scans[e.source], &scans[e.target], relative, &settings).map_err(|m|ctx.fail(m))?;
+            fit_sum += fitness; squared_sum += rmse*rmse*count as f64; pair_count += count; retained += 1; worst = worst.max(rmse);
+            rep.metric(format!("edge_{}_{}_fitness", slots[e.target]+1, slots[e.source]+1), Metric::new(fitness,"-"));
+            rep.metric(format!("edge_{}_{}_rmse", slots[e.target]+1, slots[e.source]+1), Metric::new(rmse,"mm"));
+        }
+        for (key,value,unit) in [
+            ("edges",edges.len() as f64,"edges"), ("retained_edges",retained as f64,"edges"),
+            ("pruned_edges",optimized.pruned_edges as f64,"edges"), ("rejected_pairs",rejected as f64,"pairs"),
+            ("graph_initial_cost",optimized.initial_cost,"weighted"), ("graph_final_cost",optimized.final_cost,"weighted"),
+            ("graph_iterations",optimized.iterations as f64,"iterations"), ("fitness",fit_sum/retained as f64,"-"),
+            ("rmse_mm",(squared_sum/pair_count as f64).sqrt(),"mm"), ("worst_edge_rmse",worst,"mm"),
+        ] { rep.metric(key,Metric::new(value,unit)); }
+        rep.note(Severity::Info,"Poses are optimized jointly with a fixed reference and robust uncertain edges. Low residual does not resolve repeated or featureless shape ambiguity. RMSE measures final voxel-cloud point-to-plane correspondences.");
         let refs: Vec<Geometry> = scans.iter().zip(&pose).map(|(g, m)| placed(g, *m)).collect();
         let refs2: Vec<&Geometry> = refs.iter().collect();
         let opts = MergeOptions {
-            dedupe_voxel: params.float("dedupe_voxel")?.max(0.0),
+            dedupe_voxel: dedupe,
             keep_normals: true,
             keep_colors: true,
         };
         let (geo, stats) = merge_parts(&refs2, &opts);
         rep.metric("points_out", Metric::new(stats.points_out as f64, "points"));
         let list: Vec<Value> = pose.iter().map(mat_to_json).collect();
-        Ok(vec![Data::geometry(geo), Data::json(json!({ "transforms": list })), Data::report(rep)])
+        Ok(vec![Data::geometry(geo), Data::json(json!({ "transforms": list, "scan_slots": slots, "edges": edge_json })), Data::report(rep)])
     }
 }
 
@@ -991,6 +1067,34 @@ impl NodeOp for MultiwayAlign {
 mod tests {
     use super::*;
     use crate::util::Rng;
+
+    #[test]
+    fn wp7_optional_slots_keep_reference_and_disabled_loop_contract() {
+        let base=patch(0.0,600.0,12.0,(0.0,0.0),0.0,23);
+        let poses=[DMat4::IDENTITY,DMat4::from_translation(DVec3::new(4.0,-3.0,1.0)),DMat4::from_translation(DVec3::new(-5.0,2.0,3.0))];
+        let scans:Vec<_>=poses.iter().map(|m|{let mut g=base.clone();g.transform(*m);Some(Data::geometry(g))}).collect();
+        let inputs=vec![scans[0].clone(),scans[1].clone(),None,None,scans[2].clone()];
+        let mut params=defaults(&MultiwayAlign);
+        params.set("voxel",vernon_graph::ParamValue::Float(12.0));
+        params.set("reference",vernon_graph::ParamValue::Int(4));
+        params.set("auto_loops",vernon_graph::ParamValue::Bool(false));
+        let output=MultiwayAlign.cook(&ctx(),&inputs,&params).unwrap();
+        let json=output[1].as_json().unwrap();
+        assert_eq!(json["scan_slots"],json!([0,1,4]));
+        let list=json["transforms"].as_array().unwrap();
+        assert_eq!(mat_from_json(&list[2]).unwrap(),DMat4::IDENTITY);
+        for (i,m) in list.iter().enumerate() {
+            let actual=mat_from_json(m).unwrap();
+            let expected=poses[2]*poses[i].inverse();
+            assert!(rot_err_deg(actual,expected)<0.1);
+            assert!(actual.w_axis.truncate().distance(expected.w_axis.truncate())<0.5);
+        }
+        let report=output[2].as_report().unwrap();
+        assert_eq!(report.metrics["edges"].value,2.0);
+        assert_eq!(report.metrics["retained_edges"].value,2.0);
+        params.set("reference",vernon_graph::ParamValue::Int(3));
+        assert!(MultiwayAlign.cook(&ctx(),&inputs,&params).unwrap_err().to_string().contains("connected input slot"));
+    }
 
     fn ctx() -> CookContext {
         CookContext {
@@ -1182,7 +1286,7 @@ mod tests {
             .cook(&ctx(), &[Some(Data::geometry(moved.clone())), Some(Data::geometry(base.clone()))], &p)
             .unwrap();
         let rep = out[2].as_report().unwrap();
-        assert!(rep.notes.iter().any(|(s, m)| *s == Severity::Warning && m.starts_with("white-box placeholder")));
+        assert!(!rep.notes.iter().any(|(_, m)| m.starts_with("white-box placeholder")));
         let g = out[0].as_geometry().unwrap();
         let err = g.points.iter().zip(&base.points).map(|(a, b)| (*a - *b).length()).fold(0.0, f64::max);
         assert!(err < 5.0, "max point error {err}");
@@ -1285,7 +1389,7 @@ mod tests {
     }
 
     #[test]
-    fn multiway_chain_places_three_scans_and_measures_closure() {
+    fn multiway_graph_places_three_partially_overlapping_scans() {
         let full = patch(0.0, 900.0, 12.0, (0.0, 0.0), 0.0, 9);
         let cut = |lo: f64, hi: f64, shift: DMat4| {
             let mut g = Geometry::from_points(full.points.iter().copied().filter(|p| p.x >= lo && p.x <= hi).collect());
@@ -1302,9 +1406,9 @@ mod tests {
         p.set("voxel", vernon_graph::ParamValue::Float(12.0));
         let out = op.cook(&ctx(), &inputs, &p).unwrap();
         let rep = out[2].as_report().unwrap();
-        assert_eq!(rep.metrics["edges"].value, 2.0);
+        assert!(rep.metrics["retained_edges"].value >= 2.0);
         assert!(rep.metrics["worst_edge_rmse"].value < 0.5, "{:?}", rep.metrics["worst_edge_rmse"]);
-        assert!(rep.notes.iter().any(|(s, m)| *s == Severity::Warning && m.starts_with("white-box placeholder")));
+        assert!(!rep.notes.iter().any(|(_, m)| m.starts_with("white-box placeholder")));
         let list = out[1].as_json().unwrap()["transforms"].as_array().unwrap().len();
         assert_eq!(list, 3);
     }

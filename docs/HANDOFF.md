@@ -6,7 +6,41 @@ of done. This document lists the remaining work as ordered **work packages
 (WP)**. Do them in order, one commit each. Every WP ends with the full
 definition-of-done check from `AGENTS.md`.
 
-## Progress — 2026-10-29 (WP6)
+## Progress — 2026-10-29 (WP7)
+
+WP1–WP7 are implemented under their documented contracts; WP8 (real
+photogrammetry runs) is next. Registry: 197 nodes, 186 implemented and 11
+white-box; Capture has 18 implemented and four white-box nodes. Full bounded
+workspace verification: 1,131 passed, zero failed, eight ignored; build and
+all-target Clippy clean. The demo cooks 36 nodes with zero failures and two
+expected gates. Catalogue output matches. Vulkan GPU viewports and the native
+Global Align / Multiway Align ribbon entries were checked visually.
+
+Global alignment now computes real 33-bin FPFH descriptors and verifies
+RANSAC hypotheses, with an explicit three-scale feature pyramid and fine
+point-to-plane ICP. Multiway alignment initializes a maximum-fitness tree
+and jointly optimizes SE(3) poses using actual pairwise correspondence
+information, robust uncertain-edge switches and pruning. The selected input
+slot stays fixed; missing optional slots retain their original mapping.
+
+The actual five-partial-car-panel fixture has independent shuffled order,
+0.02 mm Gaussian coordinate noise and seeded arbitrary-axis poses up to
+30 degrees / 200 mm. Its worst pose errors are 0.035683 mm and 0.005843 degrees,
+within the 0.5 mm / 0.5 degree limits; final RMSE is 0.030023 mm and fitness
+0.862554. Numerical regressions repaired indefinite information hidden by
+mixed units and overflow in the robust objective. Final kernel and adapter
+reviews found no remaining blocker.
+
+The solve is bounded and local: repeated/featureless geometry, insufficient
+overlap and a wrong high-fitness tree remain limitations. The reserved `fgr`
+method explicitly errors. Coarse-only information is null; refined graph
+information is point-to-point correspondence information, not a calibrated
+covariance. See [the measured registration contract](specs/native-scan-registration.md).
+No external program was installed or run for WP7; nalgebra's permissive Rust
+dependencies and licence inventory were checked. Installation/publication
+authorization gates still apply to later packages.
+
+## WP6 checkpoint — 2026-10-29
 
 WP1–WP6 are implemented under their documented contracts; WP7 (automatic
 multi-scan alignment) is next. Registry: 197 nodes, 184 implemented and 13

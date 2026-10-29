@@ -1,4 +1,4 @@
-﻿//! Stage 1 Capture: scan import, photogrammetry (COLMAP), scale correction, multi-scan registration.
+//! Stage 1 Capture: scan import, photogrammetry (COLMAP), scale correction, multi-scan registration.
 //!
 //! Every tool in the capture step is a node here. The numeric hand-off to
 //! stage 2 is the `Report` each node emits (scale uncertainty, drift budget,
@@ -13,6 +13,8 @@ pub mod colmap_model;
 pub mod import;
 pub mod linalg;
 pub mod registration;
+mod global_registration;
+mod pose_graph;
 pub mod scale;
 pub mod spatial;
 pub mod tables;
@@ -128,7 +130,10 @@ mod tests {
             assert!(info.id.starts_with("capture."), "{}", info.id);
             assert_eq!(info.stage, Stage::Capture);
             assert!(!info.help.is_empty(), "{} has no help", info.id);
-            assert_eq!(info.spec.as_deref(), Some("docs/specs/capture-scanning.md"), "{}", info.id);
+            let expected_spec=if matches!(info.id.as_str(),"capture.global_align"|"capture.multiway_align") {
+                "docs/specs/native-scan-registration.md"
+            } else {"docs/specs/capture-scanning.md"};
+            assert_eq!(info.spec.as_deref(), Some(expected_spec), "{}", info.id);
             assert!(!info.emulates.is_empty(), "{} has no emulates", info.id);
             assert!(!info.outputs.is_empty(), "{} has no outputs", info.id);
             for p in &info.params {
@@ -156,10 +161,12 @@ mod tests {
             assert_eq!(reg.info(id).unwrap().external_tool.as_deref(), Some("COLMAP"), "{id}");
             assert!(reg.info(id).unwrap().params.iter().any(|p| p.name == "run"), "{id} needs a run switch");
         }
-        for id in ["capture.global_align", "capture.multiway_align", "capture.mvs_mesh", "capture.sfm_features_match"] {
+        for id in ["capture.mvs_mesh", "capture.sfm_features_match"] {
             assert!(reg.info(id).unwrap().whitebox, "{id} is a white-box node");
         }
         for id in [
+            "capture.global_align",
+            "capture.multiway_align",
             "capture.import_scan",
             "capture.scale_bar_solve",
             "capture.icp_pair",

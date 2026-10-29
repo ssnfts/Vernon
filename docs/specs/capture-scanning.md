@@ -1,5 +1,7 @@
 # Spec: Stage 1 Capture - scanning, photogrammetry, scale, drift, multi-scan registration
 
+For implemented global and multiway alignment, the [WP7 measured contract](native-scan-registration.md) supersedes this draft's placeholder status and registration details.
+
 Status: draft 1 (clean-room spec). Author: spec-writer subagent, 2026-10-21. Consumers: `crates/vernon-nodes-capture`.
 Legend: **[F]** = read from a fetched page; **[S]** = only seen in a search snippet or retailer page (treat as soft); **[M]** = from background knowledge, not re-checked this session (verify before relying on it). Vendor names appear only in this file and in `NodeTypeInfo.emulates`, never in UI strings.
 
