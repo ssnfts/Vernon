@@ -5,6 +5,8 @@ Vernon stages served: 2 clean (watertight shell), 3 surface (mesh -> CAD surface
 Marker key used below: **(doc)** stated by the vendor help page, **(inf)** inferred from doc wording, **(V)** a Vernon design choice, not observed behaviour.
 Source status tags (section 6): [F] fetched this session, [S] seen only in search results, [R] recalled from memory, verify before relying on it.
 
+For the implemented `clean.alpha_wrap` node, the [WP6 conservative-wrap contract](conservative-wrap.md) supersedes this draft's alpha-wrap method, WB status and W4 proposal; it records the measured alternative and its limits.
+
 ## 1. Scope and reference tools
 
 | Reference command (Rhino 8) | Role in the body-kit pipeline | Help page (docs only) |

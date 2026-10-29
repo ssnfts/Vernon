@@ -6,7 +6,36 @@ of done. This document lists the remaining work as ordered **work packages
 (WP)**. Do them in order, one commit each. Every WP ends with the full
 definition-of-done check from `AGENTS.md`.
 
-## Progress — 2026-10-28 (WP5)
+## Progress — 2026-10-29 (WP6)
+
+WP1–WP6 are implemented under their documented contracts; WP7 (automatic
+multi-scan alignment) is next. Registry: 197 nodes, 184 implemented and 13
+white-box. All 26 Clean/Align nodes are implemented. Full workspace checks:
+1,117 passed, zero failed, eight ignored; build and all-target Clippy clean.
+The release-only WP6 benchmark passed separately. The demo cooks 36 nodes
+with zero failures and two expected gates. The generated catalogue matches,
+and the Vulkan GPU viewports and Conservative Wrap ribbon were checked.
+
+`clean.alpha_wrap` uses the permitted voxel-offset / dual-contouring /
+constrained-projection route. It checks every output vertex against the
+complete supported source and rejects uncertified topology or distance bands.
+The genuine one-million-triangle sphere took 1.930284 s for the entire kernel,
+including its BVH and certificates. Its 51,326 output vertices all lie in the
+requested band; all five topology counters and both band violation counters
+are zero. The output has 102,648 triangles. Larger openings may also close;
+this is not an exact Delaunay alpha wrap, and global self-intersections are
+not certified. See [the measured contract](specs/conservative-wrap.md).
+
+Bounded persistent verification scripts now save per-step logs, atomic status,
+source fingerprints and matching-source resume checkpoints. Exclusive locking
+prevents competing workers; a Windows Job Object contains subprocesses on
+worker termination and timeout. Seven runner self-test scenarios and a
+separate-shell persistence check passed. The actual WP6 six-step worker also
+finished after its launcher returned, with unchanged source fingerprints.
+These scripts run fixed checks, not code changes or AI calls. The authorized
+six-hour follow-up reads [CONTINUATION.md](CONTINUATION.md) to resume work.
+
+## WP5 checkpoint — 2026-10-28
 
 WP1–WP5 are implemented under their documented contracts; WP6 (conservative
 watertight wrap) is next. The registry contains 197 nodes: 183 implemented

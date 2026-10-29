@@ -7,6 +7,7 @@
 use vernon_graph::Registry;
 
 pub mod align;
+mod conservative;
 pub mod decimate;
 pub mod deviation;
 pub mod distance;

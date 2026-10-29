@@ -666,11 +666,12 @@ fn alpha_info() -> NodeTypeInfo {
         .param(
             ParamSpec::float("offset", "Offset", 0.0, 0.0, 1000.0)
                 .unit("mm")
-                .help("Distance of the shell from the input. 0 = alpha / 30."),
+                .help("Minimum distance from the input. The certified vertex band extends to offset plus alpha. 0 = alpha / 30."),
         )
-        .help("Wraps a mesh, triangle soup or point cloud into a closed, manifold shell that encloses the input and does not enter gaps smaller than alpha.")
-        .emulates("3D alpha wrapping (Portaneri et al. 2022): flood through alpha-traversable facets of a Delaunay triangulation")
+        .help("Builds a conservative closed wrap of a mesh, triangle soup or point cloud. Checks every output vertex against the requested distance band and verifies closed edges and vertex links. Alpha controls gap bridging; some larger gaps may also close. Excessive or unresolved requests return an error.")
+        .emulates("guarded voxel offset wrapping with Hermite dual contouring and constrained projection")
         .spec(SPEC_MESH)
+        .implemented()
 }
 
 fn read_wrap_inputs(inp: &[Option<Data>]) -> CookResult<Geometry> {
@@ -765,40 +766,63 @@ fn wrap_cook(ctx: &CookContext, inp: &[Option<Data>], p: &Params) -> CookResult<
 }
 
 fn alpha_cook(ctx: &CookContext, inp: &[Option<Data>], p: &Params) -> CookResult<Vec<Data>> {
-    let g = (*inputs::geometry(inp, 0)?).clone();
+    let g = inputs::geometry(inp, 0)?;
     ensure_metric(ctx, &g)?;
-    let mut alpha = pf(p, "alpha", 0.0, 10000.0)?;
-    let diag = g.bounds().size().length();
-    if alpha <= 0.0 {
-        alpha = diag / 20.0;
-    }
-    if alpha <= 0.0 || !alpha.is_finite() {
-        return Err(ctx.fail("cannot derive alpha from an empty or single-point input"));
-    }
-    let mut offset = pf(p, "offset", 0.0, 1000.0)?;
-    if offset <= 0.0 {
-        offset = alpha / 30.0;
-    }
-    let prm = WrapParams {
-        voxel: alpha / 2.0,
-        offset,
-        smooth_iterations: 0,
-        shrink_compensate: false,
-        polygon_optimization: 0.0,
-        remesh_iterations: 1,
-        inflate_points: false,
-        fill_holes: false,
-        max_cells: 40_000_000,
+    let params = crate::conservative::ConservativeParams {
+        alpha: pf(p, "alpha", 0.0, 10000.0)?,
+        offset: pf(p, "offset", 0.0, 1000.0)?,
+        max_grid_nodes: 40_000_000,
     };
-    let out = wrap_geometry(&g, &prm).map_err(|e| ctx.fail(e))?;
-    let geo = build_output(&g, &out, false);
-    let mut rep = wrap_report("Conservative Wrap", &g, &out, &geo);
-    rep.metric("alpha", Metric::new(alpha, "mm"));
-    rep.metric("offset", Metric::new(offset, "mm"));
-    rep.note(
-        Severity::Warning,
-        "white-box placeholder: the real algorithm carves a 3D Delaunay triangulation from outside through alpha-traversable facets; this output comes from the voxel distance-field wrap with a cell size of alpha / 2",
-    );
+    let out = crate::conservative::conservative_wrap(&g, &params).map_err(|e| ctx.fail(e))?;
+    let m = out.metrics;
+    let vertices = out.pos.len();
+    let faces = out.tris.len();
+    let reference = out.pos[0];
+    let volume = out.tris.iter().map(|t| {
+        let [a,b,c] = t.map(|i| out.pos[i as usize] - reference);
+        a.dot(b.cross(c)) / 6.0
+    }).sum::<f64>();
+    let mut geo = triangles_to_geometry(out.pos, &out.tris);
+    geo.detail_attribs = g.detail_attribs.clone();
+    geo.compute_normals();
+    let mut rep = Report::new("Conservative Wrap");
+    for (name, value, unit) in [
+        ("faces", faces as f64, "faces"),
+        ("vertices", vertices as f64, "points"),
+        ("components", m.components as f64, "shells"),
+        ("volume", volume, "mm3"),
+        ("surface_area", geo.surface_area(), "mm2"),
+        ("alpha", m.alpha, "mm"),
+        ("offset", m.offset, "mm"),
+        ("voxel_size", m.voxel_size, "mm"),
+        ("minimum_wrap_radius", m.barrier_radius, "mm"),
+        ("barrier_radius", m.barrier_radius, "mm"),
+        ("grid_nodes", m.grid_nodes as f64, "nodes"),
+        ("band_nodes", m.band_nodes as f64, "nodes"),
+        ("source_triangles", m.source_triangles as f64, "count"),
+        ("source_points", m.source_points as f64, "count"),
+        ("checked_vertices", m.checked_vertices as f64, "points"),
+        ("distance_min_mm", m.distance_min, "mm"),
+        ("distance_max_mm", m.distance_max, "mm"),
+        ("offset_error_max", m.distance_max - m.offset, "mm"),
+        ("offset_error_mean", m.distance_mean - m.offset, "mm"),
+        ("projection_moves", m.projection_moves as f64, "count"),
+        ("refinement_retries", m.refinement_retries as f64, "count"),
+    ] {
+        rep.metric(name, Metric::new(value, unit));
+    }
+    for (name, value) in [
+        ("open_edges", m.open_edges),
+        ("nonmanifold_edges", m.nonmanifold_edges),
+        ("inconsistent_edges", m.inconsistent_edges),
+        ("nonmanifold_vertices", m.nonmanifold_vertices),
+        ("degenerate_triangles", m.degenerate_triangles),
+        ("below_offset_vertices", m.below_offset),
+        ("above_upper_bound_vertices", m.above_upper_bound),
+    ] {
+        rep.metric(name, Metric::new(value as f64, "count").with_limit(0.0, true));
+    }
+    rep.note(Severity::Info, "Conservative voxel wrap with bounded dual contouring and projection. Alpha sets a gap scale; some larger openings may close. All output vertices were checked. This alternative does not certify global absence of self-intersections.");
     Ok(vec![Data::geometry(geo), Data::report(rep)])
 }
 
@@ -993,12 +1017,22 @@ mod tests {
     }
 
     #[test]
-    fn alpha_wrap_placeholder_cooks_and_says_so() {
+    fn wp6_alpha_wrap_is_native_and_reports_complete_certification() {
+        assert!(!alpha_info().whitebox);
         let out = run(alpha_info, alpha_cook, vec![geo(sphere_geo(30.0, 24, 25))], &[]).unwrap();
         let r = out_report(&out[1]);
-        assert!(r.notes.iter().any(|n| n.0 == Severity::Warning && n.1.starts_with("white-box placeholder")));
-        assert_eq!(r.metrics["open_edges"].value, 0.0);
-        assert!(alpha_info().whitebox);
+        assert!(!r.notes.iter().any(|n| n.1.starts_with("white-box placeholder")));
+        for key in ["open_edges", "nonmanifold_edges", "inconsistent_edges", "nonmanifold_vertices",
+            "degenerate_triangles", "below_offset_vertices", "above_upper_bound_vertices"] {
+            assert_eq!(r.metrics[key].value, 0.0, "{key}");
+            assert_eq!(r.metrics[key].passes(), Some(true));
+        }
+        let result = out_geo(&out[0]);
+        result.validate().unwrap();
+        assert_eq!(r.metrics["checked_vertices"].value, result.points.len() as f64);
+        assert!(r.metrics["distance_min_mm"].value >= r.metrics["offset"].value);
+        assert!(r.metrics["distance_max_mm"].value <= r.metrics["offset"].value + r.metrics["alpha"].value);
+        assert!(r.metrics["projection_moves"].value > 0.0);
     }
 
     #[test]

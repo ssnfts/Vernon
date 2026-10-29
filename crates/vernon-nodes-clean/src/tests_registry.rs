@@ -105,9 +105,9 @@ fn registration_is_complete_unique_and_documented() {
     for id in EXPECTED {
         assert!(ids.contains(*id), "missing {id}");
     }
-    // only the placeholder is a white-box stub; everything else is real
+    // Every registered clean-stage node has a native implementation.
     let wb: Vec<&str> = reg.types().filter(|i| i.whitebox).map(|i| i.id.as_str()).collect();
-    assert_eq!(wb, vec!["clean.alpha_wrap"]);
+    assert!(wb.is_empty(), "unexpected placeholder nodes: {wb:?}");
 }
 
 // ------------------------------------------------------------------ smoke

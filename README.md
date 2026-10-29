@@ -20,7 +20,7 @@ catalogue, with what each node emulates, is in [docs/NODES.md](docs/NODES.md)
 |---|---|---:|---:|
 | Geometry | Primitives, test car panel, transform, merge, mirror, normals, noise, file read/write | 20 | 0 |
 | 1 Capture | Import scans (PLY/OBJ/STL/XYZ), scale bars and markers, pairwise registration, scan quality; drives COLMAP photogrammetry | 16 | 6 |
-| 2 Clean / Align | Decimate, remesh, outliers, smoothing, ICP alignment, watertight wrap, signed deviation with percentile gate | 25 | 1 |
+| 2 Clean / Align | Decimate, remesh, outliers, smoothing, ICP alignment, certified conservative wrap, signed deviation with percentile gate | 26 | 0 |
 | 3 Mesh → Surface | Region refinement, field-aligned quad remeshing, connected B-spline layouts, measured subdivision continuity, analytic primitive recognition, sections, loft, thicken, surface deviation, STEP export | 23 | 0 |
 | 4 Split / Print | Projected body-line cuts, bounded partition search, dovetail/dowel/plug keys, strain-screened snap hooks, bed fit, 3MF packages, JSON/INI presets and G-code checks | 25 | 1 |
 | 5 Airflow (CFD) | Vehicle prep, frontal area, virtual tunnel, refinement plan, OpenFOAM case writing, convergence, force coefficients, Cp maps | 19 | 2 |
@@ -28,7 +28,7 @@ catalogue, with what each node emulates, is in [docs/NODES.md](docs/NODES.md)
 | 7 Solar / Heat | Sun position, weather files, sky matrix, incident radiation, surface temperature balance vs heat-deflection temperature | 14 | 0 |
 | 7b Flatten | Seam cutting, conformal flattening, strain report, pattern map-back | 5 | 1 |
 | 8 Performance | Aero loads, top speed, point-mass lap model and sweeps, coastdown fit, pressure-tap validation | 18 | 1 |
-| **All** | | **183** | **14** |
+| **All** | | **184** | **13** |
 
 Nodes that drive external open-source programs (COLMAP, OpenFOAM,
 CalculiX, fTetWild, OrcaSlicer) write complete inputs without them and only
@@ -37,6 +37,14 @@ run the program when asked to.
 The [native print-tool contract](docs/specs/native-print-tools.md) records
 WP5's geometry, firmware and preset limits, including assumed snap-strain
 allowances. The script bridge remains a placeholder.
+
+The [conservative-wrap contract](docs/specs/conservative-wrap.md) records
+WP6's native voxel alternative, complete vertex-distance checks and topology
+checks. Global self-intersection certification remains absent.
+
+For checks that can continue after a chat interruption, see
+[durable continuation](docs/CONTINUATION.md). The bounded PowerShell worker
+saves logs and source fingerprints; it runs fixed checks without model access.
 
 ## Example pipeline
 
