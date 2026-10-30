@@ -163,6 +163,17 @@ fn edit_menu(app: &mut VernonApp, ui: &mut Ui, ctx: &egui::Context) {
         app.do_action(Action::ViewUndo, ctx);
     }
     ui.separator();
+    for (text, a) in [("Cut", Action::Cut), ("Copy", Action::Copy)] {
+        if ui
+            .add_enabled(!app.st.selection.is_empty(), Button::new(text).shortcut_text(shortcut_for(a)))
+            .clicked()
+        {
+            app.do_action(a, ctx);
+        }
+    }
+    if item(ui, "Paste", Some(Action::Paste)) {
+        app.do_action(Action::Paste, ctx);
+    }
     if ui
         .add_enabled(!app.st.selection.is_empty(), Button::new("Delete").shortcut_text(shortcut_for(Action::Delete)))
         .clicked()

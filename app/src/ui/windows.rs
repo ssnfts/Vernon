@@ -145,7 +145,7 @@ pub fn show(app: &mut VernonApp, ctx: &egui::Context) {
         .show(ctx, |ui| {
             egui::ScrollArea::vertical().max_height(420.0).show(ui, |ui| {
                 egui::Grid::new("keys").striped(true).num_columns(2).show(ui, |ui| {
-                    for (c, _, text) in hotkeys::BINDINGS {
+                    for (c, _, text) in &hotkeys::active().bindings {
                         ui.label(RichText::new(hotkeys::chord_text(*c)).monospace().color(theme::ACCENT));
                         ui.label(*text);
                         ui.end_row();
