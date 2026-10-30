@@ -522,7 +522,9 @@ then the external solvers, then UI polish, then release.
   test itself.
 
 ### WP13 — App and UI gaps (`app/`, `crates/vernon-render`)
-1. **Concave n-gons in the display mesh:**
+1. **Concave n-gons in the display mesh:** DONE in WP13. The ear-clipper now
+   lives in `vernon-core::triangulate`; the viewport, the triangle writers and
+   the statistics panel all use `Geometry::triangulated()`.
    - The display mesh uses `Geometry::triangles()` (fan) and is wrong for
      concave n-gons.
    - Switch both renderers to ear-clipping (`vernon-io` has `tri.rs`; move
@@ -549,8 +551,8 @@ then the external solvers, then UI polish, then release.
    - Add Cut/Copy/Paste of sub-graphs: serialise the selected nodes and
      internal wires to clipboard JSON, and paste with fresh ids and unique
      names.
-7. **Load Demo Pipeline:** offer "replace scene" vs "add copy" instead of
-   always adding 36 more nodes.
+7. **Load Demo Pipeline:** DONE in WP13. The menu offers "Replace Scene with
+   Demo" (guarded by the unsaved-changes prompt) and "Add Demo Copy".
 8. **Screenshot check:** capture the app with the example loaded and check by
    eye that the Command Panel, time slider and status bar render. The last
    check was cropped by DPI scaling, so use a DPI-aware capture.

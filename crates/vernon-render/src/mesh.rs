@@ -8,9 +8,6 @@ use vernon_core::{Aabb, AttribArray, Geometry};
 /// Colour (linear RGB) used for shaded faces when the geometry has no `Cd`.
 pub const DEFAULT_MESH_COLOR: [f32; 3] = [0.5, 0.5, 0.5];
 
-/// Polygons with more vertices than this are fan-triangulated instead of
-/// ear-clipped (ear clipping is O(n^2) per polygon).
-pub const EAR_CLIP_MAX_VERTICES: usize = 256;
 
 /// Vertex of the shaded-triangle buffer.
 #[repr(C)]
@@ -247,90 +244,13 @@ pub fn newell_normal(poly: &[DVec3]) -> DVec3 {
 }
 
 /// Triangulate a (possibly concave, roughly planar) polygon into `out` as
-/// local vertex indices, keeping the polygon's winding. Always emits
-/// `n - 2` triangles for `n >= 3`.
+/// local vertex indices, keeping the polygon's winding. Delegates to the shared
+/// triangulator in `vernon-core`, so the viewport matches the triangle writers.
 pub fn triangulate_polygon(poly: &[DVec3], out: &mut Vec<[usize; 3]>) {
-    let n = poly.len();
-    if n < 3 {
-        return;
-    }
-    if n == 3 {
-        out.push([0, 1, 2]);
-        return;
-    }
-    let normal = newell_normal(poly);
-    if n > EAR_CLIP_MAX_VERTICES || normal == DVec3::ZERO {
-        fan(&(0..n).collect::<Vec<_>>(), out);
-        return;
-    }
-    // Project onto the plane most perpendicular to the normal, oriented so
-    // the polygon is counter-clockwise in 2D.
-    let a = normal.abs();
-    let (u, v) = if a.z >= a.x && a.z >= a.y {
-        if normal.z >= 0.0 {
-            (0, 1)
-        } else {
-            (1, 0)
-        }
-    } else if a.x >= a.y {
-        if normal.x >= 0.0 {
-            (1, 2)
-        } else {
-            (2, 1)
-        }
-    } else if normal.y >= 0.0 {
-        (2, 0)
-    } else {
-        (0, 2)
-    };
-    let p2: Vec<[f64; 2]> = poly.iter().map(|p| [p[u], p[v]]).collect();
-    ear_clip(&p2, out);
-}
-
-fn fan(idx: &[usize], out: &mut Vec<[usize; 3]>) {
-    for i in 1..idx.len() - 1 {
-        out.push([idx[0], idx[i], idx[i + 1]]);
-    }
-}
-
-fn cross2(o: [f64; 2], a: [f64; 2], b: [f64; 2]) -> f64 {
-    (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
-}
-
-fn ear_clip(p: &[[f64; 2]], out: &mut Vec<[usize; 3]>) {
-    let mut idx: Vec<usize> = (0..p.len()).collect();
-    while idx.len() > 3 {
-        let m = idx.len();
-        let mut clipped = false;
-        for i in 0..m {
-            let (ia, ib, ic) = (idx[(i + m - 1) % m], idx[i], idx[(i + 1) % m]);
-            let (a, b, c) = (p[ia], p[ib], p[ic]);
-            if cross2(a, b, c) <= 0.0 {
-                continue; // reflex or degenerate corner
-            }
-            let blocked = idx.iter().any(|&j| {
-                j != ia
-                    && j != ib
-                    && j != ic
-                    && cross2(a, b, p[j]) >= 0.0
-                    && cross2(b, c, p[j]) >= 0.0
-                    && cross2(c, a, p[j]) >= 0.0
-            });
-            if blocked {
-                continue;
-            }
-            out.push([ia, ib, ic]);
-            idx.remove(i);
-            clipped = true;
-            break;
-        }
-        if !clipped {
-            // Self-intersecting or degenerate remainder: fan what is left.
-            fan(&idx, out);
-            return;
-        }
-    }
-    out.push([idx[0], idx[1], idx[2]]);
+    let ring: Vec<u32> = (0..poly.len() as u32).collect();
+    let mut tris = Vec::new();
+    vernon_core::triangulate::triangulate_ring(poly, &ring, &mut tris);
+    out.extend(tris.iter().map(|t| t.map(|i| i as usize)));
 }
 
 #[cfg(test)]
@@ -380,6 +300,22 @@ mod tests {
         assert_eq!(b.edge_count(), 12);
         assert_eq!(b.tri_vertices[3].color, [1.0, 0.0, 0.0]);
         assert_eq!(b.point_vertices[3].color, [1.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn concave_l_hexagon_renders_four_non_overlapping_triangles() {
+        // An L shape with a reflex corner at index 3: a fan from vertex 0
+        // would put triangles outside the outline.
+        let pts: Vec<DVec3> = [(0., 0.), (4., 0.), (4., 2.), (2., 2.), (2., 4.), (0., 4.)]
+            .iter()
+            .map(|&(x, y)| DVec3::new(x, y, 0.0))
+            .collect();
+        let g = Geometry::from_polygons(pts, vec![(0..6).collect()]);
+        let b = MeshBuffers::from_geometry(&g);
+        assert_eq!(b.triangle_count(), 4);
+        let total: f64 = (0..b.triangle_count()).map(|t| tri_area(&b, t)).sum();
+        assert!((total - 12.0).abs() < 1e-9, "area {total}");
+        assert!((total - g.surface_area()).abs() < 1e-9);
     }
 
     #[test]

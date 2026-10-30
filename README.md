@@ -80,7 +80,8 @@ cargo run -p vernon-cli -- info clean.icp_align
 cargo run -p vernon -- examples/bodykit_pipeline.vrn
 ```
 
-In the app the same graph is under **Pipeline > Load Demo Pipeline**.
+In the app the same graph is under **Pipeline > Replace Scene with Demo**
+(clears the scene first) or **Pipeline > Add Demo Copy** (adds a second copy).
 
 ## Building (Windows, GNU toolchain)
 ```powershell

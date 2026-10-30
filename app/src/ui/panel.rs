@@ -671,7 +671,7 @@ fn utilities_tab(app: &mut VernonApp, ui: &mut Ui) {
             let mut pts = 0;
             for o in &objects {
                 if let Some(g) = app.st.geometry(app.st.display_node(*o)) {
-                    tris += g.triangles().len();
+                    tris += g.triangulated().len();
                     pts += g.point_count();
                 }
             }

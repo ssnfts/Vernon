@@ -122,7 +122,7 @@ pub fn build(geo: &Geometry, color_by: ColorBy) -> RenderMesh {
     m.min = lo;
     m.max = hi;
 
-    let all = geo.triangles();
+    let all = geo.triangulated();
     m.source_tris = all.len();
     let kept = decimate(&geo.points, all, MAX_DISPLAY_TRIS);
 

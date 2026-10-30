@@ -7,6 +7,7 @@ pub enum Pending {
     New,
     Open,
     Close,
+    Demo,
 }
 
 impl Pending {
@@ -15,6 +16,7 @@ impl Pending {
             Pending::New => "starting a new scene",
             Pending::Open => "opening another scene",
             Pending::Close => "closing",
+            Pending::Demo => "replacing the scene with the demo pipeline",
         }
     }
 }
@@ -91,6 +93,14 @@ mod tests {
         assert!(g.prompt.is_none());
         assert_eq!(g.request(Pending::Close, true), Step::Wait);
         assert_eq!(g.prompt, Some(Pending::Close));
+    }
+
+    #[test]
+    fn replacing_with_demo_asks_before_discarding_edits() {
+        let mut g = Guard::default();
+        assert_eq!(g.request(Pending::Demo, false), Step::Proceed(Pending::Demo));
+        assert_eq!(g.request(Pending::Demo, true), Step::Wait);
+        assert_eq!(g.prompt, Some(Pending::Demo));
     }
 
     #[test]

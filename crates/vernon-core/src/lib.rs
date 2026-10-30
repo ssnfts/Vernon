@@ -16,6 +16,7 @@ pub mod materials;
 pub mod process;
 pub mod report;
 pub mod stats;
+pub mod triangulate;
 pub mod units;
 
 pub use attrib::{AttribArray, AttribTable, AttribType};

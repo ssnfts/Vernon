@@ -16,7 +16,7 @@ pub fn build_registry() -> Registry {
     reg
 }
 
-/// The body-kit example graph, shipped as `Pipeline > Load Demo Pipeline`.
+/// The body-kit example graph, shipped as `Pipeline > Replace Scene with Demo`.
 pub const DEMO_PIPELINE: &str = include_str!("../../examples/bodykit_pipeline.vrn");
 
 /// The shared vendor-name guard (CLEAN_ROOM.md): the one list lives in

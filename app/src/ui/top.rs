@@ -77,7 +77,10 @@ pub fn menu_bar(app: &mut VernonApp, ctx: &egui::Context) {
                     if ui.button("Cook All").clicked() {
                         app.run_command("cook");
                     }
-                    if ui.button("Load Demo Pipeline").clicked() {
+                    if ui.button("Replace Scene with Demo").clicked() {
+                        app.replace_with_demo();
+                    }
+                    if ui.button("Add Demo Copy").clicked() {
                         if let Err(e) = app.st.build_demo_pipeline() {
                             app.st.error_text(e);
                         }

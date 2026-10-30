@@ -169,7 +169,7 @@ impl VernonApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         crate::theme::apply(&cc.egui_ctx);
         let mut st = AppState::new(build_registry());
-        st.info_text("Vernon ready. Try Pipeline > Load Demo Pipeline (the body-kit example), or type 'add box' below.");
+        st.info_text("Vernon ready. Try Pipeline > Replace Scene with Demo (the body-kit example), or type 'add box' below.");
         // Command line: `--demo` loads the demo pipeline, a `.vrn` path opens it.
         let mut fit = false;
         for arg in std::env::args().skip(1) {
@@ -308,6 +308,12 @@ impl VernonApp {
         self.step(step);
     }
 
+    /// Pipeline > Replace Scene with Demo: asks to save a modified scene first.
+    pub fn replace_with_demo(&mut self) {
+        let step = self.guard.request(Pending::Demo, self.st.dirty);
+        self.step(step);
+    }
+
     /// File > Open: asks to save a modified scene first.
     pub fn file_open(&mut self) {
         let step = self.guard.request(Pending::Open, self.st.dirty);
@@ -341,6 +347,14 @@ impl VernonApp {
                 self.vp.request_fit();
             }
             Pending::Open => self.open_dialog(FileMode::Open),
+            Pending::Demo => {
+                self.st.new_scene();
+                self.study = Study::default();
+                if let Err(e) = self.st.build_demo_pipeline() {
+                    self.st.error_text(e);
+                }
+                self.vp.request_fit();
+            }
             Pending::Close => {
                 self.allow_close = true;
                 self.close_now = true;

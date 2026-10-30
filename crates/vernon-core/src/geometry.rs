@@ -151,8 +151,14 @@ impl Geometry {
         }
     }
 
+    /// Triangles of every closed primitive, with concave polygons ear-clipped
+    /// (see [`crate::triangulate`]). Returns (prim index, [a, b, c]) tuples.
+    pub fn triangulated(&self) -> Vec<(usize, [u32; 3])> {
+        crate::triangulate::triangulate_geometry(self)
+    }
+
     /// Fan-triangulated triangles of every closed primitive with >= 3 vertices.
-    /// Returns (prim index, [a, b, c]) tuples.
+    /// Convex-only: use [`Geometry::triangulated`] for concave polygons.
     pub fn triangles(&self) -> Vec<(usize, [u32; 3])> {
         let mut out = Vec::new();
         for (pi, prim) in self.prims.iter().enumerate() {
