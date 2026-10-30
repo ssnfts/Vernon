@@ -572,10 +572,6 @@ then the external solvers, then UI polish, then release.
   deviation and CdA/ClA names and alias lists.
 - **Tests:** the 4 clean-crate performance tests and the GPU smoke test pass;
   timings are in `crates/vernon-nodes-clean/README.md`.
-- **Open, not part of WP14:** the example's `fea_deck` runs at the default 23 °C
-  with an un-derated material, while its `surface_temp` reaches about 83 °C. Wire
-  `fea.material_derate` and `fea.temperature_map` (or set `temperature_c`) so the
-  structural check runs at the temperature the solar stage computes.
 
 ### WP15 — Validation against tools the user owns (golden tests)
 - **Allowed:** recording outputs of legally licensed tools on inputs we
