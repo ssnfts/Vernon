@@ -105,7 +105,7 @@ pub(crate) fn fit_settings(ctx: &CookContext, params: &Params) -> CookResult<Fit
 fn fit_metrics(report: &mut Report, f: &SurfaceFit, tol: f64) {
     report.metric("fit_max_mm", Metric::new(f.max_dev, "mm").with_limit(tol, true));
     report.metric("fit_rms_mm", Metric::new(f.rms_dev, "mm"));
-    report.metric("fit_p95_mm", Metric::new(f.p95_dev, "mm").with_limit(tol, true));
+    report.metric(vernon_core::keys::FIT_P95_MM, Metric::new(f.p95_dev, "mm").with_limit(tol, true));
     report.metric("control_points_u", Metric::new(f.surface.nu as f64, "count"));
     report.metric("control_points_v", Metric::new(f.surface.nv as f64, "count"));
     report.metric("refinement_rounds", Metric::new(f.iterations as f64, "count"));

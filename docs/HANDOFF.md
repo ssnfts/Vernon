@@ -555,23 +555,27 @@ then the external solvers, then UI polish, then release.
    eye that the Command Panel, time slider and status bar render. The last
    check was cropped by DPI scaling, so use a DPI-aware capture.
 
-### WP14 — Consistency clean-ups
-- **Material tables:** verify the three material tables are now one
-  (`vernon-core` `materials`).
-  - `rg -n "101.5|hdt" crates` must show every stage reading HDT from the
-    shared table.
-  - ASA: use 0.45 MPa HDT from the table (report said 100–103 °C; the table
-    says 101.5), never a second hard-coded 100.
-- **Air state:** check the example scene passes one air state (ρ from
-  T/p/RH) to CFD, FEA and performance. Assert this in
-  `crates/vernon-cli/tests/pipeline.rs`.
-- **Metric names:** don't rename existing ones (`dev_p95_mm`, `p95_abs`,
-  `fit_p95_mm`); add aliases to `vernon_core::report::keys` instead.
-- **Tests:**
-  - Re-enable and run the 3 performance tests with
-    `cargo test --release -p vernon-nodes-clean -- --ignored`. Record the
-    timings in the crate README; they must pass.
-  - Also run `cargo test -p vernon-render -- --ignored` on a GPU machine.
+### WP14 — Consistency clean-ups (done 2026-10-30)
+- **Material tables:** there is one table, `vernon_core::materials`. Print, FEA
+  and solar all read it; `crates/vernon-cli/tests/consistency.rs` checks every
+  material, as printed and annealed, through the real nodes. ASA's 0.45 MPa HDT
+  is 100 °C, the low end of the report's 100–103 °C range. (An earlier version
+  of this note said 101.5, which is only a test fixture.)
+- **Heat-check treatment:** with a material report wired in, `solar.hdt_check`
+  now states the report's treatment instead of its own `annealed` flag and warns
+  when the two differ. The FEA material reports publish `annealed`.
+- **Air state:** `crates/vernon-cli/tests/pipeline.rs` asserts one density in the
+  performance nodes, the structural load and the CFD case, including the
+  `rhoInf` written to `controlDict`. The solar ambient is a separate setting, so
+  the test asserts it matches the air state's temperature.
+- **Metric names:** not renamed. `vernon_core::report::keys` now has the
+  deviation and CdA/ClA names and alias lists.
+- **Tests:** the 4 clean-crate performance tests and the GPU smoke test pass;
+  timings are in `crates/vernon-nodes-clean/README.md`.
+- **Open, not part of WP14:** the example's `fea_deck` runs at the default 23 °C
+  with an un-derated material, while its `surface_temp` reaches about 83 °C. Wire
+  `fea.material_derate` and `fea.temperature_map` (or set `temperature_c`) so the
+  structural check runs at the temperature the solar stage computes.
 
 ### WP15 — Validation against tools the user owns (golden tests)
 - **Allowed:** recording outputs of legally licensed tools on inputs we

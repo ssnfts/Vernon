@@ -326,15 +326,15 @@ fn aero_from(d: &Data) -> Result<(f64, f64), String> {
             if v.get("placeholder").and_then(|x| x.as_bool()) == Some(true) {
                 return Err(NO_DATA.into());
             }
-            let g = |keys: &[&str]| keys.iter().find_map(|k| v.get(*k).and_then(|x| x.as_f64()));
-            (g(&["cda_m2", "CdA", "cda"]), g(&["cla_m2", "ClA", "cla"]))
+            let g = |names: &[&str]| names.iter().find_map(|k| v.get(*k).and_then(|x| x.as_f64()));
+            (g(&vernon_core::keys::CDA_ALIASES), g(&vernon_core::keys::CLA_ALIASES))
         }
         Data::Report(r) => {
             if r.metrics.get("data_available").is_some_and(|m| m.value < 0.5) {
                 return Err(NO_DATA.into());
             }
-            let g = |keys: &[&str]| keys.iter().find_map(|k| r.metrics.get(*k).map(|m| m.value));
-            (g(&["CdA", "cda_m2"]), g(&["ClA", "cla_m2"]))
+            let g = |names: &[&'static str]| r.first_metric(names).map(|(_, v)| v);
+            (g(&vernon_core::keys::CDA_ALIASES), g(&vernon_core::keys::CLA_ALIASES))
         }
         _ => (None, None),
     };

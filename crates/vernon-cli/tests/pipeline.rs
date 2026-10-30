@@ -70,6 +70,37 @@ fn bodykit_pipeline_cooks_every_node_and_every_stage_reports() {
     let down = metric("aero_loads", "downforce_design");
     assert!((metric("aero_load", "force_requested_n") - down).abs() < 1e-9 * down.max(1.0));
 
+    // The CFD case uses that same air: its report, and the density actually
+    // written into the solver's force post-processing.
+    assert_eq!(metric("cfd_case", "rho_inf"), rho);
+    let case = outcomes.iter().find(|o| o.name == "cfd_case").unwrap();
+    let case_dir = case.result.as_ref().unwrap().iter().find_map(|d| d.as_file().cloned()).expect("case directory");
+    let control = std::fs::read_to_string(case_dir.join("system/controlDict")).expect("controlDict");
+    let written: Vec<f64> = control
+        .lines()
+        .filter_map(|l| l.trim().strip_prefix("rhoInf"))
+        .map(|v| v.trim().trim_end_matches(';').parse().expect("rhoInf is a number"))
+        .collect();
+    assert!(!written.is_empty(), "controlDict has no rhoInf");
+    assert!(written.iter().all(|w| (w - rho).abs() < 1e-3), "{written:?} vs {rho}");
+
+    // The solar stage is set up separately, so check it agrees with that air.
+    let air = &graph.nodes[&graph.find("air").unwrap()];
+    assert_eq!(metric("surface_temp", "ambient_c"), air.params.float("t_c").unwrap());
+
+    // The heat check's limit is the structural material's, and it says so.
+    assert_eq!(metric("hdt_check", vernon_core::keys::HDT_C), vernon_core::materials::ASA.hdt_045_c);
+    assert_eq!(metric("hdt_check", vernon_core::keys::HDT_C), metric("material", vernon_core::keys::HDT_045_C));
+    assert_eq!(metric("hdt_check", vernon_core::keys::ANNEALED), 0.0);
+
+    // The stages keep their own deviation names; the shared aliases find each.
+    let deviation = |node: &str| {
+        let o = outcomes.iter().find(|o| o.name == node).unwrap_or_else(|| panic!("no node {node}"));
+        o.reports().find_map(|r| r.first_metric(&vernon_core::keys::DEVIATION_P95_ALIASES))
+    };
+    assert_eq!(deviation("deviation_stats").map(|(k, _)| k), Some(vernon_core::keys::P95_ABS));
+    assert_eq!(deviation("surface_deviation").map(|(k, _)| k), Some(vernon_core::keys::DEV_P95_MM));
+
     // Every gate passes except the two the example marks as expected.
     let gates = vernon_cli::gate_failures(&outcomes, &graph);
     let open: Vec<_> = gates.iter().filter(|g| g.expected.is_none()).collect();
