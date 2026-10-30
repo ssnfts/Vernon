@@ -203,7 +203,7 @@ impl NodeOp for DeviationCheckNode {
         report.metric("dev_std_mm", Metric::new(st.std, "mm"));
         report.metric("dev_max_mm", Metric::new(st.max_abs, "mm"));
         report.metric("dev_p50_mm", Metric::new(st.p50, "mm"));
-        report.metric("dev_p95_mm", Metric::new(st.p95, "mm").with_limit(tol, true));
+        report.metric(vernon_core::keys::DEV_P95_MM, Metric::new(st.p95, "mm").with_limit(tol, true));
         report.metric("dev_p99_mm", Metric::new(st.p99, "mm"));
         report.metric("dev_gate_mm", Metric::new(gate_val, "mm").with_limit(tol, true));
         report.metric("pct_within_tol", Metric::new(st.pct_within, "%"));

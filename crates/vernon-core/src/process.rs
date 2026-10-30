@@ -238,24 +238,27 @@ mod tests {
     }
 
     /// A shell that starts a second shell which writes a marker file after
-    /// two seconds: a timeout must end the grandchild too.
+    /// ten seconds: a timeout must end the grandchild too. The delay has to
+    /// outlast the kill itself, and `taskkill` can take over a second and a
+    /// half on an otherwise idle Windows machine.
     #[test]
     fn timeout_and_cancel_kill_the_tree() {
         let dir = tmp("tree");
         std::fs::create_dir_all(&dir).unwrap();
         let marker = dir.join("marker.txt");
         let nested = if cfg!(windows) {
-            "cmd /C \"ping -n 3 127.0.0.1 >nul & echo late>marker.txt\"".to_string()
+            "cmd /C \"ping -n 11 127.0.0.1 >nul & echo late>marker.txt\"".to_string()
         } else {
-            "sh -c 'sleep 2; echo late > marker.txt'; true".to_string()
+            "sh -c 'sleep 10; echo late > marker.txt'; true".to_string()
         };
         let t0 = Instant::now();
         let mut cmd = shell(&nested);
         cmd.current_dir(&dir);
         let st = run(&mut cmd, &dir.join("t.log"), &RunOptions::with_timeout(Duration::from_millis(500))).unwrap();
         assert_eq!(st, Exit::TimedOut);
-        assert!(t0.elapsed() < Duration::from_secs(20), "{:?}", t0.elapsed());
-        std::thread::sleep(Duration::from_millis(3500));
+        let killed_after = t0.elapsed();
+        assert!(killed_after < Duration::from_secs(10), "the kill took {killed_after:?}, too long to prove anything");
+        std::thread::sleep(Duration::from_millis(11_000).saturating_sub(killed_after));
         assert!(!marker.exists(), "the grandchild outlived the timeout");
 
         let nested = if cfg!(windows) { "cmd /C \"ping -n 30 127.0.0.1 >nul\"" } else { "sh -c 'sleep 30'; true" };

@@ -500,7 +500,7 @@ pub fn cook(ctx: &CookContext, inputs: &[Option<Data>], params: &Params) -> Cook
     );
     report.metric("dev_rms_mm", Metric::new(dev.rms, "mm"));
     report.metric(
-        "dev_p95_mm",
+        vernon_core::keys::DEV_P95_MM,
         Metric::new(dev.p95, "mm").with_limit(fs.tol, true),
     );
     report.metric(

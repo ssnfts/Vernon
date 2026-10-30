@@ -179,6 +179,7 @@ impl NodeOp for MaterialFdm {
         r.metric("density_t_mm3", Metric::new(card.density_t_mm3, "t/mm3"));
         if let Some(h) = card.hdt_045_c {
             r.metric(vernon_core::keys::HDT_045_C, Metric::new(h, "degC"));
+            r.metric(vernon_core::keys::ANNEALED, Metric::new(f64::from(card.annealed), ""));
         }
         if let Some(w) = card.water_abs_pct {
             r.metric("water_absorption_pct", Metric::new(w, "%"));
@@ -301,6 +302,7 @@ impl NodeOp for MaterialDerate {
         r.metric("table_points", Metric::new(table.points.len() as f64, ""));
         if let Some(h) = hdt045 {
             r.metric(vernon_core::keys::HDT_045_C, Metric::new(h, "degC"));
+            r.metric(vernon_core::keys::ANNEALED, Metric::new(f64::from(annealed), ""));
         }
         r.metric("uncalibrated", Metric::new(if table.uncalibrated { 1.0 } else { 0.0 }, "flag"));
         if table.uncalibrated {

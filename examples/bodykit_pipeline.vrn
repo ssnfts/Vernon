@@ -48,13 +48,15 @@
             "params": { "model": "fixed_patch", "r_w_mm": 12.0, "count": 2, "site_a": [-300.0, 0.0, 0.0], "site_b": [300.0, 0.0, 0.0] } },
     "25": { "type_id": "fea.load_aero", "name": "aero_load", "pos": [1320, 360], "inputs": [[24, 1], null, [34, 0]] },
     "26": { "type_id": "fea.load_cases", "name": "load_cases", "pos": [1320, 480], "inputs": [[25, 0], null, [24, 0]] },
-    "27": { "type_id": "fea.deck_write", "name": "fea_deck", "pos": [1320, 600], "inputs": [[24, 1], [22, 0], [24, 0], [26, 0], null],
+    "36": { "type_id": "fea.material_derate", "name": "derate", "pos": [1320, 600], "inputs": [[22, 0]] },
+    "37": { "type_id": "fea.temperature_map", "name": "temp_map", "pos": [1320, 720], "inputs": [[24, 1], [29, 0], [36, 0]] },
+    "27": { "type_id": "fea.deck_write", "name": "fea_deck", "pos": [1320, 840], "inputs": [[37, 0], [36, 0], [24, 0], [26, 0], null],
             "params": { "allow_linear_tet": true } },
 
     "28": { "type_id": "solar.design_hour", "name": "design_hour", "pos": [1540, 0] },
     "29": { "type_id": "solar.surface_balance", "name": "surface_temp", "pos": [1540, 120], "inputs": [[0, 0], [28, 0]],
             "params": { "alpha": 0.6, "emissivity": 0.9 } },
-    "30": { "type_id": "solar.hdt_check", "name": "hdt_check", "pos": [1540, 240], "inputs": [[29, 0], null, [22, 1]],
+    "30": { "type_id": "solar.hdt_check", "name": "hdt_check", "pos": [1540, 240], "inputs": [[29, 0], null, [36, 2]],
             "params": { "material": "ASA" } },
 
     "31": { "type_id": "flatten.conformal_map", "name": "flatten", "pos": [1760, 0], "inputs": [[0, 0], null] },

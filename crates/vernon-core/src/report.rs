@@ -130,6 +130,29 @@ pub mod keys {
     /// Where a surface temperature may be found, preferred first.
     pub const SURFACE_TEMP_ALIASES: [&str; 5] =
         [SURFACE_TEMP_C, "max_surface_temp_c", "temp_c_max", MAX_TEMP_C, "peak_temp_c"];
+
+    /// 1 when the heat-deflection value in the same report is the annealed one.
+    pub const ANNEALED: &str = "annealed";
+
+    /// Surface-to-reference deviation, 95th percentile of |d|, mm.
+    pub const DEV_P95_MM: &str = "dev_p95_mm";
+    /// Scan-to-mesh deviation, 95th percentile of |d|, mm.
+    pub const P95_ABS: &str = "p95_abs";
+    /// Patch-fit residual, 95th percentile of |d|, mm.
+    pub const FIT_P95_MM: &str = "fit_p95_mm";
+    /// Where a 95th-percentile deviation may be found. The stages keep their
+    /// own names because they measure different things; prefer the comparison
+    /// against the reference over a fit's own residual.
+    pub const DEVIATION_P95_ALIASES: [&str; 3] = [DEV_P95_MM, P95_ABS, FIT_P95_MM];
+
+    /// Drag area, m2.
+    pub const CDA: &str = "CdA";
+    /// Lift area, m2 (negative is downforce).
+    pub const CLA: &str = "ClA";
+    /// Where a drag area may be found: reports, vehicle tables, force results.
+    pub const CDA_ALIASES: [&str; 3] = [CDA, "cda_m2", "cda"];
+    /// Where a lift area may be found: reports, vehicle tables, force results.
+    pub const CLA_ALIASES: [&str; 3] = [CLA, "cla_m2", "cla"];
 }
 
 #[cfg(test)]
@@ -143,5 +166,10 @@ mod key_tests {
         r.metric(keys::HDT_045_C, Metric::new(101.5, "degC"));
         assert_eq!(r.first_metric(&keys::HDT_ALIASES), Some((keys::HDT_045_C, 101.5)));
         assert_eq!(r.first_metric(&keys::SURFACE_TEMP_ALIASES), None);
+        r.metric(keys::FIT_P95_MM, Metric::new(0.08, "mm"));
+        r.metric(keys::DEV_P95_MM, Metric::new(0.17, "mm"));
+        assert_eq!(r.first_metric(&keys::DEVIATION_P95_ALIASES), Some((keys::DEV_P95_MM, 0.17)));
+        r.metric("cda_m2", Metric::new(0.64, "m2"));
+        assert_eq!(r.first_metric(&keys::CDA_ALIASES), Some(("cda_m2", 0.64)));
     }
 }

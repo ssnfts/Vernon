@@ -652,7 +652,38 @@ impl NodeOp for HdtCheckNode {
         r.metric("ok_area_pct", Metric::new(share(0), "%"));
         r.metric("worst_face", Metric::new(worst_face as f64, "index"));
         r.metric("max_temp_c", Metric::new(max_temp, "degC"));
-        r.metric("annealed", Metric::new(f64::from(annealed), ""));
+        // A connected material report sets the limit, so it also sets the treatment: state what
+        // the limit really is rather than this node's own flag, which did not choose it.
+        if override_hdt.is_some() {
+            let treatment = |on: bool| if on { "annealed" } else { "as-printed" };
+            let reported = material_report
+                .as_ref()
+                .and_then(|m| m.first_metric(&[keys::ANNEALED]))
+                .map(|(_, v)| v >= 0.5);
+            match reported {
+                Some(on) => {
+                    r.metric(keys::ANNEALED, Metric::new(f64::from(on), ""));
+                    if on != annealed {
+                        r.note(
+                            Severity::Warning,
+                            format!(
+                                "this node's Annealed setting is ignored: the limit comes from the connected material report, which uses the {} value; set the treatment on the material node",
+                                treatment(on)
+                            ),
+                        );
+                    }
+                }
+                None if annealed => {
+                    r.note(
+                        Severity::Warning,
+                        "this node's Annealed setting is ignored: the limit comes from the connected material report, which does not state a treatment",
+                    );
+                }
+                None => {}
+            }
+        } else {
+            r.metric(keys::ANNEALED, Metric::new(f64::from(annealed), ""));
+        }
         // the treatment behind the limit is a metric, not only a note: some materials carry a
         // datasheet figure, an as-printed figure and an annealed figure that differ by 100 K
         if override_hdt.is_none() {

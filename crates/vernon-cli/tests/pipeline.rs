@@ -70,6 +70,80 @@ fn bodykit_pipeline_cooks_every_node_and_every_stage_reports() {
     let down = metric("aero_loads", "downforce_design");
     assert!((metric("aero_load", "force_requested_n") - down).abs() < 1e-9 * down.max(1.0));
 
+    // The CFD case uses that same air: its report, and the density actually
+    // written into the solver's force post-processing.
+    assert_eq!(metric("cfd_case", "rho_inf"), rho);
+    let case = outcomes.iter().find(|o| o.name == "cfd_case").unwrap();
+    let case_dir = case.result.as_ref().unwrap().iter().find_map(|d| d.as_file().cloned()).expect("case directory");
+    let control = std::fs::read_to_string(case_dir.join("system/controlDict")).expect("controlDict");
+    let written: Vec<f64> = control
+        .lines()
+        .filter_map(|l| l.trim().strip_prefix("rhoInf"))
+        .map(|v| v.trim().trim_end_matches(';').parse().expect("rhoInf is a number"))
+        .collect();
+    assert!(!written.is_empty(), "controlDict has no rhoInf");
+    assert!(written.iter().all(|w| (w - rho).abs() < 1e-3), "{written:?} vs {rho}");
+
+    // The solar stage is set up separately, so check it agrees with that air.
+    let air = &graph.nodes[&graph.find("air").unwrap()];
+    assert_eq!(metric("surface_temp", "ambient_c"), air.params.float("t_c").unwrap());
+
+    // The heat check's limit is the structural material's, and it says so.
+    assert_eq!(metric("hdt_check", vernon_core::keys::HDT_C), vernon_core::materials::ASA.hdt_045_c);
+    assert_eq!(metric("hdt_check", vernon_core::keys::HDT_C), metric("material", vernon_core::keys::HDT_045_C));
+    assert_eq!(metric("hdt_check", vernon_core::keys::ANNEALED), 0.0);
+    assert_eq!(metric("hdt_check", vernon_core::keys::HDT_C), metric("derate", vernon_core::keys::HDT_045_C));
+
+    // The structural deck runs at the temperature the solar stage computes.
+    // The solar mesh is the bare panel and the solid its thickened fit, so
+    // first check every solid node found the panel.
+    assert_eq!(metric("temp_map", "unmapped_nodes"), 0.0);
+    let (t_min, t_max) = (metric("surface_temp", "min_temp_c"), metric("surface_temp", "max_temp_c"));
+    assert!(t_min > metric("surface_temp", "ambient_c") + 20.0, "{t_min}");
+    let deck = outcomes.iter().find(|o| o.name == "fea_deck").unwrap();
+    let deck_dir = deck.result.as_ref().unwrap().iter().find_map(|d| d.as_file().cloned()).expect("deck directory");
+    let decks: Vec<PathBuf> = std::fs::read_dir(&deck_dir)
+        .expect("deck directory exists")
+        .map(|e| e.unwrap().path())
+        .filter(|p| p.extension().is_some_and(|x| x == "inp"))
+        .collect();
+    assert_eq!(decks.len() as f64, metric("fea_deck", "deck_count"));
+    for path in &decks {
+        let text = std::fs::read_to_string(path).unwrap();
+        // Rows of a keyword card, up to the next card.
+        let card = |prefix: &str| -> Vec<&str> {
+            text.lines().skip_while(|l| !l.starts_with(prefix)).skip(1).take_while(|l| !l.starts_with('*')).collect()
+        };
+        let temps: Vec<f64> = card("*TEMPERATURE")
+            .iter()
+            .map(|l| l.split(',').nth(1).unwrap().parse().expect("node temperature"))
+            .collect();
+        assert_eq!(temps.len() as f64, metric("fea_deck", "nodes"), "{}", path.display());
+        assert!(temps.iter().all(|t| (t_min - 1e-3..=t_max + 1e-3).contains(t)), "{}: outside {t_min}..{t_max}", path.display());
+
+        // The material card has temperature rows spanning that temperature,
+        // and the stiffness it gives there is the derated one. Each row is
+        // two lines: the constants, then the last constant and the temperature.
+        let rows: Vec<(f64, f64)> = card("*ELASTIC")
+            .chunks(2)
+            .map(|r| (r[1].split(',').nth(1).unwrap().parse().unwrap(), r[0].split(',').next().unwrap().parse().unwrap()))
+            .collect();
+        assert_eq!(rows.len() as f64, metric("derate", "table_points"), "{}", path.display());
+        let upper = rows.iter().position(|r| r.0 >= t_max).expect("table reaches the panel temperature");
+        assert!(upper > 0);
+        let ((t0, e0), (t1, e1)) = (rows[upper - 1], rows[upper]);
+        let retained = (e0 + (t_max - t0) / (t1 - t0) * (e1 - e0)) / rows[0].1;
+        assert!(retained > metric("derate", "retention_85c") && retained < metric("derate", "retention_60c"), "{retained}");
+    }
+
+    // The stages keep their own deviation names; the shared aliases find each.
+    let deviation = |node: &str| {
+        let o = outcomes.iter().find(|o| o.name == node).unwrap_or_else(|| panic!("no node {node}"));
+        o.reports().find_map(|r| r.first_metric(&vernon_core::keys::DEVIATION_P95_ALIASES))
+    };
+    assert_eq!(deviation("deviation_stats").map(|(k, _)| k), Some(vernon_core::keys::P95_ABS));
+    assert_eq!(deviation("surface_deviation").map(|(k, _)| k), Some(vernon_core::keys::DEV_P95_MM));
+
     // Every gate passes except the two the example marks as expected.
     let gates = vernon_cli::gate_failures(&outcomes, &graph);
     let open: Vec<_> = gates.iter().filter(|g| g.expected.is_none()).collect();

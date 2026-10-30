@@ -64,7 +64,7 @@ Definition of done for **every** change:
 cargo build --workspace
 cargo test --workspace                                   # currently 982 passing, 0 failing
 cargo clippy --workspace --all-targets -- -D warnings    # must be clean
-cargo run -p vernon-cli -- cook examples/bodykit_pipeline.vrn   # 36 nodes, 0 failing gates, 2 expected
+cargo run -p vernon-cli -- cook examples/bodykit_pipeline.vrn   # 38 nodes, 0 failing gates, 2 expected
 cargo run -p vernon-cli -- list --markdown > docs/NODES.md      # regenerate after adding or changing nodes
 ```
 Then update the per-stage counts in `README.md` and launch the app once

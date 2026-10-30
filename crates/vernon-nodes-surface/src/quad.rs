@@ -158,7 +158,7 @@ impl NodeOp for QuadMeshReportNode {
             let d = signed_distances(&bvh, &mesh.points);
             let st = dev_stats(&d, tol);
             r.metric("dev_p50_mm", Metric::new(st.p50, "mm"));
-            r.metric("dev_p95_mm", Metric::new(st.p95, "mm").with_limit(tol, true));
+            r.metric(vernon_core::keys::DEV_P95_MM, Metric::new(st.p95, "mm").with_limit(tol, true));
             r.metric("dev_p99_mm", Metric::new(st.p99, "mm"));
             r.metric("dev_max_mm", Metric::new(st.max_abs, "mm"));
         }

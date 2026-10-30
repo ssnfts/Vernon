@@ -1422,6 +1422,52 @@ fn hdt_verdicts_match_the_goldens() {
 }
 
 #[test]
+fn a_connected_material_report_sets_the_stated_treatment() {
+    let material = |hdt: f64, annealed: Option<f64>| {
+        let mut r = Report::new("material");
+        r.metric("hdt_045_c", vernon_core::Metric::new(hdt, "degC"));
+        if let Some(a) = annealed {
+            r.metric("annealed", vernon_core::Metric::new(a, ""));
+        }
+        Some(Data::report(r))
+    };
+    let check = |report, flag: bool| {
+        let out = cook(
+            "solar.hdt_check",
+            &[Some(with_temp(50.0)), None, report],
+            &[("material", s("PAHT-CF")), ("annealed", vernon_graph::ParamValue::Bool(flag))],
+        )
+        .unwrap();
+        rep(&out[1])
+    };
+    let ignored = |r: &Report| {
+        r.notes.iter().any(|(sev, t)| *sev == vernon_core::Severity::Warning && t.contains("Annealed setting is ignored"))
+    };
+
+    // Annealed report, flag off: the 190.7 limit must not read as as-printed.
+    let r = check(material(190.7, Some(1.0)), false);
+    assert_eq!((m(&r, "hdt_c"), m(&r, "annealed")), (190.7, 1.0));
+    assert!(ignored(&r));
+    // As-printed report, flag on: the 84.8 limit must not read as annealed.
+    let r = check(material(84.8, Some(0.0)), true);
+    assert_eq!((m(&r, "hdt_c"), m(&r, "annealed")), (84.8, 0.0));
+    assert!(ignored(&r));
+    // The two agree: nothing to warn about.
+    let r = check(material(190.7, Some(1.0)), true);
+    assert_eq!(m(&r, "annealed"), 1.0);
+    assert!(!ignored(&r));
+    // A report that does not say: no claim is made, and a flag set here is flagged.
+    let r = check(material(101.5, None), true);
+    assert!(!r.metrics.contains_key("annealed"));
+    assert!(ignored(&r));
+    assert!(!ignored(&check(material(101.5, None), false)));
+    // No report at all: the flag does choose the limit.
+    let r = check(None, true);
+    assert_eq!((m(&r, "hdt_c"), m(&r, "annealed")), (190.7, 1.0));
+    assert!(!ignored(&r));
+}
+
+#[test]
 fn material_table_node_and_csv() {
     let out = cook("solar.material_table", &[], &[]).unwrap();
     assert_eq!(
