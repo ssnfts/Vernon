@@ -10,6 +10,7 @@ use vernon_graph::Registry;
 pub mod accuracy;
 pub mod colmap;
 pub mod colmap_model;
+mod photo_inputs;
 pub mod import;
 pub mod linalg;
 pub mod registration;
@@ -132,6 +133,8 @@ mod tests {
             assert!(!info.help.is_empty(), "{} has no help", info.id);
             let expected_spec=if matches!(info.id.as_str(),"capture.global_align"|"capture.multiway_align") {
                 "docs/specs/native-scan-registration.md"
+            } else if matches!(info.id.as_str(),"capture.sfm_features_match"|"capture.sfm_reconstruct"|"capture.mvs_dense"|"capture.mvs_mesh") {
+                "docs/specs/real-photogrammetry.md"
             } else {"docs/specs/capture-scanning.md"};
             assert_eq!(info.spec.as_deref(), Some(expected_spec), "{}", info.id);
             assert!(!info.emulates.is_empty(), "{} has no emulates", info.id);
@@ -160,9 +163,7 @@ mod tests {
         ] {
             assert_eq!(reg.info(id).unwrap().external_tool.as_deref(), Some("COLMAP"), "{id}");
             assert!(reg.info(id).unwrap().params.iter().any(|p| p.name == "run"), "{id} needs a run switch");
-        }
-        for id in ["capture.mvs_mesh", "capture.sfm_features_match"] {
-            assert!(reg.info(id).unwrap().whitebox, "{id} is a white-box node");
+            assert!(!reg.info(id).unwrap().whitebox, "{id} has verified external execution; native fallback remains explicitly labelled");
         }
         for id in [
             "capture.global_align",

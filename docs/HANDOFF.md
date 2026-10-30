@@ -6,7 +6,40 @@ of done. This document lists the remaining work as ordered **work packages
 (WP)**. Do them in order, one commit each. Every WP ends with the full
 definition-of-done check from `AGENTS.md`.
 
-## Progress — 2026-10-29 (WP7)
+## Progress — 2026-10-30 (WP8)
+
+WP1–WP8 are implemented under their measured contracts. WP9 (real CFD) is
+next and requires a separate installation decision. Registry:197 nodes,
+190 implemented/7 white-box; Capture 22 implemented/0 white-box. Full bounded
+workspace verification:1,171 passed,0failed,10ignored. Build and all-target
+Clippy are clean; demo36 nodes/0failures/2 expected gates; catalogue matches.
+The app opened with Vulkan 4x MSAA on the RTX 4090 Laptop GPU; all four
+photogrammetry tools were checked in the Capture ribbon.
+
+The approved COLMAP 4.2.1 CUDA process pipeline reconstructed20 public South
+Building photos from fresh inputs:20 registered images,2,703sparse points,
+233,744fused points and293,974mesh vertices/554,298usable triangles in
+204.997 s. Import explicitly removed104 exact zero-area triangles. A separate
+real sparseDelaunay node produced2,024vertices/4,025triangles in0.233s.
+The100 mm numerical scale handoff passed on sparse and mesh outputs; this
+does not establish surveyed building accuracy or manufacturing suitability.
+No photos, binaries or reconstructed sample geometry are committed.
+
+Failed external outputs retain diagnostics/gates without reusing earlier
+File artifacts; recursive image metadata invalidates dependent caches;
+uncertifiable inputs prevent actions; external geometry writers defer while
+editing. Native offline meshing remains an explicitly labelled placeholder.
+Simplification and alternative matching/mapping methods remain unverified.
+See [the measured photogrammetry contract](specs/real-photogrammetry.md),
+the completed WP8 plan and docs/CONTINUATION.md for durable evidence.
+
+Final queue:`wp8-final-20261030-c`; source unchanged
+`90b5470a5285351e1b07d73b5b31aabff60c04c5b0558ce395037c3e1745324e`.
+Real acceptance:`wp8-real-20261030-b`; its source fingerprint precedes only
+the metadata promotion and maintained script-regression additions. Existing
+WP1–WP7 checkpoints below remain historical evidence.
+
+## WP7 checkpoint — 2026-10-29
 
 WP1–WP7 are implemented under their documented contracts; WP8 (real
 photogrammetry runs) is next. Registry: 197 nodes, 186 implemented and 11

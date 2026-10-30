@@ -19,7 +19,7 @@ catalogue, with what each node emulates, is in [docs/NODES.md](docs/NODES.md)
 | Stage | What Vernon does | Implemented | White-box |
 |---|---|---:|---:|
 | Geometry | Primitives, test car panel, transform, merge, mirror, normals, noise, file read/write | 20 | 0 |
-| 1 Capture | Import scans (PLY/OBJ/STL/XYZ), scale bars and markers, feature registration, robust multi-scan alignment, scan quality; drives COLMAP photogrammetry | 18 | 4 |
+| 1 Capture | Import scans (PLY/OBJ/STL/XYZ), scale bars and markers, feature registration, robust multi-scan alignment, scan quality; verified external photogrammetry | 22 | 0 |
 | 2 Clean / Align | Decimate, remesh, outliers, smoothing, ICP alignment, certified conservative wrap, signed deviation with percentile gate | 26 | 0 |
 | 3 Mesh → Surface | Region refinement, field-aligned quad remeshing, connected B-spline layouts, measured subdivision continuity, analytic primitive recognition, sections, loft, thicken, surface deviation, STEP export | 23 | 0 |
 | 4 Split / Print | Projected body-line cuts, bounded partition search, dovetail/dowel/plug keys, strain-screened snap hooks, bed fit, 3MF packages, JSON/INI presets and G-code checks | 25 | 1 |
@@ -28,11 +28,16 @@ catalogue, with what each node emulates, is in [docs/NODES.md](docs/NODES.md)
 | 7 Solar / Heat | Sun position, weather files, sky matrix, incident radiation, surface temperature balance vs heat-deflection temperature | 14 | 0 |
 | 7b Flatten | Seam cutting, conformal flattening, strain report, pattern map-back | 5 | 1 |
 | 8 Performance | Aero loads, top speed, point-mass lap model and sweeps, coastdown fit, pressure-tap validation | 18 | 1 |
-| **All** | | **186** | **11** |
+| **All** | | **190** | **7** |
 
 Nodes that drive external open-source programs (COLMAP, OpenFOAM,
 CalculiX, fTetWild, OrcaSlicer) write complete inputs without them and only
 run the program when asked to.
+
+The [measured photogrammetry contract](docs/specs/real-photogrammetry.md)
+records the verified external photo-to-mesh path. Its offline native mesh
+preview remains an explicitly labelled placeholder; physical scale needs a
+measured reference.
 
 The [native print-tool contract](docs/specs/native-print-tools.md) records
 WP5's geometry, firmware and preset limits, including assumed snap-strain

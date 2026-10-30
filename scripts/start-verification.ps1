@@ -7,7 +7,7 @@ tool session ends; confirm persistence in an independent shell on your host.
 #>
 [CmdletBinding()]
 param(
-    [ValidateSet('full', 'clean-focused', 'wp6-benchmark', 'wp6', 'smoke', 'smoke-failure', 'smoke-slow', 'smoke-orphan')][string]$Profile = 'full',
+    [ValidateSet('full', 'clean-focused', 'wp6-benchmark', 'wp6', 'wp8-real', 'wp8', 'smoke', 'smoke-failure', 'smoke-slow', 'smoke-orphan')][string]$Profile = 'full',
     [ValidatePattern('^[A-Za-z0-9][A-Za-z0-9_-]{0,95}$')][string]$RunId = ('run-' + [DateTime]::UtcNow.ToString('yyyyMMdd-HHmmss') + '-' + [guid]::NewGuid().ToString('N').Substring(0, 8)),
     [ValidatePattern('^$|^[A-Za-z0-9][A-Za-z0-9_-]{0,95}$')][string]$ResumeRunId = '',
     [ValidateRange(1, 86400)][int]$JobTimeoutSeconds = 7200

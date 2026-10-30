@@ -72,6 +72,14 @@ fn finite(v: f64, line: usize, what: &str) -> Result<f64, String> {
     }
 }
 
+fn take_field<'a>(remaining: &mut &'a str) -> Option<&'a str> {
+    let text = remaining.trim_start();
+    let end = text.find(char::is_whitespace).unwrap_or(text.len());
+    let (field, tail) = text.split_at(end);
+    *remaining = tail;
+    (!field.is_empty()).then_some(field)
+}
+
 /// Parse `cameras.txt`.
 pub fn parse_cameras_txt(text: &str) -> Result<Vec<Camera>, String> {
     let mut out = Vec::new();
@@ -101,26 +109,40 @@ pub fn parse_cameras_txt(text: &str) -> Result<Vec<Camera>, String> {
 /// Parse `images.txt`: two lines per image, the second (2D points) possibly empty.
 pub fn parse_images_txt(text: &str) -> Result<Vec<Image>, String> {
     let mut out = Vec::new();
-    let mut lines = data_lines(text).peekable();
+    let mut lines = data_lines(text);
     while let Some((ln, l)) = lines.next() {
         if l.is_empty() {
             continue;
         }
-        let mut f = l.split_whitespace();
-        let id = parse(f.next(), ln, "image id")?;
+        let mut f = l;
+        let id = parse(take_field(&mut f), ln, "image id")?;
         let mut q = [0.0; 4];
         for (k, name) in ["QW", "QX", "QY", "QZ"].iter().enumerate() {
-            q[k] = finite(parse(f.next(), ln, name)?, ln, name)?;
+            q[k] = finite(parse(take_field(&mut f), ln, name)?, ln, name)?;
         }
         let mut t = [0.0; 3];
         for (k, name) in ["TX", "TY", "TZ"].iter().enumerate() {
-            t[k] = finite(parse(f.next(), ln, name)?, ln, name)?;
+            t[k] = finite(parse(take_field(&mut f), ln, name)?, ln, name)?;
         }
-        let camera_id = parse(f.next(), ln, "camera id")?;
-        let name = f.next().ok_or_else(|| format!("line {ln}: missing image name"))?.to_string();
+        let camera_id = parse(take_field(&mut f), ln, "camera id")?;
+        let name = f.trim_start();
+        if name.is_empty() {
+            return Err(format!("line {ln}: missing image name"));
+        }
         // The points line belongs to this image even when it is empty.
-        lines.next();
-        out.push(Image { id, q, t, camera_id, name });
+        let (point_ln, points) = lines.next().ok_or_else(|| format!("line {ln}: missing image points line"))?;
+        let mut points = points.split_whitespace();
+        while let Some(x) = points.next() {
+            finite(parse(Some(x), point_ln, "point X")?, point_ln, "point X")?;
+            finite(parse(points.next(), point_ln, "point Y")?, point_ln, "point Y")?;
+            match points.next() {
+                Some("-1") => (),
+                value => {
+                    let _: u64 = parse(value, point_ln, "point id")?;
+                }
+            }
+        }
+        out.push(Image { id, q, t, camera_id, name: name.to_string() });
     }
     Ok(out)
 }
@@ -140,13 +162,18 @@ pub fn parse_points3d_txt(text: &str) -> Result<Vec<Point3D>, String> {
             rgb[k] = parse(f.next(), ln, name)?;
         }
         let error = finite(parse(f.next(), ln, "error")?, ln, "error")?;
-        let rest = f.count();
+        let mut track_len = 0;
+        while let Some(image_id) = f.next() {
+            let _: u32 = parse(Some(image_id), ln, "track image id")?;
+            let _: u32 = parse(f.next(), ln, "track point index")?;
+            track_len += 1;
+        }
         out.push(Point3D {
             id,
             xyz,
             rgb,
             error,
-            track_len: rest / 2,
+            track_len,
         });
     }
     Ok(out)
@@ -194,6 +221,9 @@ pub fn parse_points3d_bin(bytes: &[u8]) -> Result<Vec<Point3D>, String> {
         if xyz.iter().any(|v| !v.is_finite()) {
             return Err(format!("point {id} has a non-finite coordinate"));
         }
+        if !error.is_finite() {
+            return Err(format!("point {id} has a non-finite reprojection error"));
+        }
         out.push(Point3D {
             id,
             xyz,
@@ -205,15 +235,20 @@ pub fn parse_points3d_bin(bytes: &[u8]) -> Result<Vec<Point3D>, String> {
     Ok(out)
 }
 
-/// Read a model directory. Text tables are preferred; `points3D.bin` is the
-/// fallback for the points. Cameras and images need the text form.
+/// Read a model directory. Binary points take precedence over text points;
+/// read or parse failures never fall back to another format. Cameras and
+/// images need the text form, which may be exported by `model_converter`.
 pub fn read_model_dir(dir: &Path, need_poses: bool) -> Result<Model, String> {
-    let read = |name: &str| std::fs::read_to_string(dir.join(name)).ok();
+    let read = |name: &str| match std::fs::read_to_string(dir.join(name)) {
+        Ok(text) => Ok(Some(text)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(format!("{}: {e}", dir.join(name).display())),
+    };
     let mut model = Model::default();
-    if let Some(t) = read("cameras.txt") {
+    if let Some(t) = read("cameras.txt")? {
         model.cameras = parse_cameras_txt(&t).map_err(|e| format!("cameras.txt: {e}"))?;
     }
-    if let Some(t) = read("images.txt") {
+    if let Some(t) = read("images.txt")? {
         model.images = parse_images_txt(&t).map_err(|e| format!("images.txt: {e}"))?;
     }
     if need_poses && (model.cameras.is_empty() || model.images.is_empty()) {
@@ -222,10 +257,16 @@ pub fn read_model_dir(dir: &Path, need_poses: bool) -> Result<Model, String> {
             dir.display()
         ));
     }
-    if let Some(t) = read("points3D.txt") {
-        model.points = parse_points3d_txt(&t).map_err(|e| format!("points3D.txt: {e}"))?;
-    } else if let Ok(b) = std::fs::read(dir.join("points3D.bin")) {
-        model.points = parse_points3d_bin(&b).map_err(|e| format!("points3D.bin: {e}"))?;
+    match std::fs::read(dir.join("points3D.bin")) {
+        Ok(b) => {
+            model.points = parse_points3d_bin(&b).map_err(|e| format!("points3D.bin: {e}"))?;
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            if let Some(t) = read("points3D.txt")? {
+                model.points = parse_points3d_txt(&t).map_err(|e| format!("points3D.txt: {e}"))?;
+            }
+        }
+        Err(e) => return Err(format!("{}: {e}", dir.join("points3D.bin").display())),
     }
     Ok(model)
 }
@@ -441,6 +482,47 @@ mod tests {
         assert!(parse_points3d_txt("1 nan 2 3 0 0 0 0\n").is_err());
     }
 
+    #[test]
+    fn images_text_preserves_spaces_in_file_names() {
+        let images = parse_images_txt("1 1 0 0 0 0 0 5 1 front  left panel.jpg\n\n").unwrap();
+        assert_eq!(images[0].name, "front  left panel.jpg");
+    }
+
+    #[test]
+    fn images_text_requires_the_second_line() {
+        let err = parse_images_txt("# Images\n1 1 0 0 0 0 0 5 1 a.jpg\n").unwrap_err();
+        assert!(err.contains("line 2") && err.contains("points"), "{err}");
+    }
+
+    #[test]
+    fn images_text_rejects_a_missing_points_line_before_the_next_image() {
+        let err = parse_images_txt("1 1 0 0 0 0 0 5 1 a.jpg\n2 1 0 0 0 0 0 5 1 b.jpg\n\n").unwrap_err();
+        assert!(err.contains("line 2"), "{err}");
+    }
+
+    #[test]
+    fn images_text_validates_observation_triples() {
+        for points in ["1", "1 2", "bad 2 3", "1 NaN 3", "1 2 bad", "1 2 -2"] {
+            let err = parse_images_txt(&format!("1 1 0 0 0 0 0 5 1 a.jpg\n{points}\n")).unwrap_err();
+            assert!(err.contains("line 2"), "points {points}: {err}");
+        }
+    }
+
+    #[test]
+    fn images_text_accepts_unmatched_and_large_point_ids() {
+        let images = parse_images_txt("1 1 0 0 0 0 0 5 1 a.jpg\n1 2 -1 3 4 18446744073709551615\n").unwrap();
+        assert_eq!(images.len(), 1);
+    }
+
+    #[test]
+    fn points_text_requires_numeric_complete_track_pairs() {
+        for track in ["1", "1 0 2", "bad 0", "1 bad", "1 -1", "4294967296 0"] {
+            let text = format!("# Points\n1 1 2 3 255 128 0 0.25 {track}\n");
+            let err = parse_points3d_txt(&text).unwrap_err();
+            assert!(err.contains("line 2"), "track {track}: {err}");
+        }
+    }
+
     fn bin_fixture() -> Vec<u8> {
         let mut b = Vec::new();
         b.extend_from_slice(&2u64.to_le_bytes());
@@ -475,6 +557,65 @@ mod tests {
         let mut bad = Vec::new();
         bad.extend_from_slice(&u64::MAX.to_le_bytes());
         assert!(parse_points3d_bin(&bad).is_err());
+    }
+
+    #[test]
+    fn binary_points_reject_nonfinite_reprojection_error() {
+        for error in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let mut bytes = bin_fixture();
+            // Count (8), point id (8), xyz (24), rgb (3), then the error.
+            bytes[43..51].copy_from_slice(&error.to_le_bytes());
+            let err = parse_points3d_bin(&bytes).unwrap_err();
+            assert!(err.contains("point 5") && err.contains("error"), "{err}");
+        }
+    }
+
+    fn fresh_model_dir(name: &str) -> std::path::PathBuf {
+        let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let dir = std::env::temp_dir().join(format!("vernon-capture-{name}-{}-{nonce}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn model_dir_prefers_binary_points_over_text() {
+        let dir = fresh_model_dir("binary-point-precedence");
+        std::fs::write(dir.join("points3D.txt"), POINTS).unwrap();
+        std::fs::write(dir.join("points3D.bin"), bin_fixture()).unwrap();
+        let model = read_model_dir(&dir, false).unwrap();
+        assert_eq!(model.points[0].id, 5, "binary points must take precedence");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn model_dir_reports_unreadable_text_tables() {
+        for name in ["cameras.txt", "images.txt", "points3D.txt"] {
+            let dir = fresh_model_dir(&format!("invalid-utf8-{name}"));
+            std::fs::write(dir.join(name), [0xff, 0xfe]).unwrap();
+            let err = read_model_dir(&dir, false).unwrap_err();
+            assert!(err.contains(name), "{err}");
+            std::fs::remove_dir_all(dir).unwrap();
+        }
+    }
+
+    #[test]
+    fn model_dir_reports_binary_read_errors_without_text_fallback() {
+        let dir = fresh_model_dir("unreadable-binary-points");
+        std::fs::write(dir.join("points3D.txt"), POINTS).unwrap();
+        std::fs::create_dir(dir.join("points3D.bin")).unwrap();
+        let err = read_model_dir(&dir, false).unwrap_err();
+        assert!(err.contains("points3D.bin"), "{err}");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn model_dir_reports_malformed_binary_without_text_fallback() {
+        let dir = fresh_model_dir("malformed-binary-points");
+        std::fs::write(dir.join("points3D.txt"), POINTS).unwrap();
+        std::fs::write(dir.join("points3D.bin"), [0]).unwrap();
+        let err = read_model_dir(&dir, false).unwrap_err();
+        assert!(err.contains("points3D.bin"), "{err}");
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

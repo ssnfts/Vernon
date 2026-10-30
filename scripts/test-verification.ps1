@@ -58,6 +58,17 @@ if ($HoldJsonPath) {
 }
 Assert-True (Test-VerificationBenchmarkOutput "running 1 test`ntest conservative::tests::wp6_release_million_triangles ... ok`ntest result: ok. 1 passed; 0 failed;") 'benchmark accepts an executed passing filtered test'
 Assert-True (-not (Test-VerificationBenchmarkOutput "running 0 tests`ntest result: ok. 0 passed; 0 failed;")) 'zero matching benchmark tests cannot count as verification'
+$wp8Passed = "running 1 test`ntest result: ok. 1 passed; 0 failed;"
+Assert-True (Test-VerificationWp8Output $wp8Passed 'WP8_REAL_COMPLETE registered_images=20') 'real acceptance needs a completed full pipeline'
+Assert-True (-not (Test-VerificationWp8Output $wp8Passed '')) 'passing skipped test cannot certify real execution'
+Assert-True (-not (Test-VerificationWp8Output $wp8Passed "WP8_REAL_COMPLETE`nSKIPPED external acceptance")) 'skip overrides completion marker'
+Assert-True (-not (Test-VerificationWp8Output 'test result: ok. 0 passed; 0 failed;' 'WP8_REAL_COMPLETE')) 'zero tests cannot certify external acceptance'
+Assert-True (-not (Test-VerificationWp8Output $wp8Passed 'incidental WP8_REAL_COMPLETE')) 'incidental marker mention is not evidence'
+foreach ($profileName in @('wp8-real','wp8')) {
+    $rejected = $false
+    try { Assert-VerificationWp8Input $profileName ' ' } catch { $rejected = $true }
+    Assert-True $rejected 'real profiles require explicit data input'
+}
 $jsonCheckDirectory = Join-Path $repo ('scratch/continuation/library-checks/' + [guid]::NewGuid().ToString('N'))
 Assert-VerificationOutputPath $jsonCheckDirectory
 [void][IO.Directory]::CreateDirectory($jsonCheckDirectory)

@@ -902,7 +902,7 @@ impl AppState {
         // (their signatures include the files' size and time stamp).
         if self.files_checked.is_none_or(|t| t.elapsed() >= FILES_POLL) {
             self.files_checked = Some(Instant::now());
-            if self.graph.read_files_stamp(&self.registry) != self.files_stamp {
+            if self.graph.read_files_stamp_checked(&self.registry).is_none_or(|stamp|stamp != self.files_stamp) {
                 self.revision += 1;
             }
         }

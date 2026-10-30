@@ -7,7 +7,7 @@ before copying to docs/NODES.md. GUI inspection remains a separate manual check.
 #>
 [CmdletBinding()]
 param(
-    [ValidateSet('full', 'clean-focused', 'wp6-benchmark', 'wp6', 'smoke', 'smoke-failure', 'smoke-slow', 'smoke-orphan')]
+    [ValidateSet('full', 'clean-focused', 'wp6-benchmark', 'wp6', 'wp8-real', 'wp8', 'smoke', 'smoke-failure', 'smoke-slow', 'smoke-orphan')]
     [string]$Profile = 'full',
     [ValidatePattern('^[A-Za-z0-9][A-Za-z0-9_-]{0,95}$')][string]$RunId = ('run-' + [DateTime]::UtcNow.ToString('yyyyMMdd-HHmmss') + '-' + [guid]::NewGuid().ToString('N').Substring(0, 8)),
     [ValidatePattern('^$|^[A-Za-z0-9][A-Za-z0-9_-]{0,95}$')][string]$ResumeRunId = '',
@@ -15,7 +15,7 @@ param(
     [switch]$Library,
     [ValidateSet('none', 'pass', 'fail', 'wait', 'orphan')][string]$SmokeChild = 'none',
     [switch]$StepChild,
-    [ValidateSet('build', 'tests', 'clippy', 'demo', 'catalogue', 'clean-tests', 'wp6-release', 'first', 'failure', 'must-not-run', 'second', 'wait', 'orphan')][string]$StepName = 'first'
+    [ValidateSet('build', 'tests', 'clippy', 'demo', 'catalogue', 'clean-tests', 'wp6-release', 'wp8-real', 'first', 'failure', 'must-not-run', 'second', 'wait', 'orphan')][string]$StepName = 'first'
 )
 $ErrorActionPreference = 'Stop'
 $script:VerificationRepo = [IO.Path]::GetFullPath((Split-Path $PSScriptRoot -Parent))
@@ -143,6 +143,17 @@ function Get-VerificationFingerprint {
 function Test-VerificationBenchmarkOutput([string]$Output) {
     return $Output -match '(?m)^running [1-9][0-9]* tests?\s*$' -and $Output -match '(?m)^test result: ok\. [1-9][0-9]* passed; 0 failed;'
 }
+function Test-VerificationWp8Output([string]$Output, [string]$ErrorOutput = '') {
+    $combined = $Output + "`n" + $ErrorOutput
+    return (Test-VerificationBenchmarkOutput $Output) -and
+        $combined -cmatch '(?m)^WP8_REAL_COMPLETE(?:\s|$)' -and
+        $combined -notmatch '(?im)^\s*SKIPPED\b'
+}
+function Assert-VerificationWp8Input([string]$Name, [string]$Data = $env:VERNON_COLMAP_DATA) {
+    if ($Name -in @('wp8-real', 'wp8') -and [string]::IsNullOrWhiteSpace($Data)) {
+        throw 'WP8 real acceptance requires a nonblank VERNON_COLMAP_DATA photo-directory or explicit download opt-in.'
+    }
+}
 function Get-VerificationSteps([string]$Name, [string]$OutputDirectory = $script:VerificationRoot) {
     $shell = (Get-Process -Id $PID).Path
     $worker = Join-Path $PSScriptRoot 'verification.ps1'
@@ -157,6 +168,11 @@ function Get-VerificationSteps([string]$Name, [string]$OutputDirectory = $script
             )
         }
         'clean-focused' { @{ name = 'clean-tests'; executable = 'cargo'; arguments = @('test', '-p', 'vernon-nodes-clean') } }
+        'wp8-real' { @{name='wp8-real';executable='cargo';arguments=@('test','-p','vernon-cli','--test','photogrammetry','colmap_public_sample_dense_mesh_and_scale','--','--ignored','--nocapture')} }
+        'wp8' {
+            Get-VerificationSteps 'wp8-real' $OutputDirectory
+            Get-VerificationSteps 'full' $OutputDirectory
+        }
         'wp6-benchmark' { @{ name = 'wp6-release'; executable = 'cargo'; arguments = @('test', '--release', '-p', 'vernon-nodes-clean', 'wp6_release', '--', '--ignored', '--nocapture') } }
         'wp6' {
             Get-VerificationSteps 'wp6-benchmark' $OutputDirectory
@@ -214,6 +230,7 @@ $child = $null
 $processJob = $null
 $resultCode = 1
 try {
+    Assert-VerificationWp8Input $Profile
     Assert-VerificationOutputPath $runDirectory
     [void][IO.Directory]::CreateDirectory($script:VerificationRoot)
     Assert-VerificationOutputPath $lockPath
@@ -245,7 +262,7 @@ try {
     $env:CARGO_INCREMENTAL = '0'
     $env:CARGO_TARGET_DIR = Join-Path $script:VerificationRepo 'target'
     Assert-VerificationOutputPath $env:CARGO_TARGET_DIR
-    if ($Profile -in @('full', 'clean-focused', 'wp6-benchmark', 'wp6') -and (Test-Path -LiteralPath $env:CARGO_TARGET_DIR)) {
+    if ($Profile -in @('full', 'clean-focused', 'wp6-benchmark', 'wp6', 'wp8-real', 'wp8') -and (Test-Path -LiteralPath $env:CARGO_TARGET_DIR)) {
         foreach ($item in Get-ChildItem -LiteralPath $env:CARGO_TARGET_DIR -Recurse -Force) {
             if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw "Cargo target tree contains a reparse point: $($item.FullName)" }
         }
@@ -332,6 +349,11 @@ try {
         if ($leftoverDescendants -gt 0 -and $record.exitCode -eq 0) {
             $record.exitCode = 125
             $state.message = 'Unexpected native descendants remained after the step exited. The Job Object killed them; verification stopped.'
+        }
+        if ($step.name -eq 'wp8-real' -and $record.exitCode -eq 0 -and
+            -not (Test-VerificationWp8Output ([IO.File]::ReadAllText($stdoutPath)) ([IO.File]::ReadAllText($stderrPath)))) {
+            $record.exitCode = 4
+            $state.message = 'WP8 external acceptance needs an executed passing test and WP8_REAL_COMPLETE marker without any SKIPPED diagnostic.'
         }
         if ($step.name -eq 'wp6-release' -and $record.exitCode -eq 0 -and -not (Test-VerificationBenchmarkOutput ([IO.File]::ReadAllText($stdoutPath)))) {
             $record.exitCode = 4

@@ -50,6 +50,7 @@ struct CacheEntry {
 struct Pass<'a> {
     memo: HashMap<NodeId, CookResult<(u64, Vec<Data>)>>,
     visiting: HashSet<NodeId>,
+    uncacheable: HashSet<NodeId>,
     cancel: Option<&'a AtomicBool>,
     on_cook: &'a mut dyn FnMut(NodeId),
 }
@@ -166,16 +167,106 @@ pub fn kinds_fit(out: DataKind, input: DataKind) -> bool {
 }
 
 /// True when cooking a node of this type writes files: it has a save-path
-/// parameter or a file output (exports, solver cases, packages).
+/// parameter, a file output, or an external driver that prepares work files.
 pub fn writes_files(info: &NodeTypeInfo) -> bool {
     info.params.iter().any(|s| matches!(s.kind, ParamKind::Path { save: true, .. }))
         || info.outputs.iter().any(|p| p.kind == DataKind::File)
+        || info.external_tool.is_some()
 }
 
-/// Size and modification time of a file or folder, `None` when missing.
-fn file_stamp(path: impl AsRef<std::path::Path>) -> Option<(u64, std::time::SystemTime)> {
-    let meta = std::fs::metadata(path).ok()?;
-    Some((meta.len(), meta.modified().ok()?))
+const DIRECTORY_STAMP_ENTRIES: usize = 32_768;
+const DIRECTORY_STAMP_DEPTH: usize = 32;
+
+#[derive(Debug, Hash, PartialEq, Eq)]
+enum FileStampError {
+    Io(String),
+    Link,
+    SpecialFile,
+    EntryBudget,
+    DepthBudget,
+}
+
+impl From<std::io::Error> for FileStampError {
+    fn from(error: std::io::Error) -> Self {
+        Self::Io(format!("{:?}", error.kind()))
+    }
+}
+
+fn stamp_link(meta: &std::fs::Metadata) -> bool {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        // Reject every reparse point, including junctions and unknown tags.
+        if meta.file_attributes() & 0x400 != 0 {
+            return true;
+        }
+    }
+    meta.file_type().is_symlink()
+}
+
+/// Ordinary files keep their size/time stamp; missing paths keep `None`.
+/// Directories hash sorted relative names, kinds, sizes and modification
+/// times throughout a bounded tree. Links (including directory junctions)
+/// and special files are never followed. Any incomplete scan is uncacheable,
+/// rather than a partial fingerprint that could hide external edits.
+fn file_stamp(path: impl AsRef<std::path::Path>) -> Result<Option<(u64, std::time::SystemTime)>, FileStampError> {
+    file_stamp_with_limits(path.as_ref(), DIRECTORY_STAMP_ENTRIES, DIRECTORY_STAMP_DEPTH)
+}
+
+fn file_stamp_with_limits(
+    path: &std::path::Path,
+    max_entries: usize,
+    max_depth: usize,
+) -> Result<Option<(u64, std::time::SystemTime)>, FileStampError> {
+    let meta = match std::fs::symlink_metadata(path) {
+        Ok(meta) => meta,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    if stamp_link(&meta) {
+        return Err(FileStampError::Link);
+    }
+    let modified = meta.modified()?;
+    if meta.is_file() {
+        return Ok(Some((meta.len(), modified)));
+    }
+    if !meta.is_dir() {
+        return Err(FileStampError::SpecialFile);
+    }
+    let mut hash = DefaultHasher::new();
+    (meta.len(), modified).hash(&mut hash);
+    let mut remaining = max_entries;
+    let mut pending = vec![(PathBuf::new(), 0)];
+    while let Some((relative, depth)) = pending.pop() {
+        let mut children = Vec::new();
+        for entry in std::fs::read_dir(path.join(&relative))? {
+            if remaining == 0 {
+                return Err(FileStampError::EntryBudget);
+            }
+            remaining -= 1;
+            let entry = entry?;
+            children.push((entry.file_name(), entry.path()));
+        }
+        children.sort_by(|a, b| a.0.cmp(&b.0));
+        for (name, child) in children {
+            let meta = std::fs::symlink_metadata(child)?;
+            if stamp_link(&meta) {
+                return Err(FileStampError::Link);
+            }
+            if !meta.is_file() && !meta.is_dir() {
+                return Err(FileStampError::SpecialFile);
+            }
+            let relative = relative.join(name);
+            (&relative, meta.is_dir(), meta.len(), meta.modified()?).hash(&mut hash);
+            if meta.is_dir() {
+                if depth >= max_depth {
+                    return Err(FileStampError::DepthBudget);
+                }
+                pending.push((relative, depth + 1));
+            }
+        }
+    }
+    Ok(Some((hash.finish(), modified)))
 }
 
 impl Graph {
@@ -343,6 +434,7 @@ impl Graph {
         let mut pass = Pass {
             memo: HashMap::new(),
             visiting: HashSet::new(),
+            uncacheable: HashSet::new(),
             cancel: None,
             on_cook: &mut noop,
         };
@@ -366,6 +458,7 @@ impl Graph {
         let mut pass = Pass {
             memo: HashMap::new(),
             visiting: HashSet::new(),
+            uncacheable: HashSet::new(),
             cancel,
             on_cook,
         };
@@ -414,6 +507,7 @@ impl Graph {
         // Action parameters stay out of the signature: a result produced
         // with one switched on stays valid after it is switched off again.
         let mut hasher = DefaultHasher::new();
+        let mut cacheable = true;
         node.type_id.hash(&mut hasher);
         node.params.hash_into(&mut hasher, &is_action);
         node.bypass.hash(&mut hasher);
@@ -422,7 +516,9 @@ impl Graph {
         for spec in &info.params {
             if let (ParamKind::Path { save: false, .. }, Some(ParamValue::Str(s))) = (&spec.kind, node.params.get(&spec.name)) {
                 if !s.trim().is_empty() {
-                    file_stamp(self.resolve_path(s, false)).hash(&mut hasher);
+                    let stamp = file_stamp(self.resolve_path(s, false));
+                    cacheable &= stamp.is_ok();
+                    stamp.hash(&mut hasher);
                 }
             }
         }
@@ -443,6 +539,7 @@ impl Graph {
             match wire {
                 Some((src, out)) => {
                     let (sig, outs) = self.cook_inner(registry, *src, pass)?;
+                    cacheable &= !pass.uncacheable.contains(src);
                     (i, sig, *out).hash(&mut hasher);
                     let data = outs.get(*out).cloned().ok_or_else(|| {
                         CookError::Other(format!("node {src} has no output {out}"))
@@ -451,7 +548,9 @@ impl Graph {
                     // contents: external programs can replace a connected file.
                     if let Data::File(path) = &data {
                         path.hash(&mut hasher);
-                        file_stamp(path).hash(&mut hasher);
+                        let stamp = file_stamp(path);
+                        cacheable &= stamp.is_ok();
+                        stamp.hash(&mut hasher);
                     }
                     inputs.push(Some(data));
                 }
@@ -462,10 +561,19 @@ impl Graph {
             }
         }
         let signature = hasher.finish();
+        if !cacheable {
+            pass.uncacheable.insert(id);
+        }
+        if !cacheable && actions != 0 {
+            return Err(CookError::Failed {
+                node: self.nodes.get(&id).ok_or(CookError::UnknownNode(id))?.name.clone(),
+                message: "cannot run an action because input file metadata cannot be certified; use readable regular inputs within the directory limits before requesting the action".into(),
+            });
+        }
 
         if let Some(entry) = self.cache.get(&id) {
             // An action that is on must not be served a result made without it.
-            if entry.signature == signature && (actions == 0 || entry.actions == actions) {
+            if cacheable && entry.signature == signature && (actions == 0 || entry.actions == actions) {
                 return entry.result.clone().map(|d| (signature, d));
             }
         }
@@ -620,15 +728,24 @@ impl Graph {
     }
 
     /// A hash of read-path parameters and cached File outputs, including
-    /// their sizes and modification times. The app polls it to cook again
-    /// when a connected file changes without a producer parameter edit.
+    /// bounded recursive directory metadata. Uncacheable paths return the
+    /// stable sentinel 0; pollers should use [`Self::read_files_stamp_checked`]
+    /// to request a conservative recook when metadata cannot be certified.
     pub fn read_files_stamp(&self, registry: &Registry) -> u64 {
+        self.read_files_stamp_checked(registry).unwrap_or(0)
+    }
+
+    /// Checked polling stamp. `None` means an unreadable path, link, special
+    /// file, or directory exceeding 32,768 entries / 32 levels. Affected cooks
+    /// and their downstream consumers bypass cache reuse; unrelated branches
+    /// and deferred-write/action behavior retain their ordinary semantics.
+    pub fn read_files_stamp_checked(&self, registry: &Registry) -> Option<u64> {
         let mut h = DefaultHasher::new();
         for (id, node) in &self.nodes {
             if let Some(CacheEntry { result: Ok(outputs), .. }) = self.cache.get(id) {
                 for (index, output) in outputs.iter().enumerate() {
                     if let Data::File(path) = output {
-                        (id, index, path, file_stamp(path)).hash(&mut h);
+                        (id, index, path, file_stamp(path).ok()?).hash(&mut h);
                     }
                 }
             }
@@ -636,12 +753,12 @@ impl Graph {
             for spec in &info.params {
                 if let (ParamKind::Path { save: false, .. }, Some(ParamValue::Str(s))) = (&spec.kind, node.params.get(&spec.name)) {
                     if !s.trim().is_empty() {
-                        file_stamp(self.resolve_path(s, false)).hash(&mut h);
+                        file_stamp(self.resolve_path(s, false)).ok()?.hash(&mut h);
                     }
                 }
             }
         }
-        h.finish()
+        Some(h.finish())
     }
 
     /// Make a loaded graph cookable: order nodes by id, add parameters the
@@ -1262,6 +1379,283 @@ mod tests {
         assert_eq!(size(&mut g),3.0,"recreating the file invalidates its cached read error");
         assert_eq!((produces.load(Ordering::SeqCst),reads.load(Ordering::SeqCst)),(1,4));
         let _=std::fs::remove_dir_all(&dir);
+    }
+
+    struct DirectoryReadOp(Arc<AtomicUsize>);
+    impl NodeOp for DirectoryReadOp {
+        fn info(&self) -> NodeTypeInfo {
+            NodeTypeInfo::new("geo.directory_read", "Read Directory", Stage::Geometry)
+                .input(PortSpec::optional("folder", DataKind::File))
+                .output(PortSpec::new("geometry", DataKind::Geometry))
+                .param(ParamSpec::path("folder", "Folder", &[], false))
+                .param(ParamSpec::string("child", "Child", "points3D.bin"))
+                .implemented()
+        }
+        fn cook(&self, _: &CookContext, ins: &[Option<Data>], p: &Params) -> CookResult<Vec<Data>> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            let folder = match ins[0].as_ref().and_then(Data::as_file) {
+                Some(path) => path.clone(),
+                None => PathBuf::from(p.str("folder")?),
+            };
+            let n = std::fs::read(folder.join(p.str("child")?))?.len() as f64;
+            Ok(vec![Data::geometry(Geometry::make_box(DVec3::splat(n)))])
+        }
+    }
+
+    fn check_directory_edit_recooks(child: &str, connected: bool) {
+        let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let dir = std::env::temp_dir().join(format!("vernon-directory-cache-{}-{nonce}", std::process::id()));
+        let file = dir.join(child);
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, "abc").unwrap();
+        let produces = Arc::new(AtomicUsize::new(0));
+        let reads = Arc::new(AtomicUsize::new(0));
+        let mut reg = Registry::new();
+        reg.add(FilePathOp(dir.clone(), produces.clone()));
+        reg.add(DirectoryReadOp(reads.clone()));
+        let mut graph = Graph::new();
+        let reader = graph.add_node(&reg, "geo.directory_read").unwrap();
+        graph.set_param(reader, "child", ParamValue::Str(child.into())).unwrap();
+        if connected {
+            let source = graph.add_node(&reg, "geo.file_path").unwrap();
+            graph.connect(source, 0, reader, 0).unwrap();
+        } else {
+            graph.set_param(reader, "folder", ParamValue::Str(dir.to_string_lossy().into_owned())).unwrap();
+        }
+        let size = |graph: &mut Graph| graph.cook_output(&reg, reader, 0).unwrap().as_geometry().unwrap().bounds().size().x;
+        assert_eq!(size(&mut graph), 3.0);
+        let signature = graph.cache[&reader].signature;
+        let stamp = graph.read_files_stamp(&reg);
+        let root_metadata = std::fs::metadata(&dir).unwrap();
+        assert_eq!(size(&mut graph), 3.0);
+        assert_eq!(graph.read_files_stamp(&reg), stamp, "unchanged directory polling must be stable");
+        assert_eq!(reads.load(Ordering::SeqCst), 1);
+        std::fs::write(&file, "abcdefghi").unwrap();
+        let after = std::fs::metadata(&dir).unwrap();
+        assert_eq!((root_metadata.len(), root_metadata.modified().unwrap()), (after.len(), after.modified().unwrap()),
+            "the regression must edit a file while root directory metadata stays unchanged");
+        assert_ne!(graph.read_files_stamp(&reg), stamp, "editing existing {child} must change the poll stamp");
+        assert_eq!(size(&mut graph), 9.0, "directory metadata must invalidate the consumer");
+        assert_ne!(graph.cache[&reader].signature, signature);
+        assert_eq!(reads.load(Ordering::SeqCst), 2);
+        assert_eq!(size(&mut graph), 9.0);
+        assert_eq!(reads.load(Ordering::SeqCst), 2);
+        assert_eq!(produces.load(Ordering::SeqCst), usize::from(connected));
+        std::fs::remove_file(file).unwrap();
+        if let Some(parent) = std::path::Path::new(child).parent().filter(|p| !p.as_os_str().is_empty()) {
+            std::fs::remove_dir(dir.join(parent)).unwrap();
+        }
+        std::fs::remove_dir(dir).unwrap();
+    }
+
+    #[test]
+    fn wp8_directory_file_outputs_watch_existing_model_tables() {
+        for child in ["points3D.bin", "images.txt", "fused.ply"] {
+            check_directory_edit_recooks(child, true);
+        }
+    }
+
+    #[test]
+    fn wp8_directory_path_params_watch_existing_top_level_photos() {
+        for child in ["front.JPG", "side.jpeg", "rear.png", "top.tif", "detail.tiff", "panel.bmp"] {
+            check_directory_edit_recooks(child, false);
+        }
+    }
+
+    #[test]
+    fn wp8_directory_path_params_watch_nested_photos() {
+        check_directory_edit_recooks("photos/front.JPG", false);
+    }
+
+    #[test]
+    fn wp8_directory_stamp_limits_do_not_return_partial_fingerprints() {
+        let dir = std::env::temp_dir().join(format!("vernon-directory-stamp-limits-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.jpg"), "abc").unwrap();
+        std::fs::write(dir.join("b.jpg"), "def").unwrap();
+        assert_eq!(file_stamp_with_limits(&dir, 1, 0), Err(FileStampError::EntryBudget));
+        assert!(file_stamp_with_limits(&dir, 2, 0).is_ok());
+        std::fs::create_dir(dir.join("nested")).unwrap();
+        assert_eq!(file_stamp_with_limits(&dir, 3, 0), Err(FileStampError::DepthBudget));
+        assert!(file_stamp_with_limits(&dir, 3, 1).is_ok());
+        let file = dir.join("a.jpg");
+        let meta = std::fs::metadata(&file).unwrap();
+        assert_eq!(file_stamp(&file).unwrap(), Some((meta.len(), meta.modified().unwrap())));
+        assert_eq!(file_stamp(dir.join("missing")).unwrap(), None);
+        std::fs::remove_file(file).unwrap();
+        std::fs::remove_file(dir.join("b.jpg")).unwrap();
+        std::fs::remove_dir(dir.join("nested")).unwrap();
+        std::fs::remove_dir(dir).unwrap();
+    }
+
+    #[test]
+    fn wp8_directory_uncacheable_inputs_skip_affected_downstream_caches() {
+        let dir = std::env::temp_dir().join(format!("vernon-directory-stamp-uncacheable-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("points3D.bin"), "abc").unwrap();
+        let mut nested = dir.clone();
+        let mut folders = Vec::new();
+        for _ in 0..=DIRECTORY_STAMP_DEPTH {
+            nested = nested.join("d");
+            std::fs::create_dir(&nested).unwrap();
+            folders.push(nested.clone());
+        }
+        assert_eq!(file_stamp(&dir), Err(FileStampError::DepthBudget));
+        let produces = Arc::new(AtomicUsize::new(0));
+        let reads = Arc::new(AtomicUsize::new(0));
+        let downstream = Arc::new(AtomicUsize::new(0));
+        let action_cooks = Arc::new(AtomicUsize::new(0));
+        let actions = Arc::new(AtomicUsize::new(0));
+        let mut reg = Registry::new();
+        reg.add(FilePathOp(dir.clone(), produces.clone()));
+        reg.add(DirectoryReadOp(reads.clone()));
+        reg.add(CountOp(downstream.clone()));
+        reg.add(RunOp(action_cooks.clone(), actions.clone()));
+        let mut graph = Graph::new();
+        let source = graph.add_node(&reg, "geo.file_path").unwrap();
+        let reader = graph.add_node(&reg, "geo.directory_read").unwrap();
+        let consumer = graph.add_node(&reg, "geo.count").unwrap();
+        let action = graph.add_node(&reg, "geo.run").unwrap();
+        graph.connect(source, 0, reader, 0).unwrap();
+        graph.connect(reader, 0, consumer, 0).unwrap();
+        graph.set_param(action, "run", ParamValue::Bool(true)).unwrap();
+        for expected in [3.0, 9.0] {
+            let outputs = graph.cook_many(&reg, &[consumer, action], None, &mut |_| {});
+            let data = outputs[0].1.as_ref().unwrap();
+            assert_eq!(data[0].as_geometry().unwrap().bounds().size().x, expected);
+            assert!(outputs[1].1.is_ok());
+            assert_eq!(graph.read_files_stamp_checked(&reg), None);
+            assert_eq!(graph.read_files_stamp(&reg), 0, "uncacheable polling has a stable legacy sentinel");
+            std::fs::write(dir.join("points3D.bin"), "abcdefghi").unwrap();
+        }
+        assert_eq!(reads.load(Ordering::SeqCst), 2);
+        assert_eq!(downstream.load(Ordering::SeqCst), 2, "uncacheability propagates through ordinary geometry outputs");
+        assert_eq!(produces.load(Ordering::SeqCst), 1);
+        assert_eq!((action_cooks.load(Ordering::SeqCst), actions.load(Ordering::SeqCst)), (1, 1),
+            "an unrelated action keeps ordinary cached behavior in the same cook pass");
+        std::fs::remove_file(dir.join("points3D.bin")).unwrap();
+        for folder in folders.into_iter().rev() {
+            std::fs::remove_dir(folder).unwrap();
+        }
+        std::fs::remove_dir(dir).unwrap();
+    }
+
+    struct DirectoryActionOp(Arc<AtomicUsize>, Arc<AtomicUsize>);
+    impl NodeOp for DirectoryActionOp {
+        fn info(&self) -> NodeTypeInfo {
+            NodeTypeInfo::new("geo.directory_action", "Directory Action", Stage::Geometry)
+                .output(PortSpec::new("geometry", DataKind::Geometry))
+                .param(ParamSpec::path("folder", "Folder", &[], false))
+                .param(ParamSpec::bool("run", "Run", false).action())
+                .param(ParamSpec::float("size", "Size", 1.0, 0.0, 10.0))
+                .external("test process")
+        }
+        fn cook(&self, _: &CookContext, _: &[Option<Data>], p: &Params) -> CookResult<Vec<Data>> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            if p.bool("run")? {
+                self.1.fetch_add(1, Ordering::SeqCst);
+            }
+            Ok(vec![Data::geometry(Geometry::make_box(DVec3::splat(p.float("size")?)))])
+        }
+    }
+
+    fn action_directory_fixture() -> PathBuf {
+        let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let dir = std::env::temp_dir().join(format!("vernon-directory-action-{}-{nonce}", std::process::id()));
+        std::fs::create_dir(&dir).unwrap();
+        dir
+    }
+
+    fn exceed_stamp_depth(dir: &std::path::Path) -> Vec<PathBuf> {
+        let mut child = dir.to_path_buf();
+        let mut folders = Vec::new();
+        for _ in 0..=DIRECTORY_STAMP_DEPTH {
+            child.push("d");
+            std::fs::create_dir(&child).unwrap();
+            folders.push(child.clone());
+        }
+        folders
+    }
+
+    #[test]
+    fn wp8_cache_action_uncertifiable_inputs_never_start_an_action() {
+        let dir = action_directory_fixture();
+        let folders = exceed_stamp_depth(&dir);
+        let cooks = Arc::new(AtomicUsize::new(0));
+        let runs = Arc::new(AtomicUsize::new(0));
+        let mut registry = Registry::new();
+        registry.add(DirectoryActionOp(cooks.clone(), runs.clone()));
+        let mut graph = Graph::new();
+        let node = graph.add_node(&registry, "geo.directory_action").unwrap();
+        graph.set_param(node, "folder", ParamValue::Str(dir.to_string_lossy().into_owned())).unwrap();
+        graph.set_param(node, "run", ParamValue::Bool(true)).unwrap();
+        for _ in 0..2 {
+            let error = graph.cook(&registry, node).unwrap_err().to_string();
+            assert!(error.contains("metadata") && error.contains("action"), "{error}");
+        }
+        assert_eq!((cooks.load(Ordering::SeqCst), runs.load(Ordering::SeqCst)), (0, 0));
+        for folder in folders.into_iter().rev() {
+            std::fs::remove_dir(folder).unwrap();
+        }
+        std::fs::remove_dir(dir).unwrap();
+    }
+
+    #[test]
+    fn wp8_cache_action_a_warm_action_is_not_repeated_after_metadata_becomes_uncertifiable() {
+        let dir = action_directory_fixture();
+        let cooks = Arc::new(AtomicUsize::new(0));
+        let runs = Arc::new(AtomicUsize::new(0));
+        let mut registry = Registry::new();
+        registry.add(DirectoryActionOp(cooks.clone(), runs.clone()));
+        let mut graph = Graph::new();
+        let node = graph.add_node(&registry, "geo.directory_action").unwrap();
+        graph.set_param(node, "folder", ParamValue::Str(dir.to_string_lossy().into_owned())).unwrap();
+        graph.set_param(node, "run", ParamValue::Bool(true)).unwrap();
+        graph.cook(&registry, node).unwrap();
+        let folders = exceed_stamp_depth(&dir);
+        for _ in 0..2 {
+            assert!(graph.cook(&registry, node).is_err());
+        }
+        assert_eq!((cooks.load(Ordering::SeqCst), runs.load(Ordering::SeqCst)), (1, 1));
+        for folder in folders.into_iter().rev() {
+            std::fs::remove_dir(folder).unwrap();
+        }
+        std::fs::remove_dir(dir).unwrap();
+    }
+
+    #[test]
+    fn wp8_cache_action_geometry_only_external_nodes_defer_writes() {
+        let cooks = Arc::new(AtomicUsize::new(0));
+        let runs = Arc::new(AtomicUsize::new(0));
+        let mut registry = Registry::new();
+        registry.add(DirectoryActionOp(cooks.clone(), runs.clone()));
+        let mut graph = Graph::new();
+        let node = graph.add_node(&registry, "geo.directory_action").unwrap();
+        graph.defer_writes = true;
+        assert!(graph.cook(&registry, node).unwrap_err().to_string().contains(DEFERRED));
+        graph.defer_writes = false;
+        graph.cook(&registry, node).unwrap();
+        graph.defer_writes = true;
+        graph.set_param(node, "size", ParamValue::Float(2.0)).unwrap();
+        let kept = graph.cook_output(&registry, node, 0).unwrap();
+        assert_eq!(kept.as_geometry().unwrap().bounds().size().x, 1.0);
+        assert_eq!(cooks.load(Ordering::SeqCst), 1);
+        graph.set_param(node, "run", ParamValue::Bool(true)).unwrap();
+        let explicit = graph.cook_output(&registry, node, 0).unwrap();
+        assert_eq!(explicit.as_geometry().unwrap().bounds().size().x, 2.0);
+        assert_eq!((cooks.load(Ordering::SeqCst), runs.load(Ordering::SeqCst)), (2, 1));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn wp8_directory_stamp_never_follows_links() {
+        let dir = std::env::temp_dir().join(format!("vernon-directory-stamp-links-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::os::unix::fs::symlink(&dir, dir.join("cycle")).unwrap();
+        assert_eq!(file_stamp(&dir), Err(FileStampError::Link));
+        assert_eq!(file_stamp(dir.join("cycle")), Err(FileStampError::Link));
+        std::fs::remove_file(dir.join("cycle")).unwrap();
+        std::fs::remove_dir(dir).unwrap();
     }
 
     #[test]

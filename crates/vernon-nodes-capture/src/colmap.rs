@@ -264,7 +264,7 @@ pub fn dense_steps(images: &Path, model: &Path, dense: &Path, d: &DenseSettings)
         flag("workspace_format"),
         "COLMAP".into(),
         flag("input_type"),
-        "geometric".into(),
+        (if d.geom_consistency {"geometric"} else {"photometric"}).into(),
         flag("output_path"),
         dense.join("fused.ply").to_string_lossy().into_owned(),
     ];
@@ -283,6 +283,8 @@ pub fn dense_steps(images: &Path, model: &Path, dense: &Path, d: &DenseSettings)
             dense_s,
             flag("output_type"),
             "COLMAP".into(),
+            "--max_image_size".into(),
+            if d.max_image_size>0 {d.max_image_size.to_string()} else {"-1".into()},
         ],
         stereo,
         fusion,
@@ -296,24 +298,8 @@ pub fn pair_count(n: u64) -> u64 {
 
 /// Count image files below `dir`.
 pub fn count_images(dir: &Path) -> usize {
-    let Ok(rd) = std::fs::read_dir(dir) else { return 0 };
-    rd.flatten()
-        .map(|e| {
-            let p = e.path();
-            if p.is_dir() {
-                count_images(&p)
-            } else {
-                let ext = p.extension().and_then(|x| x.to_str()).map(str::to_ascii_lowercase).unwrap_or_default();
-                usize::from(IMAGE_EXTENSIONS.contains(&ext.as_str()))
-            }
-        })
-        .sum()
+    crate::photo_inputs::count_images_checked(dir).unwrap_or(0)
 }
-
-// ---------------------------------------------------------------------------
-// Executable lookup and the runner
-// ---------------------------------------------------------------------------
-
 fn path_candidates(name: &str) -> Vec<String> {
     if cfg!(windows) {
         vec![format!("{name}.exe"), format!("{name}.bat"), format!("{name}.cmd"), name.to_string()]
@@ -362,9 +348,13 @@ pub fn find_executable(explicit: &str) -> Option<PathBuf> {
 /// Help text of a sub-command (`exe sub -h`), both streams joined. The
 /// program runs through the shared runner and is stopped after 30 s.
 pub fn help_text(exe: &Path, sub: &str) -> Option<String> {
-    let log = std::env::temp_dir().join(format!("vernon-colmap-help-{}-{}.log", std::process::id(), RUNS.fetch_add(1, Ordering::Relaxed)));
+    help_text_at(exe,sub,&std::env::temp_dir())
+}
+
+fn help_text_at(exe:&Path,sub:&str,work:&Path)->Option<String> {
+    let log = work.join(format!("vernon-colmap-help-{}-{}.log", std::process::id(), RUNS.fetch_add(1, Ordering::Relaxed)));
     let opts = RunOptions::with_timeout(Duration::from_secs(30));
-    let run = process::run_program(exe, &[sub.to_string(), "-h".to_string()], &std::env::temp_dir(), &log, &opts);
+    let run = process::run_program(exe, &[sub.to_string(), "-h".to_string()], work, &log, &opts);
     let text = std::fs::read(&log).map(|b| String::from_utf8_lossy(&b).into_owned());
     let _ = std::fs::remove_file(&log);
     run.ok()?;
@@ -400,23 +390,29 @@ pub fn run_tool(exe: &Path, args: &[String], cwd: &Path, log: &Path, timeout: Du
     let start = std::fs::metadata(log).map(|m| m.len() as usize).unwrap_or(0);
     let opts = RunOptions { timeout: timeout.max(Duration::from_millis(1)), append: true, ..Default::default() };
     let exit = process::run_program(exe, args, cwd, log, &opts).map_err(|e| format!("cannot start {}: {e}", exe.display()))?;
-    let bytes = std::fs::read(log).unwrap_or_default();
-    let output = String::from_utf8_lossy(&bytes[start.min(bytes.len())..]).into_owned();
+    // Read a bounded tail, including diagnostics emitted before timeout/cancel.
+    use std::io::{Read,Seek,SeekFrom};
+    let output=std::fs::File::open(log).and_then(|mut file| {
+        let length=file.metadata()?.len();
+        file.seek(SeekFrom::Start((start as u64).max(length.saturating_sub(32768))))?;
+        let mut bytes=Vec::new(); file.take(32768).read_to_end(&mut bytes)?;
+        Ok(String::from_utf8_lossy(&bytes).into_owned())
+    }).unwrap_or_default();
+    let lines:Vec<_>=output.lines().map(str::trim_end).filter(|l|!l.is_empty()).collect();
+    let tail=lines[lines.len().saturating_sub(12)..].join("\n");
     let code = match exit {
         Exit::Code(c) => c,
         Exit::TimedOut => {
             append("\n--- stopped at the time limit ---\n\n");
-            return Err(format!("{} stopped after the {} min time limit", exe.display(), timeout.as_secs() / 60));
+            return Err(format!("{} stopped after the {} min time limit; see {}. Last output:\n{tail}", exe.display(), timeout.as_secs() / 60,log.display()));
         }
         Exit::Cancelled => {
             append("\n--- stopped: cook cancelled ---\n\n");
-            return Err(format!("{} stopped: the cook was cancelled", exe.display()));
+            return Err(format!("{} stopped: the cook was cancelled; see {}. Last output:\n{tail}", exe.display(),log.display()));
         }
     };
     append(&format!("\n--- exit: {code} ---\n\n"));
-    let lines: Vec<&str> = output.lines().map(str::trim_end).filter(|l| !l.is_empty()).collect();
-    let skip = lines.len().saturating_sub(12);
-    Ok(RunOutput { success: code == 0, code: Some(code), tail: lines[skip..].join("\n") })
+    Ok(RunOutput { success: code == 0, code: Some(code), tail })
 }
 
 /// One planned command.
@@ -473,14 +469,14 @@ fn tool_params() -> Vec<ParamSpec> {
         ParamSpec::bool("run", "Run", false)
             .help("Start the program once; it switches itself off again. Off: the commands are only written to commands.txt.")
             .action(),
-        ParamSpec::int("timeout_min", "Time limit", 240, 1, 100_000).unit("min").help("Each command is stopped after this long."),
+        ParamSpec::int("timeout_min", "Time limit", 240, 1, 100_000).unit("min").help("The command sequence is stopped after this overall time limit."),
         ParamSpec::path("executable", "Executable", &[], false).help("Path to the photogrammetry program. Empty searches the VERNON_PHOTOGRAMMETRY_EXE variable and the system path."),
         ParamSpec::bool("overwrite", "Overwrite database", false).help("Remove this node's own database file before running. Nothing else is ever deleted."),
     ]
 }
 
 fn image_dir_param() -> ParamSpec {
-    ParamSpec::string("image_dir", "Image folder", "").help("Folder with the photos, searched recursively.")
+    ParamSpec::path("image_dir", "Image folder", &[],false).help("Folder with the photos, searched recursively.")
 }
 
 struct Plan<'a> {
@@ -508,10 +504,22 @@ impl<'a> Plan<'a> {
         self.ctx.work_dir.join("colmap.log")
     }
 
+    fn refuse(&self,rep:&mut Report,steps:&[Step],reason:&str)->CookResult<bool> {
+        write_commands(&self.ctx.work_dir.join("commands.txt"),"colmap",steps)?;
+        rep.metric("external_run_requested",Metric::new(f64::from(self.run),"bool"));
+        rep.metric("external_run_succeeded",Metric::new(0.0,"bool"));
+        failed_output(rep,reason);
+        Ok(false)
+    }
+
     /// Write commands.txt; run the steps when asked and possible. Returns
     /// whether the steps ran.
     fn execute(&self, rep: &mut Report, steps: &[Step], needs_cuda: bool) -> CookResult<bool> {
         write_commands(&self.ctx.work_dir.join("commands.txt"), "colmap", steps)?;
+        rep.metric("external_run_requested",Metric::new(f64::from(self.run),"bool"));
+        rep.metric("external_run_succeeded",Metric::new(0.0,"bool"));
+        rep.metric("external_run_failed",Metric::new(0.0,"count").with_limit(0.0,true));
+        rep.metric("completed_steps",Metric::new(0.0,"count"));
         if !self.run {
             rep.note(
                 Severity::Warning,
@@ -520,6 +528,7 @@ impl<'a> Plan<'a> {
             return Ok(false);
         }
         let Some(exe) = &self.exe else {
+            rep.metric("external_run_failed",Metric::new(1.0,"count").with_limit(0.0,true));
             rep.note(
                 Severity::Warning,
                 format!(
@@ -531,20 +540,108 @@ impl<'a> Plan<'a> {
         };
         if needs_cuda && !cuda_hint() {
             rep.note(
-                Severity::Warning,
-                "dense stereo needs a CUDA graphics card and no NVIDIA driver tools were found; nothing was run, commands are in commands.txt",
+                Severity::Info,
+                "GPU utility was not found on PATH; attempting the requested program so its actual capability diagnostics determine the outcome",
             );
+        }
+        let started=std::time::Instant::now();
+        for (index,step) in steps.iter().enumerate() {
+            let remaining=self.timeout.saturating_sub(started.elapsed());
+            let result=if remaining.is_zero() {Err("external plan reached its overall time limit".into())}
+                else {run_tool(exe,&step.args,&self.ctx.work_dir,&self.log(),remaining)};
+            let failure=match result {
+                Ok(out) if out.success=>{rep.metric("completed_steps",Metric::new((index+1) as f64,"count"));continue;},
+                Ok(out)=>format!("external step '{}' failed (exit {:?}); see {}. Last output:\n{}",step.args.first().map(String::as_str).unwrap_or("?"),out.code,self.log().display(),out.tail),
+                Err(e)=>e,
+            };
+            let cuda=needs_cuda&&step.args.first().is_some_and(|s|s=="patch_match_stereo")&&unavailable_cuda(&failure);
+            rep.note(if cuda {Severity::Warning} else {Severity::Error},failure);
+            if cuda {rep.note(Severity::Warning,"Dense stereo is unavailable. Use delaunay_mesher with input_type=sparse and the sparse model folder for the CPU alternative; an undistorted workspace alone is not a fused dense model.");}
+            rep.metric("external_run_failed",Metric::new(1.0,"count").with_limit(0.0,true));
             return Ok(false);
         }
-        run_steps(exe, steps, &self.ctx.work_dir, &self.log(), self.timeout).map_err(|m| self.ctx.fail(m))?;
+        rep.metric("external_run_succeeded",Metric::new(1.0,"bool"));
         rep.note(Severity::Info, format!("ran {} command(s); transcript in {}", steps.len(), self.log().display()));
         Ok(true)
     }
 }
 
+fn failed_output(rep:&mut Report,message:&str) {
+    rep.note(Severity::Error,message);
+    rep.metric("external_run_failed",Metric::new(1.0,"count").with_limit(0.0,true));
+    rep.metric("external_run_succeeded",Metric::new(0.0,"bool"));
+}
+
+fn unavailable_cuda(message:&str)->bool {
+    let text=message.to_ascii_lowercase();
+    ["cuda is not available","cuda, which is not available","not compiled with cuda",
+        "without cuda support","no cuda-capable device","cudaerrornodevice","no cuda devices"]
+        .iter().any(|needle|text.contains(needle))
+}
+
+fn import_external_geometry(path:&Path,rep:&mut Report,mesh:bool)->Geometry {
+    let imported=std::fs::read(path).map_err(|e|e.to_string()).and_then(|bytes|
+        vernon_io::read_bytes(Format::Ply,&bytes,&ReadOptions::default()).map_err(|e|e.to_string()));
+    match imported {
+        Ok(mut g)=>{
+            if g.points.is_empty()||g.validate().is_err()||g.points.iter().any(|p|!p.is_finite()) {
+                failed_output(rep,"external geometry is empty or invalid");return Geometry::new();
+            }
+            let triangles=if mesh{g.triangles()}else{Vec::new()};
+            let mut kept=Vec::new();
+            let mut nonfinite=false;
+            for (pi,t) in &triangles {
+                let [a,b,c]=t.map(|i|g.points[i as usize]);
+                let area=(b-a).cross(c-a).length_squared();
+                nonfinite|=!area.is_finite();
+                if area>0.0 {kept.push((*pi,*t));}
+            }
+            if mesh&&!nonfinite {
+                let removed=triangles.len()-kept.len();
+                rep.metric("degenerate_faces_removed",Metric::new(removed as f64,"faces"));
+                if removed>0 {
+                    let source_prims:Vec<_>=kept.iter().map(|(pi,_)|*pi).collect();
+                    g.prims=kept.iter().map(|(_,t)|vernon_core::Prim::polygon(t.to_vec())).collect();
+                    g.prim_attribs=g.prim_attribs.gather_all(&source_prims);
+                    for group in g.prim_groups.values_mut(){
+                        let members:std::collections::HashSet<_>=group.iter().copied().collect();
+                        *group=kept.iter().enumerate().filter_map(|(new,(old,_))|members.contains(&(*old as u32)).then_some(new as u32)).collect();
+                    }
+                    rep.note(Severity::Warning,format!("removed {removed} zero-area imported triangles and triangulated the remaining faces; this does not guarantee a closed surface"));
+                }
+            }
+            if mesh&&(nonfinite||g.triangles().is_empty()) {
+                failed_output(rep,"external geometry is empty, invalid or has no usable surface faces");Geometry::new()
+            }else{g}
+        },
+        Err(e)=>{failed_output(rep,&format!("cannot import external output {}: {e}",path.display()));Geometry::new()},
+    }
+}
+
+// A plausibility check, not a claim that the database schema or matches were validated.
+fn plausible_database(path:&Path)->bool {
+    use std::io::Read;
+    let Ok(mut file)=std::fs::File::open(path) else{return false};
+    let mut header=[0;16];
+    file.metadata().is_ok_and(|m|m.is_file()&&m.len()>16)
+        &&file.read_exact(&mut header).is_ok()&&&header==b"SQLite format 3\0"
+}
+
+fn unavailable_output(ctx:&CookContext)->CookResult<PathBuf> {
+    for i in 0..1024 {
+        let path=ctx.work_dir.join(format!(".unavailable-output-{i}"));
+        match std::fs::symlink_metadata(&path) {
+            Err(e) if e.kind()==std::io::ErrorKind::NotFound=>return Ok(path),
+            Ok(_)=>{},
+            Err(e)=>return Err(ctx.fail(format!("cannot reserve an unavailable output path: {e}"))),
+        }
+    }
+    Err(ctx.fail("cannot reserve an unavailable output path: all reserved names exist"))
+}
+
 fn check_image_dir(ctx: &CookContext, dir: &str, run: bool) -> CookResult<(PathBuf, usize)> {
     let p = PathBuf::from(dir);
-    let n = count_images(&p);
+    let n = if dir.is_empty() || !p.exists() {0} else {crate::photo_inputs::count_images_checked(&p).map_err(|e|ctx.fail(e))?};
     if run && (dir.is_empty() || !p.is_dir()) {
         return Err(ctx.fail(format!("image folder '{dir}' does not exist")));
     }
@@ -590,7 +687,7 @@ impl NodeOp for SfmFeaturesMatch {
         }
         info.help("Extracts features from the photos and matches them, by driving an external open-source photogrammetry program. Writes the commands it would run, warns when exhaustive matching would be too slow, and runs them only when asked.")
             .emulates("structure-from-motion feature extraction and matching stage")
-            .external("COLMAP")
+            .external("COLMAP").spec("docs/specs/real-photogrammetry.md").implemented()
     }
 
     fn cook(&self, ctx: &CookContext, _inputs: &[Option<Data>], params: &Params) -> CookResult<Vec<Data>> {
@@ -614,7 +711,7 @@ impl NodeOp for SfmFeaturesMatch {
             vocab_tree: params.str("vocab_tree")?.to_string(),
         };
         let (h_ext, h_mat) = match (&plan.exe, plan.run) {
-            (Some(e), true) => (help_text(e, "feature_extractor"), help_text(e, &format!("{}_matcher", mat.kind))),
+            (Some(e), true) => (help_text_at(e, "feature_extractor",&ctx.work_dir), help_text_at(e, &format!("{}_matcher", mat.kind),&ctx.work_dir)),
             _ => (None, None),
         };
         let steps = vec![
@@ -647,15 +744,17 @@ impl NodeOp for SfmFeaturesMatch {
             rep.note(Severity::Info, "CPU-only extraction and matching: expect the full estimate or longer");
         }
         if db.exists() {
-            if params.bool("overwrite")? && plan.run {
+            if params.bool("overwrite")? && plan.run && plan.exe.is_some() {
                 std::fs::remove_file(&db)?;
                 rep.note(Severity::Info, "removed the existing database before running (overwrite is on)");
             } else {
                 rep.note(Severity::Info, "an existing database was kept; the program resumes from it");
             }
         }
-        plan.execute(&mut rep, &steps, false)?;
-        Ok(vec![Data::File(db), Data::report(rep)])
+        let ran=plan.execute(&mut rep, &steps, false)?;
+        if ran && !plausible_database(&db) {failed_output(&mut rep,"program returned success without a plausible SQLite database");}
+        let output=if plan.run&&(!ran||!rep.passes()){unavailable_output(ctx)?}else{db};
+        Ok(vec![Data::File(output), Data::report(rep)])
     }
 }
 
@@ -686,7 +785,7 @@ impl NodeOp for SfmReconstruct {
         }
         info.help("Builds the sparse camera poses and 3D points from matched photos by driving an external open-source photogrammetry program, then reads the points into a cloud. The cloud has an arbitrary scale and is marked non-metric until a scale node has run.")
             .emulates("incremental structure-from-motion sparse reconstruction")
-            .external("COLMAP")
+            .external("COLMAP").spec("docs/specs/real-photogrammetry.md").implemented()
     }
 
     fn cook(&self, ctx: &CookContext, inputs: &[Option<Data>], params: &Params) -> CookResult<Vec<Data>> {
@@ -716,9 +815,16 @@ impl NodeOp for SfmReconstruct {
         let mut rep = Report::new("Sparse Reconstruct");
         rep.metric("images", Metric::new(n as f64, "images"));
         rep.metric("eta_sparse", Metric::new(n as f64 * SPARSE_SECONDS_PER_IMAGE / 3600.0, "h"));
-        plan.execute(&mut rep, &steps, false)?;
-        let cloud = match read_model_dir(&model, false) {
+        let preexisting=std::fs::read_dir(&sparse)?.filter_map(Result::ok).any(|e|e.file_name().to_string_lossy().parse::<usize>().is_ok());
+        let ran=if plan.run&&!plausible_database(&db) {plan.refuse(&mut rep,&steps,"a readable SQLite database is required before sparse reconstruction can run")?}
+            else if plan.run&&preexisting {plan.refuse(&mut rep,&steps,"a sparse result already exists; select a fresh node work folder to verify a new reconstruction")?}
+            else {plan.execute(&mut rep,&steps,false)?};
+        rep.note(Severity::Info,"Imports numbered sparse model 0; additional disconnected models remain on disk and are not merged.");
+        let imported=if plan.run&&!ran {Ok(crate::colmap_model::Model::default())} else {read_model_dir(&model, ran)};
+        let cloud = match imported {
             Ok(m) if !m.points.is_empty() => {
+                if !ran {rep.note(Severity::Info,"imported an existing sparse model; no new reconstruction was run");}
+                rep.metric("registered_images",Metric::new(m.images.len() as f64,"images"));
                 let mean_err = m.points.iter().map(|p| p.error).sum::<f64>() / m.points.len() as f64;
                 rep.metric("sparse_points", Metric::new(m.points.len() as f64, "points"));
                 rep.metric("mean_reprojection_error", Metric::new(mean_err, "px"));
@@ -726,16 +832,18 @@ impl NodeOp for SfmReconstruct {
                 points_to_geometry(&m.points)
             }
             Ok(_) => {
+                if ran {failed_output(&mut rep,"program returned success without a nonempty sparse model 0");}
                 rep.metric("sparse_points", Metric::new(0.0, "points"));
                 rep.note(Severity::Warning, "no sparse model found yet: the cloud is empty");
                 empty_cloud()
             }
             Err(m) => {
-                rep.note(Severity::Error, format!("could not read the sparse model: {m}"));
+                failed_output(&mut rep,&format!("could not read the sparse model: {m}"));
                 empty_cloud()
             }
         };
-        Ok(vec![Data::File(model), Data::geometry(cloud), Data::report(rep)])
+        let output=if plan.run&&(!ran||!rep.passes()){unavailable_output(ctx)?}else{model};
+        Ok(vec![Data::File(output), Data::geometry(cloud), Data::report(rep)])
     }
 }
 
@@ -758,7 +866,7 @@ impl NodeOp for MvsDense {
         }
         info.help("Turns a sparse model into a dense point cloud (undistort, depth maps, merge) by driving an external open-source photogrammetry program. Needs a CUDA graphics card for the depth-map step.")
             .emulates("multi-view stereo dense reconstruction")
-            .external("COLMAP")
+            .external("COLMAP").spec("docs/specs/real-photogrammetry.md").implemented()
     }
 
     fn cook(&self, ctx: &CookContext, inputs: &[Option<Data>], params: &Params) -> CookResult<Vec<Data>> {
@@ -781,16 +889,21 @@ impl NodeOp for MvsDense {
         let mut rep = Report::new("Dense Reconstruct");
         rep.metric("images", Metric::new(n as f64, "images"));
         rep.metric("eta_dense", Metric::new(n as f64 * DENSE_SECONDS_PER_IMAGE / 3600.0, "h"));
-        plan.execute(&mut rep, &steps, true)?;
         let fused = dense.join("fused.ply");
-        let cloud = if fused.is_file() {
-            let bytes = std::fs::read(&fused)?;
-            let mut g = vernon_io::read_bytes(Format::Ply, &bytes, &ReadOptions::default())
-                .map_err(|e| ctx.fail(format!("cannot read {}: {e}", fused.display())))?;
+        let nonempty_workspace=if dense.exists(){std::fs::read_dir(&dense)?.next().transpose()?.is_some()}else{false};
+        let valid_model=!plan.run||read_model_dir(&model,true).is_ok_and(|m|!m.points.is_empty()&&!m.images.is_empty());
+        let ran=if !valid_model {plan.refuse(&mut rep,&steps,"a readable sparse model with converted camera poses and points is required before dense reconstruction can run")?}
+            else if plan.run&&nonempty_workspace{plan.refuse(&mut rep,&steps,"a dense workspace already exists; select a fresh node work folder so partial depth maps cannot be mixed with a new model")?}
+            else {plan.execute(&mut rep,&steps,true)?};
+        let cloud = if fused.is_file()&&(!plan.run||ran) {
+            if !ran {rep.note(Severity::Info,"imported an existing dense cloud; no new dense reconstruction was run");}
+            let mut g=import_external_geometry(&fused,&mut rep,false);
             set_metric_flag(&mut g, false);
             rep.metric("dense_points", Metric::new(g.point_count() as f64, "points"));
+            if ran&&g.points.is_empty(){failed_output(&mut rep,"program returned an empty dense cloud");}
             g
         } else {
+            if ran {failed_output(&mut rep,"program returned success without the fused point cloud");}
             rep.metric("dense_points", Metric::new(0.0, "points"));
             rep.note(Severity::Warning, "no dense cloud found yet: the cloud is empty");
             empty_cloud()
@@ -855,7 +968,8 @@ impl NodeOp for MvsMesh {
             .output(PortSpec::new("mesh", DataKind::Geometry))
             .output(PortSpec::new("report", DataKind::Report))
             .param(ParamSpec::choice("mesher", "Mesher", "poisson", &["poisson", "delaunay"]).help("Poisson needs point normals; Delaunay needs the dense workspace folder."))
-            .param(ParamSpec::string("dense_workspace", "Dense workspace", "").help("Folder of the dense reconstruction, used by the Delaunay mesher."))
+            .param(ParamSpec::path("dense_workspace", "Dense workspace", &[],false).help("Dense workspace, or sparse model folder when sparse input is selected for the Delaunay mesher."))
+            .param(ParamSpec::choice("delaunay_input_type","Delaunay input","dense",&["dense","sparse"]).help("Sparse uses the sparse model and its camera visibility for the CPU route; dense uses fused stereo results."))
             .param(ParamSpec::float("target_face_ratio", "Target face ratio", 0.1, 0.01, 1.0).help("Share of faces kept by the simplifier; 1 skips simplification."))
             .param(ParamSpec::float("boundary_weight", "Boundary weight", 1000.0, 0.0, 100_000.0).help("Weight that holds open boundary edges in place when the mesh is simplified. Higher keeps borders more exact."))
             .param(ParamSpec::float("cell", "Placeholder cell", 0.0, 0.0, 1000.0).unit("mm").help("Grid size of the height-field stand-in used when the program is not run; 0 chooses it from the point count."));
@@ -864,7 +978,7 @@ impl NodeOp for MvsMesh {
         }
         info.help("Turns a dense point cloud into a triangle mesh by driving an external open-source photogrammetry program. When the program is not run, a simple height-field triangulation stands in so the pipeline keeps flowing; it only suits panel-like clouds seen from one side.")
             .emulates("Poisson and Delaunay surface reconstruction with mesh simplification")
-            .external("COLMAP")
+            .external("COLMAP").spec("docs/specs/real-photogrammetry.md").implemented()
     }
 
     fn cook(&self, ctx: &CookContext, inputs: &[Option<Data>], params: &Params) -> CookResult<Vec<Data>> {
@@ -877,6 +991,8 @@ impl NodeOp for MvsMesh {
         rep.metric("input_points", Metric::new(cloud.point_count() as f64, "points"));
         let ratio = params.float("target_face_ratio")?;
         let mesher = params.str("mesher")?.to_string();
+        if !["poisson","delaunay"].contains(&mesher.as_str()){return Err(util::bad_choice(ctx,"mesher",&mesher));}
+        if !ratio.is_finite()||!(0.01..=1.0).contains(&ratio){return Err(ctx.fail("target face ratio must be finite and within 0.01 to 1"));}
         let input_ply = ctx.work_dir.join("cloud.ply");
         let meshed = ctx.work_dir.join("meshed.ply");
         let simplified = ctx.work_dir.join("meshed_simplified.ply");
@@ -900,6 +1016,11 @@ impl NodeOp for MvsMesh {
                 meshed.to_string_lossy().into_owned(),
             ],
         });
+        if use_delaunay {
+            let kind=params.str("delaunay_input_type")?;
+            if !["dense","sparse"].contains(&kind){return Err(util::bad_choice(ctx,"delaunay_input_type",kind));}
+            steps[0].args.extend(["--input_type".into(),kind.into()]);
+        }
         if ratio < 1.0 {
             steps.push(Step {
                 args: vec![
@@ -915,19 +1036,24 @@ impl NodeOp for MvsMesh {
                 ],
             });
         }
-        if plan.run && plan.exe.is_some() {
+        {
             let bytes = vernon_io::write_bytes(Format::Ply, &cloud, &WriteOptions::default()).map_err(|e| ctx.fail(e.to_string()))?;
             std::fs::write(&input_ply, bytes)?;
             if !util::metric_flag(&cloud).unwrap_or(false) {
                 rep.note(Severity::Warning, "the cloud is not marked metric; the mesh inherits the arbitrary scale");
             }
         }
-        let ran = plan.execute(&mut rep, &steps, false)?;
+        let normals_valid=cloud.point_attribs.vec3s("N").is_ok_and(|n|n.len()==cloud.points.len()&&n.iter().all(|v|v.is_finite()&&v.length_squared()>1e-20));
+        let ran=if plan.run&&mesher=="delaunay"&&workspace.is_empty(){plan.refuse(&mut rep,&steps,"the requested Delaunay route needs a reconstruction workspace or sparse model folder")?}
+            else if plan.run&&!use_delaunay&&!normals_valid {plan.refuse(&mut rep,&steps,"Poisson meshing requires valid point normals; estimate normals or connect a fused dense cloud")?}
+            else if plan.run&&(meshed.exists()||simplified.exists()) {plan.refuse(&mut rep,&steps,"a mesh result already exists; select a fresh node work folder for a new meshing run")?}
+            else {plan.execute(&mut rep,&steps,false)?};
         let result_path = if ratio < 1.0 { &simplified } else { &meshed };
         let mut mesh = if ran && result_path.is_file() {
-            let bytes = std::fs::read(result_path)?;
-            vernon_io::read_bytes(Format::Ply, &bytes, &ReadOptions::default())
-                .map_err(|e| ctx.fail(format!("cannot read {}: {e}", result_path.display())))?
+            import_external_geometry(result_path,&mut rep,true)
+        } else if plan.run {
+            if ran {failed_output(&mut rep,"program returned success without the requested mesh file");}
+            Geometry::new()
         } else {
             util::placeholder(
                 &mut rep,
@@ -935,7 +1061,10 @@ impl NodeOp for MvsMesh {
             );
             heightfield_mesh(&cloud.points, params.float("cell")?)
         };
-        if let Some(flagv) = util::metric_flag(&cloud) {
+        if use_delaunay&&ran {
+            set_metric_flag(&mut mesh,false);
+            rep.note(Severity::Warning,"The reconstruction workspace has arbitrary scale. Scaling the connected cloud did not scale its cameras or workspace; apply scale correction to this mesh separately.");
+        } else if let Some(flagv) = util::metric_flag(&cloud) {
             set_metric_flag(&mut mesh, flagv);
         }
         rep.metric("faces", Metric::new(mesh.prim_count() as f64, "faces"));
@@ -948,6 +1077,188 @@ impl NodeOp for MvsMesh {
 mod tests {
     use super::*;
     use vernon_graph::ParamValue;
+
+    #[test]
+    fn wp8_zero_area_external_faces_are_removed_with_an_explicit_report() {
+        let work=scratch("wp8-degenerate-import");
+        let path=work.join("mesh.ply");
+        std::fs::write(&path,b"ply\nformat ascii 1.0\nelement vertex 4\nproperty float x\nproperty float y\nproperty float z\nelement face 3\nproperty list uchar uint vertex_indices\nend_header\n0 0 0\n1 0 0\n0 1 0\n2 0 0\n3 0 1 2\n3 0 1 3\n3 0 0 1\n").unwrap();
+        let mut report=Report::new("test");
+        let g=import_external_geometry(&path,&mut report,true);
+        assert_eq!(g.triangles().len(),1,"keep the usable surface and remove both collapsed faces");
+        assert!(g.validate().is_ok());
+        assert!(report.passes());
+        assert_eq!(report.metrics["degenerate_faces_removed"].value,2.0);
+        assert!(report.notes.iter().any(|(s,t)|*s==Severity::Warning&&t.contains("zero-area")));
+    }
+
+    #[test]
+    fn wp8_only_degenerate_external_faces_cannot_pass() {
+        let work=scratch("wp8-all-degenerate-import");
+        let path=work.join("mesh.ply");
+        std::fs::write(&path,b"ply\nformat ascii 1.0\nelement vertex 3\nproperty float x\nproperty float y\nproperty float z\nelement face 1\nproperty list uchar uint vertex_indices\nend_header\n0 0 0\n1 0 0\n2 0 0\n3 0 1 2\n").unwrap();
+        let mut report=Report::new("test");
+        assert!(import_external_geometry(&path,&mut report,true).points.is_empty());
+        assert!(!report.passes());
+    }
+
+    #[test]
+    fn wp8_collinear_polygon_corner_preserves_its_usable_surface() {
+        let work=scratch("wp8-partial-degenerate-polygon");let path=work.join("mesh.ply");
+        std::fs::write(&path,b"ply\nformat ascii 1.0\nelement vertex 4\nproperty float x\nproperty float y\nproperty float z\nelement face 1\nproperty list uchar uint vertex_indices\nend_header\n0 0 0\n1 0 0\n2 0 0\n2 1 0\n4 0 1 2 3\n").unwrap();
+        let mut report=Report::new("test");let g=import_external_geometry(&path,&mut report,true);
+        assert_eq!(g.triangles().len(),1,"a collapsed fan triangle must not discard the usable polygon area");
+        assert!(report.passes());assert_eq!(report.metrics["degenerate_faces_removed"].value,1.0);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn wp8_invalid_database_is_a_failed_unavailable_file_output() {
+        let work=scratch("wp8-garbage-database");
+        std::fs::write(work.join("photo.jpg"),b"dummy").unwrap();
+        let exe=fake_program(&work,"echo garbage>database.db\r\nexit /b 0");
+        let mut p=defaults(&SfmFeaturesMatch);p.set("run",ParamValue::Bool(true));
+        p.set("image_dir",ParamValue::Str(work.to_string_lossy().into_owned()));
+        p.set("executable",ParamValue::Str(exe.to_string_lossy().into_owned()));
+        let out=SfmFeaturesMatch.cook(&ctx(&work),&[],&p).unwrap();
+        assert!(!out[1].as_report().unwrap().passes());
+        assert!(!out[0].as_file().unwrap().exists(),"a failed output must not expose an old or malformed database");
+    }
+
+    #[test]
+    fn wp8_missing_executable_preserves_database_despite_overwrite_request() {
+        let work=scratch("wp8-preserve-db");let db=work.join("database.db");
+        std::fs::write(&db,b"preserve-existing").unwrap();
+        std::fs::write(work.join("photo.jpg"),b"dummy").unwrap();
+        let mut p=defaults(&SfmFeaturesMatch);p.set("run",ParamValue::Bool(true));p.set("overwrite",ParamValue::Bool(true));
+        p.set("image_dir",ParamValue::Str(work.to_string_lossy().into_owned()));
+        p.set("executable",ParamValue::Str(work.join("absent.exe").to_string_lossy().into_owned()));
+        let out=SfmFeaturesMatch.cook(&ctx(&work),&[],&p).unwrap();
+        assert_eq!(std::fs::read(db).unwrap(),b"preserve-existing");
+        assert!(!out[0].as_file().unwrap().exists());
+    }
+
+    #[test]
+    fn wp8_failed_sparse_output_does_not_expose_previous_model() {
+        let work=scratch("wp8-failed-model-port");
+        std::fs::create_dir_all(work.join("sparse/0")).unwrap();
+        std::fs::write(work.join("photo.jpg"),b"dummy").unwrap();
+        let mut p=defaults(&SfmReconstruct);p.set("run",ParamValue::Bool(true));
+        p.set("image_dir",ParamValue::Str(work.to_string_lossy().into_owned()));
+        p.set("executable",ParamValue::Str(work.join("absent.exe").to_string_lossy().into_owned()));
+        let out=SfmReconstruct.cook(&ctx(&work),&[],&p).unwrap();
+        assert!(!out[2].as_report().unwrap().passes());
+        assert!(!out[0].as_file().unwrap().exists());
+    }
+
+    #[test]
+    fn wp8_photometric_depth_uses_matching_fusion_mode() {
+        let d=DenseSettings {max_image_size:800,geom_consistency:false,min_num_pixels:3,window_radius:3};
+        let steps=dense_steps(Path::new("images"),Path::new("model"),Path::new("dense"),&d);
+        assert!(steps[2].windows(2).any(|a|a==["--input_type","photometric"]));
+        assert!(steps[0].windows(2).any(|a|a==["--max_image_size","800"]));
+    }
+
+    #[test]
+    fn wp8_planning_writes_the_mesher_input_without_a_program() {
+        let work=scratch("wp8-plan-mesh");
+        let mut cloud=Geometry::from_points(vec![DVec3::ZERO,DVec3::X,DVec3::Y,DVec3::new(1.0,1.0,0.0)]);
+        cloud.point_attribs.set("N",vernon_core::AttribArray::Vec3(vec![DVec3::Z;4]));
+        MvsMesh.cook(&ctx(&work),&[Some(Data::geometry(cloud))],&defaults(&MvsMesh)).unwrap();
+        assert!(work.join("cloud.ply").is_file(),"planning must supply the referenced input");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn wp8_external_failure_is_returned_in_a_failing_report() {
+        let work=scratch("wp8-report-failure");
+        let context=ctx(&work);
+        let plan=Plan {ctx:&context,run:true,exe:Some(PathBuf::from("C:\\Windows\\System32\\cmd.exe")),exe_arg:String::new(),timeout:Duration::from_secs(5)};
+        let mut report=Report::new("test");
+        let steps=[Step {args:vec!["/c".into(),"echo WP8_FAILURE_EVIDENCE 1>&2 & exit /b 7".into()]}];
+        assert!(!plan.execute(&mut report,&steps,false).expect("a failed external run retains its Report"));
+        assert!(report.notes.iter().any(|(s,t)|*s==Severity::Error&&t.contains("WP8_FAILURE_EVIDENCE")));
+        assert_eq!(report.metrics["external_run_failed"].passes(),Some(false));
+    }
+
+    #[cfg(windows)]
+    fn fake_program(work:&Path,body:&str)->PathBuf {
+        let path=work.join("test-program.cmd");
+        std::fs::write(&path,format!("@echo off\r\n{body}\r\n")).unwrap();path
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn wp8_cuda_failure_preserves_preparation_and_reports_sparse_alternative() {
+        let work=scratch("wp8-no-cuda");let context=ctx(&work);
+        let exe=fake_program(&work,"if \"%~1\"==\"image_undistorter\" (echo prepared>prepared.txt & exit /b 0)\r\nif \"%~1\"==\"patch_match_stereo\" (echo CUDA is not available 1>&2 & exit /b 1)\r\necho unexpected>fusion.txt\r\nexit /b 0");
+        let plan=Plan{ctx:&context,run:true,exe:Some(exe),exe_arg:String::new(),timeout:Duration::from_secs(5)};
+        let steps:Vec<_>=["image_undistorter","patch_match_stereo","stereo_fusion"].iter().map(|s|Step{args:vec![s.to_string()]}).collect();
+        let mut report=Report::new("test");
+        assert!(!plan.execute(&mut report,&steps,true).unwrap());
+        assert!(work.join("prepared.txt").is_file());assert!(!work.join("fusion.txt").exists());
+        assert_eq!(report.metrics["completed_steps"].value,1.0);
+        assert!(!report.passes());
+        assert!(report.notes.iter().any(|(s,t)|*s==Severity::Warning&&t.contains("delaunay_mesher")&&t.contains("input_type=sparse")));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn wp8_zero_exit_without_mesh_never_returns_placeholder_success() {
+        let work=scratch("wp8-missing-mesh");let exe=fake_program(&work,"exit /b 0");
+        let mut p=defaults(&MvsMesh);p.set("run",ParamValue::Bool(true));p.set("target_face_ratio",ParamValue::Float(1.0));
+        p.set("executable",ParamValue::Str(exe.to_string_lossy().into_owned()));
+        let mut cloud=Geometry::from_points(vec![DVec3::ZERO,DVec3::X,DVec3::Y,DVec3::X+DVec3::Y]);
+        cloud.point_attribs.set("N",vernon_core::AttribArray::Vec3(vec![DVec3::Z;4]));
+        let out=MvsMesh.cook(&ctx(&work),&[Some(Data::geometry(cloud))],&p).unwrap();
+        assert!(out[0].as_geometry().unwrap().points.is_empty());
+        assert!(!out[1].as_report().unwrap().passes());
+        assert!(!out[1].as_report().unwrap().notes.iter().any(|(_,t)|t.starts_with("white-box placeholder")));
+    }
+
+    #[test]
+    fn wp8_missing_program_cannot_reuse_a_stale_fused_cloud() {
+        let work=scratch("wp8-stale-fused");std::fs::create_dir_all(work.join("dense")).unwrap();
+        let old=work.join("dense/fused.ply");std::fs::write(&old,b"preserve-existing").unwrap();
+        let mut p=defaults(&MvsDense);p.set("run",ParamValue::Bool(true));
+        p.set("image_dir",ParamValue::Str(work.to_string_lossy().into_owned()));
+        p.set("executable",ParamValue::Str(work.join("missing.exe").to_string_lossy().into_owned()));
+        // A dummy photo permits input validation without starting a tool.
+        std::fs::write(work.join("photo.jpg"),b"dummy").unwrap();
+        let out=MvsDense.cook(&ctx(&work),&[Some(Data::File(work.join("model")))],&p).unwrap();
+        assert!(out[0].as_geometry().unwrap().points.is_empty());assert!(!out[1].as_report().unwrap().passes());
+        assert_eq!(std::fs::read(old).unwrap(),b"preserve-existing");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn wp8_review_empty_mesh_is_not_a_successful_external_surface() {
+        let work=scratch("wp8-empty-mesh");
+        std::fs::write(work.join("template.ply"),b"ply\nformat ascii 1.0\nelement vertex 0\nproperty float x\nproperty float y\nproperty float z\nelement face 0\nproperty list uchar uint vertex_indices\nend_header\n").unwrap();
+        let exe=fake_program(&work,"copy /Y template.ply meshed.ply >nul\r\nexit /b 0");
+        let mut p=defaults(&MvsMesh);p.set("run",ParamValue::Bool(true));p.set("target_face_ratio",ParamValue::Float(1.0));
+        p.set("executable",ParamValue::Str(exe.to_string_lossy().into_owned()));
+        let mut cloud=Geometry::from_points(vec![DVec3::ZERO,DVec3::X,DVec3::Y,DVec3::X+DVec3::Y]);
+        cloud.point_attribs.set("N",vernon_core::AttribArray::Vec3(vec![DVec3::Z;4]));
+        let out=MvsMesh.cook(&ctx(&work),&[Some(Data::geometry(cloud))],&p).unwrap();
+        assert!(!out[1].as_report().unwrap().passes(),"zero faces cannot certify meshing success");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn wp8_review_partial_dense_workspace_is_not_a_fresh_run() {
+        let work=scratch("wp8-partial-dense");
+        std::fs::create_dir_all(work.join("dense/stereo/depth_maps")).unwrap();
+        std::fs::write(work.join("dense/stereo/depth_maps/old.bin"),b"old").unwrap();
+        std::fs::write(work.join("photo.jpg"),b"dummy").unwrap();
+        let exe=fake_program(&work,"echo ran>was-run.txt\r\nexit /b 0");
+        let mut p=defaults(&MvsDense);p.set("run",ParamValue::Bool(true));
+        p.set("image_dir",ParamValue::Str(work.to_string_lossy().into_owned()));
+        p.set("executable",ParamValue::Str(exe.to_string_lossy().into_owned()));
+        let out=MvsDense.cook(&ctx(&work),&[Some(Data::File(work.join("model")))],&p).unwrap();
+        assert!(!work.join("was-run.txt").exists(),"partial depth maps need provenance before a fresh run");
+        assert!(!out[1].as_report().unwrap().passes());
+    }
 
     fn scratch(name: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("vernon-capture-colmap-{name}-{}", std::process::id()));
@@ -1124,10 +1435,10 @@ mod tests {
         p.set("run", ParamValue::Bool(true));
         // The test harness stands in for the program and fails every step.
         p.set("executable", ParamValue::Str(std::env::current_exe().unwrap().to_string_lossy().into_owned()));
-        assert!(op.cook(&ctx(&work), &[], &p).is_err());
+        assert!(!op.cook(&ctx(&work), &[], &p).unwrap()[1].as_report().unwrap().passes());
         assert_eq!(std::fs::read(work.join("database.db")).unwrap(), b"precious", "overwrite=false keeps the database");
         p.set("overwrite", ParamValue::Bool(true));
-        assert!(op.cook(&ctx(&work), &[], &p).is_err());
+        assert!(!op.cook(&ctx(&work), &[], &p).unwrap()[1].as_report().unwrap().passes());
         assert!(!work.join("database.db").exists());
         assert_eq!(std::fs::read(work.join("notes.txt")).unwrap(), b"keep");
         assert!(work.join("colmap.log").exists());
