@@ -282,8 +282,8 @@ Status (implemented): Scene Explorer rows carry visibility, lock (locked objects
 last run (time since the object last produced a new result), sortable by name, stage or last run; rows are per object (a part split is one object), not per part.
 Utilities: Units and Checks (scene units, nodes with errors, failing gates, unknown node types), External Tools (one program location per external program, applied to
 every node that runs it) and a CSV export of every report metric (Reports page). Hotkeys: Alt+Q isolate (again to end), Alt+I hide unselected, Ctrl+Shift+N selection
-lock, Ctrl+W zoom region, F12 transform type-in. Not yet: Hierarchy parts with parent/child links, joint datums and pivots (the Hierarchy tab counts faces per `part`
-value only).
+lock, Ctrl+W zoom region, F12 transform type-in. Hierarchy tab: part tree with parent/child links, seam datums, pivots and joint-feature counts, read from the attributes in
+`slicing-printing.md` section 5b. Not yet: editing parent links by hand, and a datum per joint feature (datums are per seam).
 
 ### 4.2 Proposed nodes
 

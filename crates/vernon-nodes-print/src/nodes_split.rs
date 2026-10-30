@@ -212,6 +212,7 @@ pub fn grid_split(
         mesh::set_int_prim_attr(&mut piece.geo, "cell", vec![lin(piece.cell); n]);
         out.merge(&piece.geo);
     }
+    crate::hierarchy::annotate(&mut out);
     let mut interfaces = 0;
     for &(op, c) in cells.keys() {
         for axis in 0..3 {
@@ -332,7 +333,8 @@ impl NodeOp for SmartPartition {
         let guide=inputs::opt_geometry(inp,1);
         let o=crate::partition::Options{bed,margin,beam_width:p.int("beam_width")? as usize,
             weights:[p.float("w_parts")?,p.float("w_seam")?,p.float("w_visible")?,p.float("w_fragile")?,p.float("w_unused")?]};
-        let r=crate::partition::search(&geo,guide.as_deref(),&o).map_err(|e|ctx.fail(e))?;
+        let mut r=crate::partition::search(&geo,guide.as_deref(),&o).map_err(|e|ctx.fail(e))?;
+        crate::hierarchy::annotate(&mut r.geometry);
         let mut rep=Report::new("Smart partition");
         for key in ["parts","part_count"]{rep.metric(key,Metric::new(r.parts as f64,"count"));}
         rep.metric("plane_count",Metric::new(r.cuts as f64,"count"));
@@ -515,6 +517,7 @@ impl NodeOp for Connectivity {
         let mut g: Geometry = (*geo).clone();
         let count = ids.iter().copied().max().map_or(0, |m| m + 1);
         mesh::set_int_prim_attr(&mut g, PART, ids);
+        crate::hierarchy::annotate(&mut g);
         let mut r = Report::new("Split by connectivity");
         r.metric("part_count", Metric::new(count as f64, "count"));
         Ok(vec![Data::geometry(g), Data::report(r)])
@@ -589,6 +592,7 @@ impl NodeOp for ByAttribute {
         let ids: Vec<i64> = keys.iter().map(|k| uniq.binary_search(k).unwrap_or(0) as i64).collect();
         let mut g: Geometry = (*geo).clone();
         mesh::set_int_prim_attr(&mut g, PART, ids);
+        crate::hierarchy::annotate(&mut g);
         let mut r = Report::new("Split by attribute");
         r.metric("part_count", Metric::new(uniq.len() as f64, "count"));
         r.metric("mixed_key_prims", Metric::new(mixed as f64, "count"));

@@ -53,6 +53,7 @@ fn run_cut(
     let mut all: CutAll =
         cut_all_with_cap_start(&selected, planes, eps, cap, keep, cap_start).map_err(|e| ctx.fail(e.to_string()))?;
     append_untouched(&mut all.geo, untouched);
+    crate::hierarchy::annotate(&mut all.geo);
     let parts = mesh::unique_parts(&all.geo).len();
     report.metric("part_count", Metric::new(parts as f64, "count"));
     report.metric("plane_count", Metric::new(planes.len() as f64, "count"));
@@ -301,6 +302,7 @@ impl NodeOp for PolylineCut {
         )
         .map_err(|e| ctx.fail(e))?;
         append_untouched(&mut cut.geo, untouched);
+        crate::hierarchy::annotate(&mut cut.geo);
         report.metric(
             "part_count",
             Metric::new(mesh::unique_parts(&cut.geo).len() as f64, "count"),

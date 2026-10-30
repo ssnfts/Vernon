@@ -540,10 +540,12 @@ then the external solvers, then UI polish, then release.
      (f64 in app state, f32 at upload).
 4. **View cube extras:** compass ring, "set current view as Front" and an
    animated view transition (spec `ui-dcc-conventions.md`).
-5. **Hierarchy tab:**
-   - Add a part-hierarchy model: parent links, datums and pivots as prim and
-     detail attributes produced by print nodes.
-   - Show it in the Hierarchy tab; the spec lists this under "Not yet".
+5. **Hierarchy tab:** DONE in WP13. `vernon_nodes_print::hierarchy` derives
+   parent links, seam datums and pivots from cap faces; cut, split, joint and
+   fit nodes write or carry them as prim and detail attributes (spec
+   `slicing-printing.md` section 5b). The Hierarchy tab shows the part tree and
+   a seam list. Parent links are a derived assembly order: there is no way to
+   edit them by hand, and datums are per seam, not per joint feature.
 6. **Keyboard and clipboard:**
    - Bind the 24 reserved shortcut chords as their features land.
    - Add `keymap.json` user overrides (load from the config dir; invalid

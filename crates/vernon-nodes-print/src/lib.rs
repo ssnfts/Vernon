@@ -8,6 +8,7 @@ pub mod common;
 pub mod cut;
 pub mod fit;
 pub mod gcode;
+pub mod hierarchy;
 pub mod joints;
 pub mod mesh;
 pub mod nodes_cut;

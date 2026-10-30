@@ -159,7 +159,9 @@ impl NodeOp for BuildFit {
         rep.metric("scale_factor", Metric::new(min_scale, "ratio").with_limit(1.0, false));
         rep.note(Severity::Info, format!("usable volume {:.0} x {:.0} x {:.0} mm", opts.usable().x, opts.usable().y, opts.usable().z));
         let out = json!({"matrix_layout": "row-major 4x4, column vectors, mm", "usable_mm": v3_json(opts.usable()), "parts": entries});
-        Ok(vec![Data::geometry(mesh::merge_all(&placed)), Data::json(out), Data::report(rep)])
+        let mut placed = mesh::merge_all(&placed);
+        crate::hierarchy::carry(&geo, &mut placed);
+        Ok(vec![Data::geometry(placed), Data::json(out), Data::report(rep)])
     }
 }
 
