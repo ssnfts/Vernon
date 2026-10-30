@@ -160,6 +160,10 @@ pub struct VernonApp {
     pub explorer_sort: ExplorerSort,
     /// Utilities > External Tools: path being typed per program.
     pub tool_paths: std::collections::BTreeMap<String, String>,
+    /// X: the explorer's find box takes the keyboard on its next draw.
+    pub focus_explorer_filter: bool,
+    /// A paste was requested from the system; its text arrives next frame.
+    paste_requested: bool,
 }
 
 /// Seconds between crash-recovery copies of a modified scene.
@@ -169,6 +173,9 @@ impl VernonApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         crate::theme::apply(&cc.egui_ctx);
         let mut st = AppState::new(build_registry());
+        for warning in hotkeys::load_user_keymap() {
+            st.error_text(warning);
+        }
         st.info_text("Vernon ready. Try Pipeline > Replace Scene with Demo (the body-kit example), or type 'add box' below.");
         // Command line: `--demo` loads the demo pipeline, a `.vrn` path opens it.
         let mut fit = false;
@@ -235,6 +242,8 @@ impl VernonApp {
             modifier_filter: String::new(),
             explorer_sort: ExplorerSort::Scene,
             tool_paths: Default::default(),
+            focus_explorer_filter: false,
+            paste_requested: false,
         }
     }
 
@@ -558,13 +567,60 @@ impl VernonApp {
                 self.tab = PanelTab::Utilities;
                 self.utility = Some(Utility::Statistics);
             }
+            Action::Copy => {
+                self.copy_nodes(ctx);
+            }
+            Action::Cut => {
+                if self.copy_nodes(ctx) {
+                    self.st.delete_selected();
+                }
+            }
+            Action::Paste => {
+                self.paste_requested = true;
+                ctx.send_viewport_cmd(ViewportCommand::RequestPaste);
+                ctx.request_repaint();
+            }
+            Action::FindInExplorer => self.focus_explorer_filter = true,
+            Action::ToggleGeometry => {
+                let (n, hidden) = self.st.toggle_geometry_hidden();
+                self.st.info_text(format!("{n} geometry object(s) {}", if hidden { "hidden" } else { "shown" }));
+            }
+        }
+    }
+
+    fn copy_nodes(&mut self, ctx: &egui::Context) -> bool {
+        match self.st.copy_selection() {
+            Ok(text) => {
+                ctx.copy_text(text);
+                self.st.info_text(format!("{} node(s) copied; wires from outside the selection are left out", self.st.selection.len()));
+                true
+            }
+            Err(e) => {
+                self.st.info_text(e);
+                false
+            }
+        }
+    }
+
+    fn paste_nodes(&mut self, text: &str) {
+        if let Err(e) = self.st.paste_nodes(text) {
+            self.st.error_text(format!("paste: {e}"));
         }
     }
 
     fn shortcuts(&mut self, ctx: &egui::Context) {
+        let expected_paste = std::mem::take(&mut self.paste_requested);
         if ctx.wants_keyboard_input() {
             return;
         }
+        // The window system turns the platform's paste key into this event
+        // by itself; it only counts when asked for (the chord can be rebound).
+        let mut clipboard = ctx.input(|i| {
+            i.events.iter().find_map(|e| match e {
+                Event::Paste(text) => Some(text.clone()),
+                _ => None,
+            })
+        });
         let presses: Vec<Chord> = ctx.input(|i| {
             i.events
                 .iter()
@@ -587,10 +643,19 @@ impl VernonApp {
         });
         for chord in presses {
             if let Some(a) = hotkeys::lookup(chord) {
-                self.do_action(a, ctx);
+                match (a, clipboard.take()) {
+                    (Action::Paste, Some(text)) => self.paste_nodes(&text),
+                    (_, text) => {
+                        clipboard = text;
+                        self.do_action(a, ctx);
+                    }
+                }
             } else if let Some(what) = hotkeys::reserved(chord) {
                 self.st.info_text(format!("{}: {what} is not available in Vernon yet", hotkeys::chord_text(chord)));
             }
+        }
+        if let (true, Some(text)) = (expected_paste, clipboard) {
+            self.paste_nodes(&text);
         }
     }
 

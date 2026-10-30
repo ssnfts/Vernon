@@ -182,10 +182,12 @@ Shift+G H L C S W P hide geometry, helpers, lights, cameras, shapes, space warps
 I pan, Ctrl+R orbit, [ and ] zoom in and out.
 - Undo: Ctrl+Z and Ctrl+Y scene undo and redo, Shift+Z and Shift+Y viewport undo and redo.
 
-Vernon status [design]: 37 of the 61 chords are bound (`BINDINGS` in `app/src/hotkeys.rs`; `[` zooms in, `]` out, Alt+Home is the home view, Ctrl+R switches the orbit
-style, Ctrl+Shift+A selects objects of the same node type, 7 opens the statistics utility). The other 24 name features Vernon does not have (snap-type cycling, affect-pivot
-mode, gizmo axis and plane constraints and size, global search, quad-set lock, camera view, shade-selected-faces, safe frames, see-through, adaptive degradation, zoom and
-pan modes, the Shift+G/H/L/C/S/W/P hide categories). They stay in the `RESERVED` list of the same file, resolve to no action and cannot be given to another command;
+Vernon status [design]: 39 of the 61 chords are bound (`BINDINGS` in `app/src/hotkeys.rs`; `[` zooms in, `]` out, Alt+Home is the home view, Ctrl+R switches the orbit
+style, Ctrl+Shift+A selects objects of the same node type, 7 opens the statistics utility, X focuses the explorer's find-by-name box, Shift+G hides or shows objects that output
+geometry). Vernon adds Ctrl+X, Ctrl+C and Ctrl+V for sub-graph cut, copy and paste. `keymap.json` in the user config directory overrides any bound chord
+(`"action_name": "Ctrl+Shift+K"`, `null` to unbind); bad entries warn in the log and leave the default in place, and a reserved chord is refused. The other 22 name features
+Vernon does not have (snap-type cycling, affect-pivot mode, gizmo axis and plane constraints and size, quad-set lock, camera view, shade-selected-faces, safe frames,
+see-through, adaptive degradation, zoom and pan modes, the Shift+H/L/C/S/W/P hide categories). They stay in the `RESERVED` list of the same file, resolve to no action and cannot be given to another command;
 a test checks the whole table, bound and reserved, for conflicts.
 
 No bottom-view key appears in the table [doc]; Vernon assigns B [design]. Walk-through keys (2.3) are a modal context and may reuse letters. Vernon default mouse map: MMB pan,

@@ -544,13 +544,20 @@ then the external solvers, then UI polish, then release.
    - Add a part-hierarchy model: parent links, datums and pivots as prim and
      detail attributes produced by print nodes.
    - Show it in the Hierarchy tab; the spec lists this under "Not yet".
-6. **Keyboard and clipboard:**
-   - Bind the 24 reserved shortcut chords as their features land.
-   - Add `keymap.json` user overrides (load from the config dir; invalid
-     entries warn).
-   - Add Cut/Copy/Paste of sub-graphs: serialise the selected nodes and
-     internal wires to clipboard JSON, and paste with fresh ids and unique
-     names.
+6. **Keyboard and clipboard:** DONE in WP13, except the chords below.
+   - X (explorer find box) and Shift+G (hide/show geometry objects) are bound.
+     22 chords stay reserved because their features do not exist: Alt+S,
+     Insert, F5-F8, `-`, `=`, Space, C, F2, Shift+F, Alt+X, O, Alt+Z, I and
+     Shift+H/L/C/S/W/P. Bind each as its feature lands. X searches object
+     names only, not commands.
+   - `keymap.json` overrides load at startup from the config dir
+     (`%APPDATA%\Vernon`, `~/Library/Application Support/Vernon` or
+     `$XDG_CONFIG_HOME/vernon`); invalid entries warn in the log.
+   - Ctrl+X/C/V cut, copy and paste the selected nodes and internal wires as
+     clipboard JSON, pasting with fresh ids and unique names. Pasted text is
+     treated like an opened file (run switches off, trust prompt for programs
+     or write paths); access keys are not copied. Selecting an object selects
+     only its top node, so copy does not bring the rest of its stack.
 7. **Load Demo Pipeline:** DONE in WP13. The menu offers "Replace Scene with
    Demo" (guarded by the unsaved-changes prompt) and "Add Demo Copy".
 8. **Screenshot check:** capture the app with the example loaded and check by

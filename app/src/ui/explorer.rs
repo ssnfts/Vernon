@@ -41,11 +41,14 @@ pub fn show(app: &mut VernonApp, ctx: &egui::Context) {
                         .on_hover_text("Objects in the scene");
                 });
             });
-            ui.add(
+            let find = ui.add(
                 egui::TextEdit::singleline(&mut app.explorer_filter)
                     .hint_text("Find by name…")
                     .desired_width(f32::INFINITY),
             );
+            if std::mem::take(&mut app.focus_explorer_filter) {
+                find.request_focus();
+            }
             // Column headers: click to sort by that column, again for scene order.
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 6.0;

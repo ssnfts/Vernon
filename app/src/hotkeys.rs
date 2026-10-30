@@ -5,6 +5,14 @@
 //! in [`RESERVED`] with the reason it does nothing yet (the feature it names
 //! does not exist in Vernon); a reserved chord is never reused for anything
 //! else, and the tests check the whole table for conflicts.
+//!
+//! `keymap.json` in the user config directory overrides the defaults: one
+//! `"action_name": "Ctrl+Shift+K"` entry per action, `null` to unbind it.
+//! A bad entry is reported and leaves that action on its default.
+
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 use eframe::egui::Key;
 
@@ -59,6 +67,11 @@ pub enum Action {
     ZoomOut,
     SelectSimilar,
     Statistics,
+    Cut,
+    Copy,
+    Paste,
+    FindInExplorer,
+    ToggleGeometry,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -172,6 +185,69 @@ pub const BINDINGS: &[(Chord, Action, &str)] = &[
         "Select objects of the same type",
     ),
     (k(Key::Num7), Action::Statistics, "Scene statistics"),
+    (ctrl(Key::X), Action::Cut, "Cut selected nodes"),
+    (ctrl(Key::C), Action::Copy, "Copy selected nodes"),
+    (ctrl(Key::V), Action::Paste, "Paste nodes"),
+    (k(Key::X), Action::FindInExplorer, "Find an object by name"),
+    (shift(Key::G), Action::ToggleGeometry, "Hide / show geometry objects"),
+];
+
+/// The names `keymap.json` uses for actions.
+pub const ACTION_NAMES: &[(&str, Action)] = &[
+    ("undo", Action::Undo),
+    ("redo", Action::Redo),
+    ("view_undo", Action::ViewUndo),
+    ("view_redo", Action::ViewRedo),
+    ("new", Action::New),
+    ("open", Action::Open),
+    ("save", Action::Save),
+    ("delete", Action::Delete),
+    ("select_all", Action::SelectAll),
+    ("select_none", Action::SelectNone),
+    ("select_invert", Action::SelectInvert),
+    ("tool_select", Action::ToolSelect),
+    ("tool_move", Action::ToolMove),
+    ("tool_rotate", Action::ToolRotate),
+    ("tool_scale", Action::ToolScale),
+    ("snap", Action::Snap),
+    ("angle_snap", Action::AngleSnap),
+    ("zoom_extents_selected", Action::ZoomExtentsSelected),
+    ("zoom_extents_all", Action::ZoomExtentsAll),
+    ("zoom_extents_all_views", Action::ZoomExtentsAllViews),
+    ("maximize", Action::Maximize),
+    ("toggle_wire", Action::ToggleWire),
+    ("toggle_edges", Action::ToggleEdges),
+    ("toggle_grid", Action::ToggleGrid),
+    ("view_top", Action::ViewTop),
+    ("view_bottom", Action::ViewBottom),
+    ("view_front", Action::ViewFront),
+    ("view_left", Action::ViewLeft),
+    ("view_perspective", Action::ViewPerspective),
+    ("view_user", Action::ViewUser),
+    ("node_editor", Action::NodeEditor),
+    ("play", Action::Play),
+    ("prev_frame", Action::PrevFrame),
+    ("next_frame", Action::NextFrame),
+    ("go_start", Action::GoStart),
+    ("go_end", Action::GoEnd),
+    ("hide_selected", Action::HideSelected),
+    ("unhide_all", Action::UnhideAll),
+    ("hide_unselected", Action::HideUnselected),
+    ("isolate", Action::Isolate),
+    ("selection_lock", Action::SelectionLock),
+    ("zoom_region", Action::ZoomRegion),
+    ("type_in", Action::TypeIn),
+    ("home_view", Action::HomeView),
+    ("orbit_mode", Action::OrbitMode),
+    ("zoom_in", Action::ZoomIn),
+    ("zoom_out", Action::ZoomOut),
+    ("select_similar", Action::SelectSimilar),
+    ("statistics", Action::Statistics),
+    ("cut", Action::Cut),
+    ("copy", Action::Copy),
+    ("paste", Action::Paste),
+    ("find_in_explorer", Action::FindInExplorer),
+    ("toggle_geometry", Action::ToggleGeometry),
 ];
 
 /// Spec 2.12 chords with no action yet, each with what it would drive. They
@@ -185,7 +261,6 @@ pub const RESERVED: &[(Chord, &str)] = &[
     (k(Key::F8), "cycle plane constraint"),
     (k(Key::Minus), "gizmo size down"),
     (k(Key::Equals), "gizmo size up"),
-    (k(Key::X), "global search"),
     (k(Key::Space), "lock quad set"),
     (k(Key::C), "camera view"),
     (k(Key::F2), "shade selected faces"),
@@ -194,7 +269,6 @@ pub const RESERVED: &[(Chord, &str)] = &[
     (k(Key::O), "adaptive degradation"),
     (alt(Key::Z), "zoom mode"),
     (k(Key::I), "pan mode"),
-    (shift(Key::G), "hide geometry category"),
     (shift(Key::H), "hide helpers category"),
     (shift(Key::L), "hide lights category"),
     (shift(Key::C), "hide cameras category"),
@@ -203,8 +277,170 @@ pub const RESERVED: &[(Chord, &str)] = &[
     (shift(Key::P), "hide particles category"),
 ];
 
+/// The chords in effect: the defaults with the user's overrides applied.
+#[derive(Debug, Clone)]
+pub struct Keymap {
+    pub bindings: Vec<(Chord, Action, &'static str)>,
+    /// One line per `keymap.json` entry that could not be applied.
+    pub warnings: Vec<String>,
+}
+
+impl Default for Keymap {
+    fn default() -> Self {
+        Self {
+            bindings: BINDINGS.to_vec(),
+            warnings: Vec::new(),
+        }
+    }
+}
+
+impl Keymap {
+    /// Apply the text of a `keymap.json`. Nothing in it can fail: a bad file
+    /// gives the defaults and a bad entry keeps that action's default, each
+    /// with a warning.
+    pub fn from_json(text: &str) -> Self {
+        let mut map = Self::default();
+        let entries: BTreeMap<String, serde_json::Value> = match serde_json::from_str(text) {
+            Ok(e) => e,
+            Err(e) => {
+                map.warnings.push(format!("keymap.json ignored: expected an object of action names and chords ({e})"));
+                return map;
+            }
+        };
+        // Parse everything first, so two actions can swap their chords.
+        let mut wanted: Vec<(&str, Action, Option<Chord>)> = Vec::new();
+        for (name, value) in &entries {
+            let Some(action) = ACTION_NAMES.iter().find(|(n, _)| n == name).map(|(_, a)| *a) else {
+                map.warnings.push(format!("keymap.json: unknown action '{name}'"));
+                continue;
+            };
+            let chord = match value {
+                serde_json::Value::Null => None,
+                serde_json::Value::String(s) => match parse_chord(s) {
+                    Ok(c) => Some(c),
+                    Err(e) => {
+                        map.warnings.push(format!("keymap.json: {name}: {e}"));
+                        continue;
+                    }
+                },
+                other => {
+                    map.warnings.push(format!("keymap.json: {name}: expected a chord string or null, found {other}"));
+                    continue;
+                }
+            };
+            wanted.push((name, action, chord));
+        }
+        let defaults = std::mem::take(&mut map.bindings);
+        map.bindings = defaults.iter().filter(|(_, a, _)| !wanted.iter().any(|(_, w, _)| w == a)).copied().collect();
+        let mut refused = Vec::new();
+        for (name, action, chord) in &wanted {
+            let Some(chord) = *chord else { continue };
+            let text = defaults.iter().find(|(_, a, _)| a == action).map_or("", |(_, _, t)| *t);
+            let shown = chord_text(chord);
+            if let Some(what) = reserved(chord) {
+                map.warnings.push(format!("keymap.json: {name}: {shown} is reserved for {what}"));
+                refused.push(*action);
+            } else if map.bindings.iter().any(|(c, _, _)| *c == chord) {
+                map.warnings.push(format!("keymap.json: {name}: {shown} is already bound"));
+                refused.push(*action);
+            } else {
+                map.bindings.push((chord, *action, text));
+            }
+        }
+        // A refused entry goes back to its default, unless that was taken.
+        for action in refused {
+            let Some(default) = defaults.iter().find(|(_, a, _)| *a == action) else { continue };
+            if map.bindings.iter().any(|(c, _, _)| *c == default.0) {
+                map.warnings.push(format!("keymap.json: {} now has no shortcut: its default {} was given to another action", default.2, chord_text(default.0)));
+            } else {
+                map.bindings.push(*default);
+            }
+        }
+        map
+    }
+
+    /// Read `path`. A missing file is normal and gives the defaults silently.
+    pub fn from_file(path: &Path) -> Self {
+        match std::fs::read_to_string(path) {
+            Ok(text) => Self::from_json(&text),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Self::default(),
+            Err(e) => Self {
+                warnings: vec![format!("keymap.json ignored: cannot read {}: {e}", path.display())],
+                ..Self::default()
+            },
+        }
+    }
+
+    pub fn lookup(&self, chord: Chord) -> Option<Action> {
+        self.bindings.iter().find(|(c, _, _)| *c == chord).map(|(_, a, _)| *a)
+    }
+
+    pub fn shortcut_for(&self, action: Action) -> String {
+        self.bindings
+            .iter()
+            .find(|(_, a, _)| *a == action)
+            .map(|(c, _, _)| chord_text(*c))
+            .unwrap_or_default()
+    }
+}
+
+/// Parse text like `Shift+Ctrl+Z` or `alt+f5` (the form [`chord_text`] writes).
+pub fn parse_chord(text: &str) -> Result<Chord, String> {
+    let mut parts: Vec<&str> = text.split('+').map(str::trim).collect();
+    let bad = || format!("'{text}' is not a chord");
+    let name = parts.pop().filter(|n| !n.is_empty()).ok_or_else(bad)?;
+    let key = Key::from_name(name)
+        .or_else(|| Key::from_name(&name.to_uppercase()))
+        .or_else(|| {
+            let mut c = name.chars();
+            let first = c.next()?.to_uppercase().to_string();
+            Key::from_name(&(first + &c.as_str().to_lowercase()))
+        })
+        .ok_or_else(bad)?;
+    let mut chord = k(key);
+    for part in parts {
+        let flag = match part.to_lowercase().as_str() {
+            "ctrl" | "control" | "cmd" | "command" => &mut chord.ctrl,
+            "shift" => &mut chord.shift,
+            "alt" | "option" => &mut chord.alt,
+            _ => return Err(bad()),
+        };
+        if std::mem::replace(flag, true) {
+            return Err(format!("'{text}' repeats a modifier"));
+        }
+    }
+    Ok(chord)
+}
+
+/// The per-user config directory (no directory is created here).
+pub fn config_dir() -> Option<PathBuf> {
+    let var = |name: &str| std::env::var_os(name).filter(|v| !v.is_empty()).map(PathBuf::from);
+    if cfg!(windows) {
+        var("APPDATA").map(|d| d.join("Vernon"))
+    } else if cfg!(target_os = "macos") {
+        var("HOME").map(|d| d.join("Library/Application Support/Vernon"))
+    } else {
+        var("XDG_CONFIG_HOME").or_else(|| var("HOME").map(|d| d.join(".config"))).map(|d| d.join("vernon"))
+    }
+}
+
+static ACTIVE: OnceLock<Keymap> = OnceLock::new();
+
+/// Load the user's `keymap.json` for this run; returns its warnings.
+pub fn load_user_keymap() -> Vec<String> {
+    let map = config_dir().map(|d| Keymap::from_file(&d.join("keymap.json"))).unwrap_or_default();
+    let warnings = map.warnings.clone();
+    let _ = ACTIVE.set(map);
+    warnings
+}
+
+/// The keymap in effect.
+pub fn active() -> &'static Keymap {
+    ACTIVE.get_or_init(Keymap::default)
+}
+
 pub fn lookup(chord: Chord) -> Option<Action> {
-    BINDINGS.iter().find(|(c, _, _)| *c == chord).map(|(_, a, _)| *a)
+    active().lookup(chord)
 }
 
 /// What a reserved chord would drive, if `chord` is one.
@@ -229,11 +465,7 @@ pub fn chord_text(c: Chord) -> String {
 
 /// The shortcut text shown next to a menu entry.
 pub fn shortcut_for(action: Action) -> String {
-    BINDINGS
-        .iter()
-        .find(|(_, a, _)| *a == action)
-        .map(|(c, _, _)| chord_text(*c))
-        .unwrap_or_default()
+    active().shortcut_for(action)
 }
 
 #[cfg(test)]
@@ -287,6 +519,9 @@ mod tests {
             assert_eq!(reserved(*c), Some(*why));
         }
         assert!(BINDINGS.len() >= 49, "{}", BINDINGS.len());
+        assert_eq!(RESERVED.len(), 22);
+        // Of the 61 spec chords, those still reserved leave 39 bound.
+        assert_eq!(spec.iter().filter(|c| lookup(**c).is_some()).count(), 39);
     }
 
     #[test]
@@ -314,5 +549,104 @@ mod tests {
         assert_eq!(lookup(k(Key::F12)), Some(Action::TypeIn));
         assert_eq!(shortcut_for(Action::SelectionLock), "Shift+Ctrl+N");
         assert_eq!(chord_text(Chord { ctrl: true, shift: true, ..k(Key::Z) }), "Shift+Ctrl+Z");
+        assert_eq!(lookup(ctrl(Key::V)), Some(Action::Paste));
+        assert_eq!(lookup(k(Key::X)), Some(Action::FindInExplorer));
+        assert_eq!(lookup(shift(Key::G)), Some(Action::ToggleGeometry));
+    }
+
+    #[test]
+    fn every_action_is_named_once_and_every_chord_round_trips() {
+        let mut names = HashSet::new();
+        let mut actions = HashSet::new();
+        for (n, a) in ACTION_NAMES {
+            assert!(names.insert(*n), "{n}");
+            assert!(actions.insert(*a), "{n}");
+        }
+        for (c, a, _) in BINDINGS {
+            assert!(actions.contains(a), "{a:?} has no keymap.json name");
+            assert_eq!(parse_chord(&chord_text(*c)), Ok(*c));
+        }
+        assert_eq!(actions.len(), BINDINGS.len(), "one default chord per action");
+    }
+
+    #[test]
+    fn chords_parse_loosely_but_not_wrongly() {
+        assert_eq!(parse_chord(" ctrl + shift + k "), Ok(Chord { ctrl: true, shift: true, ..k(Key::K) }));
+        assert_eq!(parse_chord("alt+f5"), Ok(alt(Key::F5)));
+        assert_eq!(parse_chord("delete"), Ok(k(Key::Delete)));
+        for bad in ["", "Ctrl", "Ctrl+", "+", "Hyper+K", "Ctrl+Ctrl+K", "NotAKey"] {
+            assert!(parse_chord(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn overrides_rebind_unbind_and_swap() {
+        let m = Keymap::from_json(r#"{"save": "Ctrl+Shift+K", "snap": null, "undo": "Ctrl+Y", "redo": "Ctrl+Z"}"#);
+        assert!(m.warnings.is_empty(), "{:?}", m.warnings);
+        assert_eq!(m.lookup(Chord { ctrl: true, shift: true, ..k(Key::K) }), Some(Action::Save));
+        assert_eq!(m.lookup(ctrl(Key::S)), None, "the old chord is free");
+        assert_eq!(m.lookup(k(Key::S)), None);
+        assert_eq!(m.shortcut_for(Action::Snap), "");
+        assert_eq!(m.lookup(ctrl(Key::Y)), Some(Action::Undo));
+        assert_eq!(m.lookup(ctrl(Key::Z)), Some(Action::Redo));
+        assert_eq!(m.bindings.iter().find(|(_, a, _)| *a == Action::Save).map(|b| b.2), Some("Save scene"));
+    }
+
+    #[test]
+    fn invalid_keymap_entries_warn_and_keep_defaults() {
+        let m = Keymap::from_json(
+            r#"{"no_such_action": "K", "save": "Ctrl+Nope", "open": 5, "new": "",
+                "undo": "Ctrl+Y", "delete": "F5", "select_all": "Q", "copy": "Ctrl+Shift+K"}"#,
+        );
+        assert_eq!(m.warnings.len(), 7, "{:?}", m.warnings);
+        let has = |needle: &str| m.warnings.iter().any(|w| w.contains(needle));
+        assert!(has("unknown action 'no_such_action'") && has("save:") && has("open:") && has("new:"));
+        assert!(has("reserved for gizmo axis X"), "{:?}", m.warnings);
+        assert!(has("Ctrl+Y is already bound") && has("Q is already bound"));
+        // Every refused entry left its action on the default.
+        for (c, a) in [
+            (ctrl(Key::S), Action::Save),
+            (ctrl(Key::O), Action::Open),
+            (ctrl(Key::N), Action::New),
+            (ctrl(Key::Z), Action::Undo),
+            (k(Key::Delete), Action::Delete),
+            (ctrl(Key::A), Action::SelectAll),
+            (ctrl(Key::Y), Action::Redo),
+        ] {
+            assert_eq!(m.lookup(c), Some(a));
+        }
+        assert_eq!(m.lookup(Chord { ctrl: true, shift: true, ..k(Key::K) }), Some(Action::Copy), "a good entry beside bad ones applies");
+        let mut seen = HashSet::new();
+        assert!(m.bindings.iter().all(|(c, _, _)| seen.insert(*c)), "no chord bound twice");
+    }
+
+    #[test]
+    fn a_refused_entry_whose_default_was_taken_ends_unbound_with_a_warning() {
+        // copy refuses Q (held), and paste has taken copy's default.
+        let m = Keymap::from_json(r#"{"copy": "Q", "paste": "Ctrl+C"}"#);
+        assert_eq!(m.lookup(ctrl(Key::C)), Some(Action::Paste));
+        assert_eq!(m.shortcut_for(Action::Copy), "");
+        assert_eq!(m.warnings.len(), 2, "{:?}", m.warnings);
+    }
+
+    #[test]
+    fn broken_or_missing_files_never_fail() {
+        for text in ["", "not json", "[1, 2]", "\"text\"", "{\"save\": "] {
+            let m = Keymap::from_json(text);
+            assert_eq!(m.warnings.len(), 1, "{text}");
+            assert_eq!(m.bindings.len(), BINDINGS.len());
+        }
+        let dir = std::env::temp_dir().join(format!("vernon_keymap_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let missing = Keymap::from_file(&dir.join("absent.json"));
+        assert!(missing.warnings.is_empty());
+        assert_eq!(missing.bindings.len(), BINDINGS.len());
+        let path = dir.join("keymap.json");
+        std::fs::write(&path, r#"{"save": "F11"}"#).unwrap();
+        assert_eq!(Keymap::from_file(&path).lookup(k(Key::F11)), Some(Action::Save));
+        std::fs::write(&path, [0xff, 0xfe, 0x00]).unwrap();
+        assert_eq!(Keymap::from_file(&path).warnings.len(), 1, "not UTF-8");
+        assert_eq!(Keymap::from_file(&dir).warnings.len(), 1, "a directory");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
