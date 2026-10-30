@@ -554,6 +554,8 @@ fn display_tab(app: &mut VernonApp, ui: &mut Ui) {
         ui.checkbox(&mut app.vp.show_grid, "Home grid (G)");
         ui.horizontal(|ui| {
             ui.checkbox(&mut app.vp.show_gizmo, "View cube");
+            ui.checkbox(&mut app.vp.show_compass, "Compass");
+            ui.add(egui::DragValue::new(&mut app.vp.north_deg).range(-360.0..=360.0).suffix(" deg north"));
             egui::ComboBox::from_id_salt("cube_size")
                 .selected_text(["Large", "Normal", "Small", "Tiny"][usize::from(app.vp.cube_size.min(3))])
                 .show_ui(ui, |ui| {

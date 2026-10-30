@@ -7,16 +7,17 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use eframe::egui::{pos2, Color32, Painter, Rect};
+use eframe::egui::{pos2, Color32, Painter, Pos2, Rect};
 use eframe::egui_wgpu::RenderState;
-use glam::{DVec2, Mat4, Vec3};
+use glam::{DVec2, Vec3};
 use vernon_core::Aabb;
+use vernon_graph::NodeId;
 use vernon_render::{
     DrawItem as GpuItem, MeshBuffers, MeshHandle, MeshVertex, PointVertex, ShadingMode, ViewDesc,
     ViewportRenderer,
 };
 
-use super::{Camera, DrawItem, GridGeometry, RenderMesh, Shading, ViewParams, ViewportBackend};
+use super::{DrawItem, GridGeometry, GridSegment, RenderMesh, Shading, ViewParams, ViewportBackend};
 
 struct Uploaded {
     mesh: Arc<RenderMesh>,
@@ -151,6 +152,21 @@ impl ViewportBackend for GpuBackend {
         }
         painter.extend(overlay);
     }
+
+    fn pick(&mut self, rect: Rect, view: &ViewParams, items: &[DrawItem], at: Pos2, tol: f32, ppp: f32) -> Option<Option<NodeId>> {
+        let size = [
+            (rect.width() * ppp).round().max(1.0) as u32,
+            (rect.height() * ppp).round().max(1.0) as u32,
+        ];
+        let gpu_items: Vec<GpuItem> = items.iter().map(|it| GpuItem::new(self.handle(it))).collect();
+        let desc = view_desc(view, items, size, ppp);
+        let px = [
+            ((at.x - rect.min.x) * ppp).max(0.0) as u32,
+            ((at.y - rect.min.y) * ppp).max(0.0) as u32,
+        ];
+        let hit = self.renderer.pick(&desc, &gpu_items, px, (tol * ppp).ceil() as u32);
+        Some(hit.map(|i| items[i].id))
+    }
 }
 
 /// Offscreen view description for a tile of `size` physical pixels:
@@ -158,8 +174,8 @@ impl ViewportBackend for GpuBackend {
 pub fn view_desc(view: &ViewParams, items: &[DrawItem], size: [u32; 2], ppp: f32) -> ViewDesc {
     let aspect = size[0].max(1) as f32 / size[1].max(1) as f32;
     let mut desc = ViewDesc::new(size);
-    desc.view = view_matrix(&view.camera);
-    desc.proj = proj_matrix(&view.camera, aspect, scene_radius(view, items));
+    desc.view = view.camera.view_matrix();
+    desc.proj = view.camera.proj_matrix(aspect, scene_radius(view, items));
     desc.shading = match (view.shading, view.edged) {
         (Shading::Wireframe, _) => ShadingMode::Wireframe,
         (Shading::Shaded, true) => ShadingMode::ShadedEdges,
@@ -169,46 +185,18 @@ pub fn view_desc(view: &ViewParams, items: &[DrawItem], size: [u32; 2], ppp: f32
     desc.show_grid = view.grid.is_some();
     desc.grid_lines = view.grid.as_ref().map(|g| grid_vertices(g));
     desc.occluder = view.grid.as_ref().and_then(|g| g.ground).map(|q| q.map(|p| p.as_vec3()));
+    desc.overlay_lines = view.overlay.iter().flat_map(segment_vertices).collect();
     desc.point_size = 2.0 * ppp;
     desc
 }
 
-/// World -> view for the app camera (camera looks down its local -Z).
-pub fn view_matrix(cam: &Camera) -> Mat4 {
-    Mat4::look_to_rh(
-        cam.eye().as_vec3(),
-        (-cam.back()).as_vec3(),
-        cam.up().as_vec3(),
-    )
-}
-
-/// View -> clip with reverse-Z, matching the painter backend's projection:
-/// the vertical field of view (or ortho half height) spans the tile height.
-pub fn proj_matrix(cam: &Camera, aspect: f32, radius: f64) -> Mat4 {
-    let aspect = if aspect.is_finite() && aspect > 0.0 {
-        aspect
-    } else {
-        1.0
-    };
-    if cam.ortho {
-        let hh = cam.half_height.max(1e-6) as f32;
-        let hw = hh * aspect;
-        let d = cam.distance;
-        let r = radius.max(1.0) + 1.0;
-        Mat4::orthographic_rh(-hw, hw, -hh, hh, (d + r) as f32, (d - r) as f32)
-    } else {
-        Mat4::perspective_infinite_reverse_rh(cam.fov_y as f32, aspect, cam.near() as f32)
-    }
-}
-
 fn grid_vertices(g: &GridGeometry) -> Vec<PointVertex> {
-    g.segments
-        .iter()
-        .flat_map(|s| {
-            let color = lin([s.color.r(), s.color.g(), s.color.b()]);
-            [s.a, s.b].map(|p| PointVertex { pos: p.as_vec3().to_array(), color })
-        })
-        .collect()
+    g.segments.iter().flat_map(segment_vertices).collect()
+}
+
+fn segment_vertices(s: &GridSegment) -> [PointVertex; 2] {
+    let color = lin([s.color.r(), s.color.g(), s.color.b()]);
+    [s.a, s.b].map(|p| PointVertex { pos: p.as_vec3().to_array(), color })
 }
 
 /// Distance from the camera target that encloses every item and the grid,
@@ -319,8 +307,8 @@ pub fn buffers(m: &RenderMesh, color: Color32) -> MeshBuffers {
 mod tests {
     use super::*;
     use crate::viewport::mesh::{build, ColorBy};
-    use crate::viewport::ViewKind;
-    use glam::{DVec3, Vec4};
+    use crate::viewport::{Camera, ViewKind};
+    use glam::DVec3;
     use vernon_core::Geometry;
 
     #[test]
@@ -382,6 +370,7 @@ mod tests {
                 shading: Shading::Shaded,
                 edged: false,
                 grid: None,
+                overlay: Vec::new(),
             };
             let desc = view_desc(&view, std::slice::from_ref(&item), [96, 96], 1.0);
             r.draw(&desc, &[GpuItem::new(MeshHandle(1))]);
@@ -431,7 +420,7 @@ mod tests {
             let mut camera = Camera::new(kind);
             camera.target = DVec3::new(0.0, 0.0, z);
             let grid = with_grid.then(|| Arc::new(crate::viewport::grid::build(&camera, kind, size, &gs)));
-            let view = ViewParams { camera, shading: Shading::Shaded, edged: false, grid };
+            let view = ViewParams { camera, shading: Shading::Shaded, edged: false, grid, overlay: Vec::new() };
             let desc = view_desc(&view, std::slice::from_ref(&it), [128, 128], 1.0);
             r.draw(&desc, &[GpuItem::new(MeshHandle(1))]);
             let (w, h, px) = r.read_pixels(0).unwrap();
@@ -452,27 +441,5 @@ mod tests {
         assert!(red > 100, "box above the ground stays visible");
         let (_, lines_clear) = shoot(ViewKind::Top, -200.0, true);
         assert!(lines_over < lines_clear, "{lines_over} vs {lines_clear}");
-    }
-
-    #[test]
-    fn matrices_match_the_painter_projection() {
-        for kind in [ViewKind::Perspective, ViewKind::Top, ViewKind::Front] {
-            let mut cam = Camera::new(kind);
-            cam.target = DVec3::new(10.0, -20.0, 5.0);
-            let size = DVec2::new(800.0, 600.0);
-            let p = DVec3::new(40.0, 10.0, 30.0);
-            let (px, _) = cam.project(p, size).unwrap();
-            let clip = proj_matrix(&cam, 800.0 / 600.0, 500.0)
-                * view_matrix(&cam)
-                * Vec4::new(p.x as f32, p.y as f32, p.z as f32, 1.0);
-            let ndc = clip.truncate() / clip.w;
-            let sx = (ndc.x as f64 + 1.0) * 0.5 * size.x;
-            let sy = (1.0 - ndc.y as f64) * 0.5 * size.y;
-            assert!(
-                (sx - px.x).abs() < 0.05 && (sy - px.y).abs() < 0.05,
-                "{kind:?}: {sx},{sy} vs {px:?}"
-            );
-            assert!((0.0..=1.0).contains(&ndc.z), "{kind:?}: depth {}", ndc.z);
-        }
     }
 }

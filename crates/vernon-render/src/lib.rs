@@ -21,27 +21,31 @@
 //! ```
 //!
 //! Modules:
-//! * [`camera`] - Z-up orbit camera (arcball-style orbit, pan, zoom, presets,
-//!   zoom-extents, picking rays); pure maths, no GPU.
+//! * [`camera`] - the viewport camera, shared with the app (orbit, pan, zoom,
+//!   standard views, zoom extents, picking rays); pure maths, no GPU.
+//! * [`navcube`] - view cube regions, snapping, roll, compass and stored front
+//!   view; pure maths.
 //! * [`mesh`] - `Geometry` -> vertex/index buffers (ear-clip triangulation,
 //!   normals, colours, deduplicated edges, polylines, points); pure CPU.
 //! * [`grid`] - adaptive ground-grid line builder; pure CPU.
-//! * [`renderer`] - GPU resources, pipelines and egui registration.
+//! * [`renderer`] - GPU resources, pipelines, the depth-tested grid, the
+//!   always-on-top overlay (gizmo) pass, ID picking and egui registration.
 //!
 //! Units are millimetres, Z is up (see `vernon-core`).
 
 pub mod camera;
 pub mod grid;
 pub mod mesh;
+pub mod navcube;
 pub mod renderer;
 
 /// WGSL source of all pipelines (mesh, edge, curve and point passes).
 pub const SHADER_WGSL: &str = include_str!("shader.wgsl");
 
-pub use camera::{Camera, GridPlane, ViewAxis, ViewPreset, DEFAULT_FOV_Y};
+pub use camera::{Camera, GridPlane, OrbitMode, ViewKind};
 pub use grid::{build_grid, effective_spacing, GridColors, MAX_GRID_LINES_PER_SIDE};
 pub use mesh::{MeshBuffers, MeshVertex, PointVertex, DEFAULT_MESH_COLOR};
 pub use renderer::{
     DrawItem, MeshHandle, MeshStats, ShadingMode, ViewDesc, ViewportRenderer, COLOR_FORMAT,
-    DEPTH_FORMAT, SELECTED_WIRE_COLOR,
+    DEPTH_FORMAT, PICK_FORMAT, SELECTED_WIRE_COLOR,
 };

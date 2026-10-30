@@ -1,10 +1,11 @@
 //! View cube (spec 2.4, 3.6): 26 clickable regions (6 faces, 12 edges, 8
 //! corners), the view each gives, picking from the cube's screen position,
-//! drag snapping and roll. Pure functions; `ui::viewports` draws the cube.
+//! drag snapping, roll, the compass ring, the stored front view and the
+//! transition easing. Pure functions; the app paints the cube in egui.
 
 use glam::{DMat3, DQuat, DVec2, DVec3, IVec3};
 
-use super::camera::{basis_from_back, ViewKind};
+use crate::camera::{basis_from_back, ViewKind};
 
 /// Edge band of a face, as a fraction of the half-width (spec 3.6).
 pub const BAND: f64 = 0.3;
@@ -162,6 +163,83 @@ pub fn neighbour(rot: DQuat, dir: usize) -> IVec3 {
     IVec3::new(v.x.round() as i32, v.y.round() as i32, v.z.round() as i32)
 }
 
+/// Length of an animated view change, in seconds (spec 3.6).
+pub const TRANSITION_S: f64 = 0.3;
+/// Compass ring radius in cube half-widths, and its height under the cube.
+pub const COMPASS_RADIUS: f64 = 1.7;
+const COMPASS_Z: f64 = -1.0;
+/// Pointer tolerance of the ring and its letters, in pixels.
+const COMPASS_TOL: f64 = 5.0;
+
+/// Ease in-out over `t` in 0..1 (smoothstep).
+pub fn ease(t: f64) -> f64 {
+    let t = t.clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+/// The rotation that takes cube axes to the world when the camera rotation
+/// `rot` is stored as the Front view; identity for the standard Front.
+pub fn front_frame(rot: DQuat) -> DQuat {
+    (rot * ViewKind::Front.rotation().inverse()).normalize()
+}
+
+/// The four compass directions N, E, S, W on the cube's ground plane. North
+/// is +X (the nose) at a north angle of 0 and turns counter-clockwise, seen
+/// from above, as the angle grows.
+pub fn compass_dirs(north_deg: f64) -> [DVec3; 4] {
+    let n = DQuat::from_rotation_z(north_deg.to_radians()) * DVec3::X;
+    [n, DVec3::new(n.y, -n.x, 0.0), -n, DVec3::new(-n.y, n.x, 0.0)]
+}
+
+/// Pixels from the cube centre (y down) of a point in cube space, for a cube
+/// of half-width `scale` seen with relative rotation `rot`.
+pub fn to_px(v: DVec3, scale: f64, rot: DQuat) -> DVec2 {
+    let c = rot.inverse() * v;
+    DVec2::new(c.x, -c.y) * scale
+}
+
+/// A point of the compass ring at angle `a` (radians) in cube space.
+pub fn compass_point(a: f64) -> DVec3 {
+    DVec3::new(a.cos(), a.sin(), 0.0) * COMPASS_RADIUS + DVec3::new(0.0, 0.0, COMPASS_Z)
+}
+
+/// A compass letter's position in cube space.
+pub fn compass_letter(dir: DVec3) -> DVec3 {
+    dir * (COMPASS_RADIUS + 0.28) + DVec3::new(0.0, 0.0, COMPASS_Z)
+}
+
+/// What the pointer is over on the compass.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum CompassHit {
+    /// A letter: index into [`compass_dirs`].
+    Letter(usize),
+    /// The ring itself: dragging it turns the view.
+    Ring,
+}
+
+/// Compass part under a pointer `p` (pixels from the cube centre, y down).
+pub fn compass_hit(p: DVec2, scale: f64, rot: DQuat, north_deg: f64) -> Option<CompassHit> {
+    let dirs = compass_dirs(north_deg);
+    if let Some(k) = (0..4).find(|k| to_px(compass_letter(dirs[*k]), scale, rot).distance(p) < COMPASS_TOL + 2.0) {
+        return Some(CompassHit::Letter(k));
+    }
+    (0..64)
+        .map(|k| to_px(compass_point(k as f64 / 64.0 * std::f64::consts::TAU), scale, rot).distance(p))
+        .any(|d| d < COMPASS_TOL)
+        .then_some(CompassHit::Ring)
+}
+
+/// Turn about the cube's up axis so the camera looks from compass direction
+/// `dir`, keeping its elevation and roll.
+pub fn look_from_heading(rot: DQuat, dir: DVec3) -> DQuat {
+    let back = rot * DVec3::Z;
+    // Straight down or up there is no horizontal view direction: what is at
+    // the bottom of the screen is the side the camera looks from.
+    let h = if back.x.hypot(back.y) > 1e-3 { back } else { -(rot * DVec3::Y) };
+    let delta = dir.y.atan2(dir.x) - h.y.atan2(h.x);
+    (DQuat::from_rotation_z(delta) * rot).normalize()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -196,6 +274,58 @@ mod tests {
         // Sizes strictly decreasing, inactive opacity 0.5.
         assert!((0..3).all(|i| size_px(i) > size_px(i + 1)));
         assert_eq!(INACTIVE_OPACITY, 0.5);
+    }
+
+    #[test]
+    fn stored_front_view_maps_the_cube_onto_it() {
+        assert!(front_frame(ViewKind::Front.rotation()).dot(DQuat::IDENTITY).abs() > 1.0 - 1e-12);
+        // Storing the Left view as Front: the cube's +X now points at +Y and
+        // its Front region gives back exactly that view; Top stays on top.
+        let left = ViewKind::Left.rotation();
+        let f = front_frame(left);
+        assert!((f * DVec3::X - DVec3::Y).length() < 1e-12);
+        assert!((f * DVec3::Z - DVec3::Z).length() < 1e-12);
+        assert!((f * rotation_for(IVec3::X)).dot(left).abs() > 1.0 - 1e-12);
+        // Seen through the frame the stored view reads as the Front face.
+        assert_eq!(facing(f.inverse() * left), Some(IVec3::X));
+    }
+
+    #[test]
+    fn compass_directions_letters_and_headings() {
+        let [n, e, s, w] = compass_dirs(0.0);
+        assert!((n - DVec3::X).length() < 1e-12);
+        assert!((e + DVec3::Y).length() < 1e-12, "east is clockwise of north from above");
+        assert!((s + DVec3::X).length() < 1e-12);
+        assert!((w - DVec3::Y).length() < 1e-12);
+        assert!((compass_dirs(90.0)[0] - DVec3::Y).length() < 1e-12);
+
+        // From the top view, north (+X) is on the right of the screen.
+        let top = ViewKind::Top.rotation();
+        let at = to_px(compass_letter(n), 20.0, top);
+        assert!(at.x > 30.0 && at.y.abs() < 1e-9);
+        assert_eq!(compass_hit(at, 20.0, top, 0.0), Some(CompassHit::Letter(0)));
+        let ring = to_px(compass_point(0.7), 20.0, top);
+        assert_eq!(compass_hit(ring, 20.0, top, 0.0), Some(CompassHit::Ring));
+        assert_eq!(compass_hit(DVec2::ZERO, 20.0, top, 0.0), None);
+
+        // Clicking a letter looks from that side and keeps the elevation.
+        let q = rotation_for(IVec3::new(1, 0, 1));
+        let r = look_from_heading(q, DVec3::Y);
+        assert!((r * DVec3::Z - DVec3::new(0.0, 1.0, 1.0).normalize()).length() < 1e-12);
+        // From above, the chosen side comes to the bottom of the screen.
+        let r = look_from_heading(top, DVec3::X);
+        assert!((r * DVec3::Y + DVec3::X).length() < 1e-12);
+        assert!((r * DVec3::Z - DVec3::Z).length() < 1e-12);
+    }
+
+    #[test]
+    fn transition_easing_is_symmetric_and_clamped() {
+        assert_eq!(TRANSITION_S, 0.3);
+        assert_eq!(ease(0.0), 0.0);
+        assert_eq!(ease(1.0), 1.0);
+        assert_eq!(ease(0.5), 0.5);
+        assert_eq!(ease(2.0), 1.0);
+        assert!(ease(0.25) < 0.25 && ease(0.75) > 0.75, "slow at both ends");
     }
 
     #[test]

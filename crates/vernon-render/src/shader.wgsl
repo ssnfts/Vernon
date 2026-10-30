@@ -17,7 +17,8 @@ struct Uniforms {
     eye: vec4<f32>,
     // xy = target size in px, z = point size in px, w = edge alpha.
     viewport: vec4<f32>,
-    // x = use vertex colour for lines/points (0/1), y = ambient term.
+    // x = use vertex colour for lines/points (0/1), y = ambient term,
+    // z = id written by the picking pass (item index + 1, 0 = none).
     params: vec4<f32>,
 };
 
@@ -123,6 +124,11 @@ fn vs_point(@builtin(vertex_index) vi: u32, v: LineIn) -> FlatOut {
     o.clip = clip;
     o.color = vec4<f32>(mix(u.wire_color.rgb, v.color, u.params.x), 1.0);
     return o;
+}
+
+@fragment
+fn fs_id() -> @location(0) u32 {
+    return u32(u.params.z);
 }
 
 @fragment

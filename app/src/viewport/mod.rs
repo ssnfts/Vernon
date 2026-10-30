@@ -5,21 +5,21 @@
 //! visible objects. [`painter::PainterBackend`] is the always-available CPU
 //! fallback that draws through egui's painter.
 
-pub mod camera;
+pub mod gizmo;
 pub mod gpu;
 pub mod grid;
 pub mod layout;
 pub mod mesh;
 pub mod painter;
-pub mod viewcube;
 
 use std::sync::Arc;
 
-use eframe::egui::{Color32, Painter, Rect};
+use eframe::egui::{Color32, Painter, Pos2, Rect};
 use vernon_graph::NodeId;
 
-pub use camera::{Camera, OrbitMode, ViewKind};
-pub use grid::GridGeometry;
+pub use vernon_render::navcube as viewcube;
+pub use vernon_render::{camera, Camera, OrbitMode, ViewKind};
+pub use grid::{GridGeometry, GridSegment};
 pub use mesh::{ColorBy, RenderMesh};
 
 /// How surfaces are drawn.
@@ -47,6 +47,8 @@ pub struct ViewParams {
     pub edged: bool,
     /// Home grid of the tile, when shown.
     pub grid: Option<Arc<GridGeometry>>,
+    /// Lines drawn on top of everything: the transform gizmo.
+    pub overlay: Vec<GridSegment>,
 }
 
 /// One visible object.
@@ -69,4 +71,11 @@ pub trait ViewportBackend {
 
     /// Draw `items` into `rect` and the view's grid (other overlays are drawn by the app).
     fn paint(&mut self, painter: &Painter, rect: Rect, view: &ViewParams, items: &[DrawItem]);
+
+    /// The object at `at` (screen points) within `tol` points, as the backend
+    /// sees it. `None` when the backend has no picking of its own; the caller
+    /// then casts a ray.
+    fn pick(&mut self, _rect: Rect, _view: &ViewParams, _items: &[DrawItem], _at: Pos2, _tol: f32, _ppp: f32) -> Option<Option<NodeId>> {
+        None
+    }
 }

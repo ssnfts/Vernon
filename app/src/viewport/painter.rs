@@ -207,6 +207,11 @@ impl ViewportBackend for PainterBackend {
         faces.finish(&painter);
         wire.finish(&painter);
         painter.extend(overlay);
+        for s in &view.overlay {
+            if let Some(pts) = project_segment(cam, rect, size, s.a, s.b) {
+                painter.line_segment(pts, Stroke::new(1.5_f32, s.color));
+            }
+        }
     }
 }
 

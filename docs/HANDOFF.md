@@ -531,15 +531,22 @@ then the external solvers, then UI polish, then release.
      the ear-clipper into `vernon-core` and reuse it).
    - Carry the `dist`/`temp_c`/`Cd` colour modes through.
    - Test: an L-shaped hexagon renders 4 non-overlapping triangles.
-2. **Grid depth:** draw the home grid depth-tested in the GPU pass, so
-   geometry below Z=0 is hidden by the ground plane and not vice versa.
-   Remove the 2D-underlay workaround.
-3. **vernon-render navigation and picking:** wire its nav-cube, gizmo pass
-   and GPU ID picking (currently CPU picking and app-side widgets).
-   - Merge the app `Camera` and vernon-render `OrbitCamera` into one type
-     (f64 in app state, f32 at upload).
-4. **View cube extras:** compass ring, "set current view as Front" and an
-   animated view transition (spec `ui-dcc-conventions.md`).
+2. **Grid depth:** DONE in WP13. The GPU pass draws the grid depth-tested,
+   plus a depth-only ground plane when the camera is above Z=0, so geometry
+   below it is hidden; turning the grid off (G) removes the plane too. Vertical
+   construction planes hide nothing. The CPU painter has no depth buffer and
+   still draws the grid behind everything.
+3. **vernon-render navigation and picking:** DONE in WP13. The crate had none
+   of these to wire, so they were built: GPU ID picking (the CPU ray pick stays
+   as the painter fallback), an always-on-top overlay pass drawing a new
+   Move/Rotate/Scale gizmo with axis-constrained drags, and one `Camera` (f64,
+   f32 at upload) in `vernon_render::camera`. The nav-cube maths moved to
+   `vernon_render::navcube`; the cube is still painted by the app in egui,
+   because its labels and icons are egui text and app icons.
+4. **View cube extras:** DONE in WP13. Compass ring (letters look from that
+   side, ring drag turns, north angle in Display), "Set Current View as Front"
+   and Reset Front (session only, not saved with the scene), 0.3 s animated
+   view transition with an off switch.
 5. **Hierarchy tab:**
    - Add a part-hierarchy model: parent links, datums and pivots as prim and
      detail attributes produced by print nodes.
@@ -553,9 +560,8 @@ then the external solvers, then UI polish, then release.
      names.
 7. **Load Demo Pipeline:** DONE in WP13. The menu offers "Replace Scene with
    Demo" (guarded by the unsaved-changes prompt) and "Add Demo Copy".
-8. **Screenshot check:** capture the app with the example loaded and check by
-   eye that the Command Panel, time slider and status bar render. The last
-   check was cropped by DPI scaling, so use a DPI-aware capture.
+8. **Screenshot check:** DONE in WP13. A per-monitor DPI-aware capture of
+   `--demo` shows the Command Panel, time slider and status bar uncropped.
 
 ### WP14 — Consistency clean-ups
 - **Material tables:** verify the three material tables are now one

@@ -101,11 +101,19 @@ fn trim(v: f64) -> String {
     s.trim_end_matches('0').trim_end_matches('.').to_string()
 }
 
-/// The construction plane of a view: normal and the two in-plane axes.
-pub fn plane_of(kind: ViewKind) -> (DVec3, DVec3, DVec3) {
+/// The construction plane of a view: normal and the two in-plane axes. Side
+/// views use the world plane they face most, because a stored front view (spec
+/// 2.4) can turn them away from their usual axis.
+pub fn plane_of(kind: ViewKind, back: DVec3) -> (DVec3, DVec3, DVec3) {
+    let b = back.abs();
     match kind {
-        ViewKind::Front | ViewKind::Back => (DVec3::X, DVec3::Y, DVec3::Z),
-        ViewKind::Left | ViewKind::Right => (DVec3::Y, DVec3::X, DVec3::Z),
+        ViewKind::Front | ViewKind::Back | ViewKind::Left | ViewKind::Right if b.z < b.x.max(b.y) => {
+            if b.x >= b.y {
+                (DVec3::X, DVec3::Y, DVec3::Z)
+            } else {
+                (DVec3::Y, DVec3::X, DVec3::Z)
+            }
+        }
         _ => (DVec3::Z, DVec3::X, DVec3::Y),
     }
 }
@@ -139,7 +147,7 @@ pub fn build(cam: &Camera, kind: ViewKind, size: DVec2, gs: &GridSettings) -> Gr
     } else {
         gs.spacing
     };
-    let (n, u, v) = plane_of(kind);
+    let (n, u, v) = plane_of(kind, cam.back());
     let minor = Color32::from_rgb(0x44, 0x44, 0x44);
     let major = Color32::from_rgb(0x52, 0x52, 0x52);
     let axis = Color32::from_rgb(0x22, 0x22, 0x22);

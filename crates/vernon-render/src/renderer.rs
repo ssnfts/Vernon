@@ -19,6 +19,8 @@ use crate::SHADER_WGSL;
 pub const COLOR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 /// Format of the offscreen depth target (reverse-Z).
 pub const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
+/// Format of the ID picking target: item index + 1, 0 = nothing.
+pub const PICK_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R32Uint;
 /// Wire colour used for selected items (the reference DCC draws selection
 /// in white).
 pub const SELECTED_WIRE_COLOR: Color32 = Color32::WHITE;
@@ -81,6 +83,9 @@ pub struct ViewDesc {
     /// World-space quad that writes depth only: an opaque ground plane that
     /// hides what lies behind it without drawing anything itself.
     pub occluder: Option<[Vec3; 4]>,
+    /// World-space line list drawn last and on top of everything (the
+    /// transform gizmo). Colours are linear.
+    pub overlay_lines: Vec<PointVertex>,
     /// Size of points in physical pixels.
     pub point_size: f32,
 }
@@ -105,19 +110,20 @@ impl ViewDesc {
             grid_axis_color: Color32::from_gray(24),
             grid_lines: None,
             occluder: None,
+            overlay_lines: Vec::new(),
             point_size: 2.0,
         }
     }
 
-    /// Matrices, grid plane and grid placement from an orbit camera.
+    /// Matrices, grid plane and grid placement from the camera.
     pub fn from_camera(camera: &Camera, size: [u32; 2]) -> Self {
         let aspect = size[0].max(1) as f32 / size[1].max(1) as f32;
         Self {
             view: camera.view_matrix(),
-            proj: camera.proj_matrix(aspect),
+            proj: camera.proj_matrix(aspect, camera.distance * 3.0),
             grid_plane: camera.grid_plane(),
-            grid_center: camera.target,
-            grid_extent: camera.distance * 3.0,
+            grid_center: camera.target.as_vec3(),
+            grid_extent: camera.distance as f32 * 3.0,
             ..Self::new(size)
         }
     }
@@ -234,6 +240,21 @@ struct Pipelines {
     curve: wgpu::RenderPipeline,
     point: wgpu::RenderPipeline,
     occluder: wgpu::RenderPipeline,
+    overlay: wgpu::RenderPipeline,
+    pick_mesh: wgpu::RenderPipeline,
+    pick_line: wgpu::RenderPipeline,
+    pick_point: wgpu::RenderPipeline,
+}
+
+/// Offscreen target of the ID pass; one is shared by all viewports.
+struct PickTarget {
+    size: [u32; 2],
+    ids: wgpu::Texture,
+    ids_view: wgpu::TextureView,
+    depth_view: wgpu::TextureView,
+    uniform_buf: wgpu::Buffer,
+    uniform_slots: usize,
+    bind_group: wgpu::BindGroup,
 }
 
 const MESH_ATTRS: [wgpu::VertexAttribute; 3] =
@@ -254,6 +275,7 @@ pub struct ViewportRenderer {
     generations: HashMap<u64, u64>,
     uploads: u64,
     targets: HashMap<u64, Target>,
+    pick_target: Option<PickTarget>,
 }
 
 impl ViewportRenderer {
@@ -302,6 +324,7 @@ impl ViewportRenderer {
             generations: HashMap::new(),
             uploads: 0,
             targets: HashMap::new(),
+            pick_target: None,
         }
     }
 
@@ -517,57 +540,7 @@ impl ViewportRenderer {
         let size = [view.size[0].clamp(1, max), view.size[1].clamp(1, max)];
         let slots = items.len() + 1;
         self.ensure_target(view.viewport_id, size, slots);
-
-        // ---- uniforms -------------------------------------------------
-        let view_proj = view.proj * view.view;
-        let inv_view = view.view.inverse();
-        let eye = if view.is_ortho() {
-            let d = inv_view.z_axis.xyz().normalize_or_zero();
-            [d.x, d.y, d.z, 0.0]
-        } else {
-            let p = inv_view.w_axis.xyz();
-            [p.x, p.y, p.z, 1.0]
-        };
-        let base = Uniforms {
-            view_proj: view_proj.to_cols_array_2d(),
-            model: Mat4::IDENTITY.to_cols_array_2d(),
-            normal_mat: Mat4::IDENTITY.to_cols_array_2d(),
-            wire_color: [0.0, 0.0, 0.0, 1.0],
-            eye,
-            viewport: [
-                size[0] as f32,
-                size[1] as f32,
-                view.point_size.max(1.0),
-                1.0,
-            ],
-            params: [1.0, AMBIENT, 0.0, 0.0],
-        };
-        let stride = self.uniform_stride as usize;
-        let mut bytes = vec![0u8; slots * stride];
-        bytes[..UNIFORM_SIZE as usize].copy_from_slice(bytemuck::bytes_of(&base));
-        for (i, it) in items.iter().enumerate() {
-            let has_color = self
-                .meshes
-                .get(&it.mesh.0)
-                .is_some_and(|m| m.has_point_color);
-            let wire = if it.selected {
-                SELECTED_WIRE_COLOR
-            } else {
-                it.wire_color
-            };
-            let edge_alpha = match view.shading {
-                ShadingMode::Shaded => SELECTED_EDGE_ALPHA,
-                _ => 1.0,
-            };
-            let mut u = base;
-            u.model = it.model.to_cols_array_2d();
-            u.normal_mat = it.model.inverse().transpose().to_cols_array_2d();
-            u.wire_color = linear(wire);
-            u.viewport[3] = edge_alpha;
-            u.params[0] = if has_color { 1.0 } else { 0.0 };
-            let o = (i + 1) * stride;
-            bytes[o..o + UNIFORM_SIZE as usize].copy_from_slice(bytemuck::bytes_of(&u));
-        }
+        let bytes = self.uniform_bytes(view, items, size);
 
         let Self {
             device,
@@ -575,8 +548,10 @@ impl ViewportRenderer {
             pipelines,
             meshes,
             targets,
+            uniform_stride,
             ..
         } = self;
+        let stride = *uniform_stride as usize;
         let target = targets.get_mut(&view.viewport_id).expect("ensured above");
         queue.write_buffer(&target.uniform_buf, 0, &bytes);
 
@@ -622,6 +597,14 @@ impl ViewportRenderer {
             }
             target.occluder = view.occluder.map(|q| (q, occluder_buffer(device, &q)));
         }
+
+        let overlay = (!view.overlay_lines.is_empty()).then(|| {
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("vernon overlay"),
+                contents: bytemuck::cast_slice(&view.overlay_lines),
+                usage: wgpu::BufferUsages::VERTEX,
+            })
+        });
 
         // ---- pass -----------------------------------------------------
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -736,8 +719,304 @@ impl ViewportRenderer {
                     pass.draw(0..6, 0..n);
                 }
             }
+
+            if let Some(b) = &overlay {
+                pass.set_pipeline(&pipelines.overlay);
+                pass.set_bind_group(0, &target.bind_group, &[slot(0)]);
+                pass.set_vertex_buffer(0, b.slice(..));
+                pass.draw(0..view.overlay_lines.len() as u32, 0..1);
+            }
         }
         queue.submit(Some(encoder.finish()));
+        if let Some(b) = overlay {
+            b.destroy();
+        }
+    }
+
+    /// GPU ID pick: renders `items` into an ID target with the view's
+    /// occluder and returns the index of the item nearest pixel `px` (physical
+    /// pixels, top-left origin) within `radius` pixels. Blocks until the GPU
+    /// is done, so call it on a click, not every frame.
+    pub fn pick(
+        &mut self,
+        view: &ViewDesc,
+        items: &[DrawItem],
+        px: [u32; 2],
+        radius: u32,
+    ) -> Option<usize> {
+        let max = self.device.limits().max_texture_dimension_2d.max(1);
+        let size = [view.size[0].clamp(1, max), view.size[1].clamp(1, max)];
+        if px[0] >= size[0] || px[1] >= size[1] {
+            return None;
+        }
+        self.ensure_pick_target(size, items.len() + 1);
+        let bytes = self.uniform_bytes(view, items, size);
+        let stride = self.uniform_stride as usize;
+        let Self {
+            device,
+            queue,
+            pipelines,
+            meshes,
+            pick_target,
+            ..
+        } = self;
+        let t = pick_target.as_ref().expect("ensured above");
+        queue.write_buffer(&t.uniform_buf, 0, &bytes);
+        let occluder = view.occluder.as_ref().map(|q| occluder_buffer(device, q));
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("vernon pick"),
+        });
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("vernon pick"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &t.ids_view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &t.depth_view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(0.0),
+                        store: wgpu::StoreOp::Discard,
+                    }),
+                    stencil_ops: None,
+                }),
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            let slot = |i: usize| (i * stride) as u32;
+            // Slot 0 writes id 0: the ground plane hides what it hides here too.
+            if let Some(b) = &occluder {
+                pass.set_pipeline(&pipelines.pick_mesh);
+                pass.set_bind_group(0, &t.bind_group, &[slot(0)]);
+                pass.set_vertex_buffer(0, b.slice(..));
+                pass.draw(0..6, 0..1);
+            }
+            let wire = view.shading == ShadingMode::Wireframe;
+            for (i, it) in items.iter().enumerate() {
+                let Some(m) = meshes.get(&it.mesh.0) else {
+                    continue;
+                };
+                pass.set_bind_group(0, &t.bind_group, &[slot(i + 1)]);
+                if !wire {
+                    if let (Some(vb), Some(ib)) = (&m.tri_vb, &m.tri_ib) {
+                        pass.set_pipeline(&pipelines.pick_mesh);
+                        pass.set_vertex_buffer(0, vb.slice(..));
+                        pass.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint32);
+                        pass.draw_indexed(0..m.tri_index_count, 0, 0..1);
+                    }
+                }
+                if let Some(vb) = &m.point_vb {
+                    pass.set_pipeline(&pipelines.pick_line);
+                    pass.set_vertex_buffer(0, vb.slice(..));
+                    let lines = [
+                        (wire, &m.edge_ib, m.edge_index_count),
+                        (true, &m.curve_ib, m.curve_index_count),
+                    ];
+                    for (want, ib, n) in lines {
+                        if let (true, Some(ib)) = (want, ib) {
+                            pass.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint32);
+                            pass.draw_indexed(0..n, 0, 0..1);
+                        }
+                    }
+                }
+                let (vb, n) = if m.loose_all {
+                    (m.point_vb.as_ref(), m.point_count)
+                } else {
+                    (m.loose_vb.as_ref(), m.loose_count)
+                };
+                if let (Some(vb), true) = (vb, n > 0) {
+                    pass.set_pipeline(&pipelines.pick_point);
+                    pass.set_vertex_buffer(0, vb.slice(..));
+                    pass.draw(0..6, 0..n);
+                }
+            }
+        }
+        queue.submit(Some(encoder.finish()));
+        if let Some(b) = occluder {
+            b.destroy();
+        }
+        // Read back the window around the pixel.
+        let x0 = px[0].saturating_sub(radius);
+        let y0 = px[1].saturating_sub(radius);
+        let w = (px[0] + radius + 1).min(size[0]) - x0;
+        let h = (px[1] + radius + 1).min(size[1]) - y0;
+        let ids = self.read_ids(x0, y0, w, h)?;
+        nearest_id(&ids, w, h, px[0] - x0, px[1] - y0).map(|id| id as usize - 1)
+    }
+
+    fn read_ids(&self, x: u32, y: u32, w: u32, h: u32) -> Option<Vec<u32>> {
+        let t = self.pick_target.as_ref()?;
+        let padded = (w * 4).div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)
+            * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+        let buf = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("vernon pick readback"),
+            size: u64::from(padded) * u64::from(h),
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut enc = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("vernon pick readback"),
+            });
+        enc.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture: &t.ids,
+                mip_level: 0,
+                origin: wgpu::Origin3d { x, y, z: 0 },
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &buf,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(padded),
+                    rows_per_image: Some(h),
+                },
+            },
+            wgpu::Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: 1,
+            },
+        );
+        self.queue.submit(Some(enc.finish()));
+        let slice = buf.slice(..);
+        let (tx, rx) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |r| {
+            let _ = tx.send(r);
+        });
+        self.device.poll(wgpu::PollType::Wait).ok()?;
+        rx.recv().ok()?.ok()?;
+        let mut out = Vec::with_capacity((w * h) as usize);
+        {
+            let data = slice.get_mapped_range();
+            for row in 0..h as usize {
+                let start = row * padded as usize;
+                let bytes = &data[start..start + (w * 4) as usize];
+                out.extend(bytes.as_chunks::<4>().0.iter().map(|b| u32::from_le_bytes(*b)));
+            }
+        }
+        buf.unmap();
+        buf.destroy();
+        Some(out)
+    }
+
+    fn ensure_pick_target(&mut self, size: [u32; 2], slots: usize) {
+        let device = &self.device;
+        let stride = self.uniform_stride;
+        let layout = &self.bind_group_layout;
+        let fits = self
+            .pick_target
+            .as_ref()
+            .is_some_and(|t| t.size == size && t.uniform_slots >= slots);
+        if fits {
+            return;
+        }
+        if let Some(old) = self.pick_target.take() {
+            old.ids.destroy();
+            old.uniform_buf.destroy();
+        }
+        let extent = wgpu::Extent3d {
+            width: size[0],
+            height: size[1],
+            depth_or_array_layers: 1,
+        };
+        let tex = |label: &str, format, usage| {
+            device.create_texture(&wgpu::TextureDescriptor {
+                label: Some(label),
+                size: extent,
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format,
+                usage,
+                view_formats: &[],
+            })
+        };
+        let ids = tex(
+            "vernon pick ids",
+            PICK_FORMAT,
+            wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        );
+        let depth_view = tex(
+            "vernon pick depth",
+            DEPTH_FORMAT,
+            wgpu::TextureUsages::RENDER_ATTACHMENT,
+        )
+        .create_view(&Default::default());
+        let cap = slots.next_power_of_two().max(16);
+        let (uniform_buf, bind_group) = create_uniforms(device, layout, cap, stride);
+        self.pick_target = Some(PickTarget {
+            size,
+            ids_view: ids.create_view(&Default::default()),
+            ids,
+            depth_view,
+            uniform_buf,
+            uniform_slots: cap,
+            bind_group,
+        });
+    }
+
+    /// One uniform block per draw item plus slot 0 for the grid and overlays.
+    fn uniform_bytes(&self, view: &ViewDesc, items: &[DrawItem], size: [u32; 2]) -> Vec<u8> {
+        let view_proj = view.proj * view.view;
+        let inv_view = view.view.inverse();
+        let eye = if view.is_ortho() {
+            let d = inv_view.z_axis.xyz().normalize_or_zero();
+            [d.x, d.y, d.z, 0.0]
+        } else {
+            let p = inv_view.w_axis.xyz();
+            [p.x, p.y, p.z, 1.0]
+        };
+        let base = Uniforms {
+            view_proj: view_proj.to_cols_array_2d(),
+            model: Mat4::IDENTITY.to_cols_array_2d(),
+            normal_mat: Mat4::IDENTITY.to_cols_array_2d(),
+            wire_color: [0.0, 0.0, 0.0, 1.0],
+            eye,
+            viewport: [
+                size[0] as f32,
+                size[1] as f32,
+                view.point_size.max(1.0),
+                1.0,
+            ],
+            params: [1.0, AMBIENT, 0.0, 0.0],
+        };
+        let stride = self.uniform_stride as usize;
+        let slots = items.len() + 1;
+        let mut bytes = vec![0u8; slots * stride];
+        bytes[..UNIFORM_SIZE as usize].copy_from_slice(bytemuck::bytes_of(&base));
+        for (i, it) in items.iter().enumerate() {
+            let has_color = self
+                .meshes
+                .get(&it.mesh.0)
+                .is_some_and(|m| m.has_point_color);
+            let wire = if it.selected {
+                SELECTED_WIRE_COLOR
+            } else {
+                it.wire_color
+            };
+            let edge_alpha = match view.shading {
+                ShadingMode::Shaded => SELECTED_EDGE_ALPHA,
+                _ => 1.0,
+            };
+            let mut u = base;
+            u.model = it.model.to_cols_array_2d();
+            u.normal_mat = it.model.inverse().transpose().to_cols_array_2d();
+            u.wire_color = linear(wire);
+            u.viewport[3] = edge_alpha;
+            u.params[0] = if has_color { 1.0 } else { 0.0 };
+            u.params[2] = (i + 1) as f32;
+            let o = (i + 1) * stride;
+            bytes[o..o + UNIFORM_SIZE as usize].copy_from_slice(bytemuck::bytes_of(&u));
+        }
+        bytes
     }
 
     /// Read back a viewport's last rendered image as tightly packed RGBA8
@@ -840,6 +1119,17 @@ impl Drop for ViewportRenderer {
     fn drop(&mut self) {
         self.clear_meshes();
     }
+}
+
+/// Id nearest pixel (`cx`, `cy`) in a `w` x `h` window, skipping 0.
+pub(crate) fn nearest_id(ids: &[u32], w: u32, h: u32, cx: u32, cy: u32) -> Option<u32> {
+    let dist = |x: u32, y: u32| x.abs_diff(cx).pow(2) + y.abs_diff(cy).pow(2);
+    (0..h)
+        .flat_map(|y| (0..w).map(move |x| (x, y)))
+        .map(|(x, y)| (dist(x, y), ids[(y * w + x) as usize]))
+        .filter(|(_, id)| *id != 0)
+        .min_by_key(|(d, _)| *d)
+        .map(|(_, id)| id)
 }
 
 fn destroy_mesh(m: GpuMesh) {
@@ -999,11 +1289,12 @@ fn create_pipelines(device: &wgpu::Device, bgl: &wgpu::BindGroupLayout, samples:
         buffer: wgpu::VertexBufferLayout<'a>,
         topology: wgpu::PrimitiveTopology,
         depth_write: bool,
+        depth_compare: wgpu::CompareFunction,
         bias: wgpu::DepthBiasState,
         blend: wgpu::BlendState,
         write_mask: wgpu::ColorWrites,
     }
-    let make = |s: Spec<'_>| {
+    let build = |s: Spec<'_>, format: wgpu::TextureFormat, count: u32| {
         device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some(s.label),
             layout: Some(&layout),
@@ -1022,12 +1313,12 @@ fn create_pipelines(device: &wgpu::Device, bgl: &wgpu::BindGroupLayout, samples:
                 format: DEPTH_FORMAT,
                 depth_write_enabled: s.depth_write,
                 // Reverse-Z: nearer is larger.
-                depth_compare: wgpu::CompareFunction::GreaterEqual,
+                depth_compare: s.depth_compare,
                 stencil: Default::default(),
                 bias: s.bias,
             }),
             multisample: wgpu::MultisampleState {
-                count: samples,
+                count,
                 mask: !0,
                 alpha_to_coverage_enabled: false,
             },
@@ -1036,8 +1327,8 @@ fn create_pipelines(device: &wgpu::Device, bgl: &wgpu::BindGroupLayout, samples:
                 entry_point: Some(s.fs),
                 compilation_options: Default::default(),
                 targets: &[Some(wgpu::ColorTargetState {
-                    format: COLOR_FORMAT,
-                    blend: Some(s.blend),
+                    format,
+                    blend: (format == COLOR_FORMAT).then_some(s.blend),
                     write_mask: s.write_mask,
                 })],
             }),
@@ -1045,7 +1336,10 @@ fn create_pipelines(device: &wgpu::Device, bgl: &wgpu::BindGroupLayout, samples:
             cache: None,
         })
     };
+    let make = |s: Spec<'_>| build(s, COLOR_FORMAT, samples);
+    let pick = |s: Spec<'_>| build(s, PICK_FORMAT, 1);
     let none = wgpu::DepthBiasState::default();
+    let nearer = wgpu::CompareFunction::GreaterEqual;
     let all = wgpu::ColorWrites::ALL;
     // Push faces away (reverse-Z => negative) so edges and grid lines win.
     let faces_back = wgpu::DepthBiasState {
@@ -1061,6 +1355,7 @@ fn create_pipelines(device: &wgpu::Device, bgl: &wgpu::BindGroupLayout, samples:
             buffer: mesh_layout.clone(),
             topology: wgpu::PrimitiveTopology::TriangleList,
             depth_write: true,
+            depth_compare: nearer,
             bias: faces_back,
             blend: wgpu::BlendState::REPLACE,
             write_mask: all,
@@ -1069,9 +1364,10 @@ fn create_pipelines(device: &wgpu::Device, bgl: &wgpu::BindGroupLayout, samples:
             label: "vernon occluder",
             vs: "vs_mesh",
             fs: "fs_mesh",
-            buffer: mesh_layout,
+            buffer: mesh_layout.clone(),
             topology: wgpu::PrimitiveTopology::TriangleList,
             depth_write: true,
+            depth_compare: nearer,
             bias: faces_back,
             blend: wgpu::BlendState::REPLACE,
             write_mask: wgpu::ColorWrites::empty(),
@@ -1083,6 +1379,7 @@ fn create_pipelines(device: &wgpu::Device, bgl: &wgpu::BindGroupLayout, samples:
             buffer: line_layout.clone(),
             topology: wgpu::PrimitiveTopology::LineList,
             depth_write: false,
+            depth_compare: nearer,
             bias: none,
             blend: wgpu::BlendState::ALPHA_BLENDING,
             write_mask: all,
@@ -1091,9 +1388,10 @@ fn create_pipelines(device: &wgpu::Device, bgl: &wgpu::BindGroupLayout, samples:
             label: "vernon curves",
             vs: "vs_curve",
             fs: "fs_flat",
-            buffer: line_layout,
+            buffer: line_layout.clone(),
             topology: wgpu::PrimitiveTopology::LineList,
             depth_write: true,
+            depth_compare: nearer,
             bias: none,
             blend: wgpu::BlendState::REPLACE,
             write_mask: all,
@@ -1102,9 +1400,58 @@ fn create_pipelines(device: &wgpu::Device, bgl: &wgpu::BindGroupLayout, samples:
             label: "vernon points",
             vs: "vs_point",
             fs: "fs_flat",
+            buffer: point_layout.clone(),
+            topology: wgpu::PrimitiveTopology::TriangleList,
+            depth_write: true,
+            depth_compare: nearer,
+            bias: none,
+            blend: wgpu::BlendState::REPLACE,
+            write_mask: all,
+        }),
+        overlay: make(Spec {
+            label: "vernon overlay",
+            vs: "vs_curve",
+            fs: "fs_flat",
+            buffer: line_layout.clone(),
+            topology: wgpu::PrimitiveTopology::LineList,
+            depth_write: false,
+            depth_compare: wgpu::CompareFunction::Always,
+            bias: none,
+            blend: wgpu::BlendState::REPLACE,
+            write_mask: all,
+        }),
+        pick_mesh: pick(Spec {
+            label: "vernon pick mesh",
+            vs: "vs_mesh",
+            fs: "fs_id",
+            buffer: mesh_layout,
+            topology: wgpu::PrimitiveTopology::TriangleList,
+            depth_write: true,
+            depth_compare: nearer,
+            bias: faces_back,
+            blend: wgpu::BlendState::REPLACE,
+            write_mask: all,
+        }),
+        pick_line: pick(Spec {
+            label: "vernon pick lines",
+            vs: "vs_curve",
+            fs: "fs_id",
+            buffer: line_layout,
+            topology: wgpu::PrimitiveTopology::LineList,
+            depth_write: true,
+            depth_compare: nearer,
+            bias: none,
+            blend: wgpu::BlendState::REPLACE,
+            write_mask: all,
+        }),
+        pick_point: pick(Spec {
+            label: "vernon pick points",
+            vs: "vs_point",
+            fs: "fs_id",
             buffer: point_layout,
             topology: wgpu::PrimitiveTopology::TriangleList,
             depth_write: true,
+            depth_compare: nearer,
             bias: none,
             blend: wgpu::BlendState::REPLACE,
             write_mask: all,
@@ -1123,13 +1470,26 @@ mod tests {
 
     #[test]
     fn view_desc_from_camera() {
-        let cam = Camera::preset(crate::ViewPreset::Front);
+        let cam = Camera::new(crate::ViewKind::Front);
         let v = ViewDesc::from_camera(&cam, [800, 600]);
         assert!(v.is_ortho());
         assert_eq!(v.grid_plane, GridPlane::YZ);
-        let p = ViewDesc::from_camera(&Camera::default(), [800, 600]);
+        let p = ViewDesc::from_camera(&Camera::new(crate::ViewKind::Perspective), [800, 600]);
         assert!(!p.is_ortho());
         assert_eq!(p.grid_plane, GridPlane::XY);
+    }
+
+    #[test]
+    fn nearest_id_prefers_the_centre_and_skips_empty() {
+        #[rustfmt::skip]
+        let ids = [
+            0, 0, 7,
+            0, 0, 0,
+            5, 0, 0,
+        ];
+        assert_eq!(nearest_id(&ids, 3, 3, 2, 1), Some(7));
+        assert_eq!(nearest_id(&ids, 3, 3, 0, 1), Some(5));
+        assert_eq!(nearest_id(&[0; 9], 3, 3, 1, 1), None);
     }
 
     #[test]
