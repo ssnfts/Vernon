@@ -70,6 +70,48 @@ cargo run -p vernon-cli -- list --markdown > docs/NODES.md      # regenerate aft
 Then update the per-stage counts in `README.md` and launch the app once
 (`cargo run -p vernon`) to check it opens.
 
+## Save tokens with K2
+Hand routine work to the K2 model so long logs and first drafts don't use up
+Claude or Codex tokens. The owner approved this on 2026-10-31. It is the
+separate authorization `docs/CONTINUATION.md` asks for, for the content listed
+here only. Tool: `C:\Users\mabdu\Desktop\k2\k2.py` (details in the `README.md`
+beside it).
+
+**Run long checks through it.** The command's exit code decides pass or fail.
+A pass makes no K2 call and prints one line. A failure prints a K2 summary and
+the path of the full log:
+```powershell
+python C:\Users\mabdu\Desktop\k2\k2.py test -- cargo test --workspace
+python C:\Users\mabdu\Desktop\k2\k2.py test -- cargo clippy --workspace --all-targets -- -D warnings
+```
+
+**Ask it for one-shot work** when a test, tool or quick read can check the result:
+```powershell
+python C:\Users\mabdu\Desktop\k2\k2.py ask "Summarise this log's errors" -f scratch\run.log
+```
+
+| Use K2 for | Don't use K2 for |
+|---|---|
+| Summarising failed test, build and solver logs | Deciding that a check passed |
+| First drafts checked by tests, e.g. file-format readers | Being the only reviewer: it called a fatal OpenFOAM mismatch fine |
+| Listing test cases and edge cases to consider | Licences, crate versions, legal questions |
+| Summarising long files you only need the gist of | Reference or golden values: it has invented them |
+| Boilerplate such as changelog drafts | Architecture, or anything needing this machine or a screen |
+
+Rules:
+1. **K2's output is unverified.** Confirm it against the log, code or a test
+   before acting. Never report a result on K2's word alone.
+2. **The definition of done still applies.** K2 replaces no check.
+3. **Clean room still applies.** Give it the real code and the relevant spec,
+   and ask it to work only from those. Never ask it to recall vendor behaviour
+   or copyleft source. Treat anything it writes as a draft to review.
+4. **Only send** Vernon source, specs, docs and logs. Never send secrets,
+   `.env` files, proprietary install files or sample photos. The tool's filters
+   are a backstop, not a guarantee.
+5. **Don't let K2 commit, install or run anything.** Those stay with you.
+6. **If K2 fails, is cut off or is vague, do the step yourself** rather than
+   retrying. It helps only when checking its answer costs less than doing the work.
+
 ## Repo map
 | Path | What |
 |---|---|
