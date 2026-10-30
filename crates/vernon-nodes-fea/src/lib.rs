@@ -18,6 +18,7 @@ pub mod nodes_result;
 pub mod nodes_solve;
 pub mod refsolve;
 pub mod solver;
+pub mod sparse;
 pub mod spatial;
 pub mod study;
 pub mod types;
@@ -49,5 +50,7 @@ pub fn register(reg: &mut Registry) {
     reg.add(nodes_result::HandCheck);
 }
 
+#[cfg(test)]
+mod cantilever;
 #[cfg(test)]
 mod tests;

@@ -3,7 +3,7 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use vernon_core::{Metric, Report, Severity};
+use vernon_core::{AttribArray, Metric, Report, Severity};
 use vernon_graph::{CookContext, CookError, CookResult, Data, DataKind, NodeOp, NodeTypeInfo, ParamSpec, Params, PortSpec};
 
 use crate::deck::{write_deck, DeckInput, DeckOptions, ElasticType};
@@ -245,9 +245,10 @@ impl NodeOp for SolveLinear {
             .output(PortSpec::new("results", DataKind::Json))
             .output(PortSpec::new("report", DataKind::Report))
             .output(PortSpec::new("dir", DataKind::File))
+            .output(PortSpec::new("fields", DataKind::Geometry))
             .param(ParamSpec::float("tol", "Tolerance", 1.0e-10, 1.0e-14, 1.0e-4).help("Relative residual of the conjugate-gradient solve"))
             .param(ParamSpec::int("max_dof", "Largest model", 60000, 1000, 300000).help("Largest number of unknowns this solver accepts"))
-            .help("Small built-in linear static solver with four-node tetrahedra and orthotropic printed material, used to run the chain without the external solver and to check it. Four-node tetrahedra are stiff in bending: it writes the same result files as the external solver but its report never passes a gate.")
+            .help("Built-in linear static solver for four-node and ten-node tetrahedra with orthotropic printed material, used to run the chain without the external solver and to check it. Writes the same result files as the external solver, plus the mesh with disp_<case> on the points and vm_mpa_<case> on the elements. Four-node tetrahedra are stiff in bending and need a fine mesh. Its report never passes a gate.")
             .emulates("linear static solution of a tetrahedral model")
     }
 
@@ -260,8 +261,10 @@ impl NodeOp for SolveLinear {
         card.check_stability().map_err(|e| ctx.fail(format!("material constants rejected: {e}")))?;
         let root = ctx.work_dir.join("reference");
         std::fs::create_dir_all(&root)?;
-        let mut r = placeholder_report("Reference linear solution", "the real solver uses quadratic tetrahedra, which are far less stiff in bending than the four-node elements used here");
-        let mut sm = SolveManifest { dir: root.to_string_lossy().into_owned(), solver: "reference_linear".into(), element_type: "C3D4".into(), mount_sets: (1..=mounts.sites.len()).map(|k| format!("MOUNT{k}")).collect(), runs: vec![] };
+        let mut r = placeholder_report("Reference linear solution", "the built-in solver is a check on the external solver, not a replacement, so its report cannot pass a gate");
+        let element_type = if mesh.prims.first().is_some_and(|p| p.vertices.len() == 10) { "C3D10" } else { "C3D4" };
+        let mut fields = (*mesh).clone();
+        let mut sm = SolveManifest { dir: root.to_string_lossy().into_owned(), solver: "reference_linear".into(), element_type: element_type.into(), mount_sets: (1..=mounts.sites.len()).map(|k| format!("MOUNT{k}")).collect(), runs: vec![] };
         for case in &cases.cases {
             let name = sanitize(&case.name).to_lowercase();
             let out = solve(&RefInput { mesh: &mesh, card: &card, orient: &orient, mounts: &mounts, load: &case.loads, max_dof: params.int("max_dof")? as usize, tol: params.float("tol")? }).map_err(|e| ctx.fail(format!("case '{}': {e}", case.name)))?;
@@ -273,12 +276,19 @@ impl NodeOp for SolveLinear {
             std::fs::write(dir.join(format!("{job}.dat")), &dat)?;
             r.metric(format!("{name}_max_disp_mm"), Metric::new(out.max_disp(), "mm"));
             r.metric(format!("{name}_max_vm_mpa"), Metric::new(out.max_vm(), "MPa"));
+            let elem_vm = out.elem_vm();
+            r.metric(format!("{name}_max_elem_vm_mpa"), Metric::new(elem_vm.iter().cloned().fold(0.0, f64::max), "MPa"));
+            fields.point_attribs.set(format!("disp_{name}"), AttribArray::Vec3(out.disp.clone()));
+            fields.prim_attribs.set(format!("vm_mpa_{name}"), AttribArray::Float(elem_vm));
             r.metric(format!("{name}_iterations"), Metric::new(out.iterations as f64, ""));
             r.metric(format!("{name}_residual"), Metric::new(out.residual, ""));
             sm.runs.push(RunEntry { case: name.clone(), job: job.clone(), status: "solved".into(), frd: format!("{name}/{job}.frd"), dat: format!("{name}/{job}.dat"), log: String::new(), hash: fnv_hex(dat.as_bytes()), speed_factor: case.speed_factor });
         }
-        r.note(Severity::Info, format!("{} load cases solved with four-node tetrahedra", sm.runs.len()));
-        Ok(vec![to_data(&sm), Data::report(r), Data::File(root)])
+        r.note(Severity::Info, format!("{} load cases solved with {element_type} elements", sm.runs.len()));
+        if element_type == "C3D4" {
+            r.note(Severity::Warning, "four-node tetrahedra are stiff in bending: deflections and stresses come out low unless the mesh is fine");
+        }
+        Ok(vec![to_data(&sm), Data::report(r), Data::File(root), Data::geometry(fields)])
     }
 }
 
@@ -413,7 +423,14 @@ mod tests {
         let out = SolveLinear.cook(&x, &deck_inputs(&c), &defaults(&SolveLinear)).unwrap();
         let sm: SolveManifest = serde_json::from_value((**out[0].as_json().unwrap()).clone()).unwrap();
         assert_eq!(sm.solver, "reference_linear");
+        assert_eq!(sm.element_type, "C3D10");
         assert_eq!(sm.runs.len(), 4);
+        // displacement on the points, von Mises per element
+        let g = out[3].as_geometry().unwrap();
+        assert!(g.point_attribs.contains("disp_aero"));
+        let vm = g.prim_attribs.floats("vm_mpa_aero").unwrap();
+        assert_eq!(vm.len(), g.prims.len());
+        assert!(vm.iter().any(|v| *v > 0.0));
         for r in &sm.runs {
             assert!(Path::new(&sm.dir).join(&r.frd).is_file() && Path::new(&sm.dir).join(&r.dat).is_file());
         }

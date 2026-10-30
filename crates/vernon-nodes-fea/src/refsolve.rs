@@ -1,13 +1,15 @@
-//! White-box reference solver: linear static analysis with four-node
-//! tetrahedra and a Jacobi-preconditioned conjugate-gradient solve.
+//! Native reference solver: linear static analysis with four-node (C3D4) and
+//! ten-node (C3D10) tetrahedra, assembled in CSR and solved by preconditioned
+//! conjugate gradient ([`crate::sparse`]).
 //!
-//! It exists so the chain runs end to end without the external solver and so
-//! tests have an oracle. Four-node tetrahedra are stiff in bending: use the
-//! external solver for numbers that gate a design. Quadratic meshes are
-//! handled by using their corner nodes only; mid-edge nodes receive the
-//! average of their edge ends.
+//! It runs the chain end to end without the external solver and gives tests an
+//! oracle. C3D4 has constant strain and is stiff in bending: a cantilever needs
+//! a fine mesh to come near beam theory (see `cantilever.rs`). C3D10 uses the
+//! four-point rule, so a straight-sided element is integrated exactly.
 //!
 //! Stress components are `[xx, yy, zz, xy, yz, zx]`, strain is engineering.
+
+#![allow(clippy::needless_range_loop)]
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -17,8 +19,10 @@ use vernon_core::Geometry;
 
 use crate::frd::format_frd_value;
 use crate::linalg::{rotate_stiffness_to_global, von_mises, M6};
+use crate::loads::face_nodal_forces;
 use crate::material::{MaterialCard, ROOM_C};
-use crate::mesh::{corners, element_size, element_volume, EDGES10, FACES};
+use crate::mesh::{corners, element_size, EDGES10};
+use crate::sparse::{pcg, Csr};
 use crate::types::{LoadSet, MountSet, OrientationCard};
 
 pub struct RefInput<'a> {
@@ -35,15 +39,18 @@ pub struct RefInput<'a> {
 pub struct RefOutput {
     /// Displacement of every mesh point (mm).
     pub disp: Vec<DVec3>,
-    /// Constant stress of every element (MPa).
+    /// Stress at the integration points of every element (MPa): one for C3D4, four for C3D10.
+    pub ip_stress: Vec<Vec<[f64; 6]>>,
+    /// Volume-averaged stress of every element (MPa).
     pub elem_stress: Vec<[f64; 6]>,
-    /// Volume-averaged stress at every mesh point (MPa).
+    /// Volume-averaged stress at every mesh point, extrapolated from the integration points (MPa).
     pub node_stress: Vec<[f64; 6]>,
     /// Support reaction totals per mount, keyed `MOUNT<k>` (N).
     pub reactions: BTreeMap<String, [f64; 3]>,
     pub volume: f64,
     pub iterations: usize,
     pub residual: f64,
+    pub preconditioner: &'static str,
 }
 
 impl RefOutput {
@@ -54,73 +61,101 @@ impl RefOutput {
     pub fn max_vm(&self) -> f64 {
         self.node_stress.iter().map(von_mises).fold(0.0, f64::max)
     }
+
+    /// Von Mises stress of every element's mean stress (MPa).
+    pub fn elem_vm(&self) -> Vec<f64> {
+        self.elem_stress.iter().map(von_mises).collect()
+    }
 }
 
-struct Elem {
-    /// Compact node numbers of the four corners.
-    n: [usize; 4],
-    ke: Vec<f64>,
-    /// Stress of unit nodal displacements, `D B`.
-    sb: [[f64; 12]; 6],
-    vol: f64,
+/// Small and large barycentric coordinate of the four-point rule for tetrahedra (degree 2).
+const IP_A: f64 = 0.138_196_601_125_010_5;
+const IP_B: f64 = 0.585_410_196_624_968_5;
+
+/// Barycentric coordinates of the integration points; every point has the same weight.
+fn integration_points(nen: usize) -> Vec<[f64; 4]> {
+    if nen == 4 {
+        vec![[0.25; 4]]
+    } else {
+        (0..4).map(|i| std::array::from_fn(|k| if k == i { IP_B } else { IP_A })).collect()
+    }
 }
 
-fn b_matrix(g: [DVec3; 4]) -> Option<([[f64; 12]; 6], f64)> {
-    let j = DMat3::from_cols(g[1] - g[0], g[2] - g[0], g[3] - g[0]);
+/// Shape function values and their derivatives with respect to the barycentric coordinates.
+fn shape(nen: usize, l: &[f64; 4]) -> (Vec<f64>, Vec<[f64; 4]>) {
+    let mut n = vec![0.0; nen];
+    let mut d = vec![[0.0; 4]; nen];
+    if nen == 4 {
+        for a in 0..4 {
+            n[a] = l[a];
+            d[a][a] = 1.0;
+        }
+    } else {
+        for a in 0..4 {
+            n[a] = l[a] * (2.0 * l[a] - 1.0);
+            d[a][a] = 4.0 * l[a] - 1.0;
+        }
+        for (k, &(a, b)) in EDGES10.iter().enumerate() {
+            n[4 + k] = 4.0 * l[a] * l[b];
+            d[4 + k][a] = 4.0 * l[b];
+            d[4 + k][b] = 4.0 * l[a];
+        }
+    }
+    (n, d)
+}
+
+/// Strain-displacement matrix (6 rows of `3 nen`, row-major) and the Jacobian
+/// determinant at one point; `None` when the mapping is inverted.
+fn b_matrix(x: &[DVec3], dl: &[[f64; 4]]) -> Option<(Vec<f64>, f64)> {
+    let mut cols = [DVec3::ZERO; 3];
+    for (p, d) in x.iter().zip(dl) {
+        for k in 0..3 {
+            cols[k] += *p * (d[k + 1] - d[0]);
+        }
+    }
+    let j = DMat3::from_cols(cols[0], cols[1], cols[2]);
     let det = j.determinant();
     if det <= 1e-300 {
         return None;
     }
     let inv = j.inverse();
-    // gradients of the shape functions 1..3 are the rows of the inverse Jacobian
-    let mut grad = [DVec3::ZERO; 4];
-    for (k, gr) in grad.iter_mut().enumerate().skip(1) {
-        *gr = DVec3::new(inv.col(0)[k - 1], inv.col(1)[k - 1], inv.col(2)[k - 1]);
-    }
-    grad[0] = -(grad[1] + grad[2] + grad[3]);
-    let mut b = [[0.0; 12]; 6];
-    for (a, gr) in grad.iter().enumerate() {
+    // the rows of the inverse Jacobian are the gradients of the three independent coordinates
+    let rows: [DVec3; 3] = std::array::from_fn(|k| DVec3::new(inv.col(0)[k], inv.col(1)[k], inv.col(2)[k]));
+    let nd = 3 * x.len();
+    let mut b = vec![0.0; 6 * nd];
+    for (a, d) in dl.iter().enumerate() {
+        let gr = rows[0] * (d[1] - d[0]) + rows[1] * (d[2] - d[0]) + rows[2] * (d[3] - d[0]);
         let c = 3 * a;
-        b[0][c] = gr.x;
-        b[1][c + 1] = gr.y;
-        b[2][c + 2] = gr.z;
-        b[3][c] = gr.y;
-        b[3][c + 1] = gr.x;
-        b[4][c + 1] = gr.z;
-        b[4][c + 2] = gr.y;
-        b[5][c] = gr.z;
-        b[5][c + 2] = gr.x;
+        b[c] = gr.x;
+        b[nd + c + 1] = gr.y;
+        b[2 * nd + c + 2] = gr.z;
+        b[3 * nd + c] = gr.y;
+        b[3 * nd + c + 1] = gr.x;
+        b[4 * nd + c + 1] = gr.z;
+        b[4 * nd + c + 2] = gr.y;
+        b[5 * nd + c] = gr.z;
+        b[5 * nd + c + 2] = gr.x;
     }
-    Some((b, det / 6.0))
+    Some((b, det))
 }
 
-fn matvec(elems: &[Elem], springs: &[f64], x: &[f64], y: &mut [f64]) {
-    y.iter_mut().for_each(|v| *v = 0.0);
-    for e in elems {
-        let mut xe = [0.0; 12];
-        for (a, &n) in e.n.iter().enumerate() {
-            xe[3 * a..3 * a + 3].copy_from_slice(&x[3 * n..3 * n + 3]);
-        }
-        for i in 0..12 {
-            let row = &e.ke[12 * i..12 * i + 12];
-            let s: f64 = row.iter().zip(xe.iter()).map(|(a, b)| a * b).sum();
-            y[3 * e.n[i / 3] + i % 3] += s;
-        }
-    }
-    for (i, k) in springs.iter().enumerate() {
-        y[i] += k * x[i];
-    }
+struct Elem {
+    /// Compact node numbers.
+    n: Vec<usize>,
+    /// Stress of unit nodal displacements, `D B`, per integration point (6 rows of `3 nen`).
+    sb: Vec<Vec<f64>>,
+    vol: f64,
 }
 
 /// Solve one load case.
 pub fn solve(inp: &RefInput) -> Result<RefOutput, String> {
     let mesh = inp.mesh;
-    let np = element_size(mesh)?;
-    // corner nodes only
+    let nen = element_size(mesh)?;
+    let nd = 3 * nen;
     let mut compact: Vec<Option<usize>> = vec![None; mesh.points.len()];
     let mut used: Vec<u32> = Vec::new();
-    for e in 0..mesh.prims.len() {
-        for c in corners(mesh, e) {
+    for prim in &mesh.prims {
+        for &c in &prim.vertices {
             if compact[c as usize].is_none() {
                 compact[c as usize] = Some(used.len());
                 used.push(c);
@@ -138,174 +173,143 @@ pub fn solve(inp: &RefInput) -> Result<RefOutput, String> {
     let d_mat: M6 = inp.card.stiffness().ok_or("the material stiffness is singular")?;
     let d_glob = rotate_stiffness_to_global(&d_mat, &q).ok_or("cannot rotate the stiffness into the model frame")?;
     let temps = mesh.point_attribs.floats("temp_c").ok();
+    let accel = inp.load.gravity.map(|g| DVec3::from(g.dir) * g.accel_mm_s2);
+
+    // element stiffness, assembled into CSR; loads from the body force on the way
+    let ips = integration_points(nen);
+    let shapes: Vec<_> = ips.iter().map(|l| shape(nen, l)).collect();
+    let elem_nodes: Vec<Vec<usize>> = mesh.prims.iter().map(|p| p.vertices.iter().map(|&v| compact[v as usize].unwrap_or(0)).collect()).collect();
+    let mut adjacent: Vec<Vec<u32>> = vec![Vec::new(); used.len()];
+    for n in &elem_nodes {
+        for &a in n {
+            adjacent[a].extend(n.iter().map(|&b| b as u32));
+        }
+    }
+    let rows = adjacent
+        .iter_mut()
+        .flat_map(|adj| {
+            adj.sort_unstable();
+            adj.dedup();
+            let row: Vec<u32> = adj.iter().flat_map(|&b| (0..3).map(move |d| 3 * b + d)).collect();
+            [row.clone(), row.clone(), row]
+        })
+        .collect();
+    let mut k = Csr::from_pattern(rows);
+    let mut f = vec![0.0; ndof];
     let mut elems = Vec::with_capacity(mesh.prims.len());
-    for e in 0..mesh.prims.len() {
+    let mut ke = vec![0.0; nd * nd];
+    for (e, prim) in mesh.prims.iter().enumerate() {
+        let x: Vec<DVec3> = prim.vertices.iter().map(|&v| mesh.points[v as usize]).collect();
         let c = corners(mesh, e);
-        let pts = c.map(|i| mesh.points[i as usize]);
-        let (b, vol) = b_matrix(pts).ok_or_else(|| format!("element {} has a non-positive volume", e + 1))?;
-        let t = temps.map_or(ROOM_C, |t| c.iter().map(|&i| t[i as usize]).sum::<f64>() / 4.0);
-        let r = inp.card.retention_at(t);
-        let mut sb = [[0.0; 12]; 6];
-        for i in 0..6 {
-            for j in 0..12 {
-                sb[i][j] = r * (0..6).map(|k| d_glob[i][k] * b[k][j]).sum::<f64>();
+        ke.iter_mut().for_each(|v| *v = 0.0);
+        let mut sb_all = Vec::with_capacity(ips.len());
+        let mut vol = 0.0;
+        let n = &elem_nodes[e];
+        for (l, (sf, dl)) in ips.iter().zip(&shapes) {
+            let (b, det) = b_matrix(&x, dl).ok_or_else(|| format!("element {} has a non-positive volume", e + 1))?;
+            let dv = det / 6.0 / ips.len() as f64;
+            vol += dv;
+            let t = temps.map_or(ROOM_C, |t| (0..4).map(|a| l[a] * t[c[a] as usize]).sum::<f64>());
+            let r = inp.card.retention_at(t);
+            let mut sb = vec![0.0; 6 * nd];
+            for i in 0..6 {
+                for j in 0..nd {
+                    sb[i * nd + j] = r * (0..6).map(|m| d_glob[i][m] * b[m * nd + j]).sum::<f64>();
+                }
+            }
+            for i in 0..nd {
+                for j in 0..nd {
+                    ke[nd * i + j] += dv * (0..6).map(|m| b[m * nd + i] * sb[m * nd + j]).sum::<f64>();
+                }
+            }
+            if let Some(a) = accel {
+                for (&node, s) in n.iter().zip(sf) {
+                    let fe = a * (inp.card.density_t_mm3 * dv * s);
+                    f[3 * node] += fe.x;
+                    f[3 * node + 1] += fe.y;
+                    f[3 * node + 2] += fe.z;
+                }
+            }
+            sb_all.push(sb);
+        }
+        for i in 0..nd {
+            for j in 0..nd {
+                k.add(3 * n[i / 3] + i % 3, 3 * n[j / 3] + j % 3, ke[nd * i + j]);
             }
         }
-        let mut ke = vec![0.0; 144];
-        for i in 0..12 {
-            for j in 0..12 {
-                ke[12 * i + j] = vol * (0..6).map(|k| b[k][i] * sb[k][j]).sum::<f64>();
-            }
-        }
-        let n = c.map(|i| compact[i as usize].unwrap_or(0));
-        elems.push(Elem { n, ke, sb, vol });
+        elems.push(Elem { n: n.clone(), sb: sb_all, vol });
     }
 
-    // constraints and springs
+    // constraints and springs; a rigid washer whose reference node is held is a fixed patch
     let mut fixed = vec![false; ndof];
     let mut springs = vec![0.0; ndof];
     let mut mount_dofs: Vec<Vec<usize>> = Vec::new();
-    // a constrained mid-edge node constrains both ends of its edge (the corners are the only unknowns here)
-    let mut mid_ends: std::collections::HashMap<u32, [u32; 2]> = std::collections::HashMap::new();
-    if np == 10 {
-        for (e, prim) in mesh.prims.iter().enumerate() {
-            let c = corners(mesh, e);
-            for (k, (a, b)) in EDGES10.iter().enumerate() {
-                mid_ends.insert(prim.vertices[4 + k], [c[*a], c[*b]]);
-            }
-        }
-    }
     for site in &inp.mounts.sites {
-        let mut ids: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
-        for &n in &site.nodes {
-            match mid_ends.get(&n) {
-                Some(ends) => ids.extend(ends.iter().filter_map(|&c| compact[c as usize])),
-                None => ids.extend(compact.get(n as usize).copied().flatten()),
-            }
-        }
-        let nodes: Vec<usize> = ids.into_iter().collect();
+        let nodes: std::collections::BTreeSet<usize> = site.nodes.iter().filter_map(|&n| compact.get(n as usize).copied().flatten()).collect();
         if nodes.is_empty() {
-            return Err(format!("mount '{}' has no corner nodes in the mesh", site.name));
+            return Err(format!("mount '{}' has no nodes in the mesh", site.name));
         }
         let mut dofs = Vec::new();
-        if site.model == "spring_pad" {
+        let k_node = (site.model == "spring_pad").then(|| {
             let area = std::f64::consts::PI * site.r_w_mm * site.r_w_mm;
-            let k_node = site.pad_e_mpa * area / site.pad_t_mm.max(1e-6) / nodes.len() as f64;
-            for &n in &nodes {
-                for d in 0..3 {
-                    springs[3 * n + d] += k_node;
-                    dofs.push(3 * n + d);
+            site.pad_e_mpa * area / site.pad_t_mm.max(1e-6) / nodes.len() as f64
+        });
+        for &n in &nodes {
+            for d in 0..3 {
+                match k_node {
+                    Some(s) => {
+                        springs[3 * n + d] += s;
+                        k.add(3 * n + d, 3 * n + d, s);
+                    }
+                    None => fixed[3 * n + d] = true,
                 }
-            }
-        } else {
-            for &n in &nodes {
-                for d in 0..3 {
-                    fixed[3 * n + d] = true;
-                    dofs.push(3 * n + d);
-                }
+                dofs.push(3 * n + d);
             }
         }
         mount_dofs.push(dofs);
     }
 
-    // loads on the corner nodes
-    let mut f = vec![0.0; ndof];
-    for fp in &inp.load.pressures {
-        let e = fp.elem as usize;
-        let c = corners(mesh, e);
-        let (area, n) = crate::loads::face_geometry(mesh, e, fp.face);
-        let force = -n * (fp.p_mpa * area / 3.0);
-        for &li in &FACES[fp.face as usize - 1] {
-            let k = compact[c[li] as usize].unwrap_or(0);
-            f[3 * k] += force.x;
-            f[3 * k + 1] += force.y;
-            f[3 * k + 2] += force.z;
+    // surface loads use flat faces, as the nodal-force form of the deck does
+    let mut add_force = |node: usize, v: [f64; 3]| {
+        for d in 0..3 {
+            f[3 * node + d] += v[d];
         }
-    }
-    if let Some(gr) = inp.load.gravity {
-        let a = DVec3::from(gr.dir) * gr.accel_mm_s2;
-        for el in &elems {
-            let fe = a * (inp.card.density_t_mm3 * el.vol / 4.0);
-            for &k in &el.n {
-                f[3 * k] += fe.x;
-                f[3 * k + 1] += fe.y;
-                f[3 * k + 2] += fe.z;
-            }
+    };
+    for fp in &inp.load.pressures {
+        for (node, v) in face_nodal_forces(mesh, fp) {
+            add_force(compact[node as usize].unwrap_or(0), v.into());
         }
     }
     for nf in &inp.load.forces {
         let p = mesh.points.get(nf.node as usize).ok_or("a nodal force refers to a node outside the mesh")?;
-        let k = (0..used.len())
-            .min_by(|&a, &b| (mesh.points[used[a] as usize] - *p).length_squared().total_cmp(&(mesh.points[used[b] as usize] - *p).length_squared()))
-            .ok_or("empty mesh")?;
-        for d in 0..3 {
-            f[3 * k + d] += nf.f_n[d];
-        }
+        // a force on a point outside every element goes to the nearest node
+        let node = match compact[nf.node as usize] {
+            Some(c) => c,
+            None => (0..used.len())
+                .min_by(|&a, &b| (mesh.points[used[a] as usize] - *p).length_squared().total_cmp(&(mesh.points[used[b] as usize] - *p).length_squared()))
+                .ok_or("empty mesh")?,
+        };
+        add_force(node, nf.f_n);
     }
 
     // conjugate gradient on the free dofs
     let free: Vec<bool> = fixed.iter().map(|x| !x).collect();
-    let mut diag = vec![0.0; ndof];
-    for e in &elems {
-        for i in 0..12 {
-            diag[3 * e.n[i / 3] + i % 3] += e.ke[13 * i];
-        }
-    }
-    for (d, s) in diag.iter_mut().zip(springs.iter()) {
-        *d += s;
-    }
-    let inv_diag: Vec<f64> = diag.iter().zip(free.iter()).map(|(d, fr)| if *fr && *d > 0.0 { 1.0 / d } else { 0.0 }).collect();
-    let mask = |v: &mut [f64]| v.iter_mut().zip(free.iter()).for_each(|(x, fr)| *x = if *fr { *x } else { 0.0 });
-    let mut b = f.clone();
-    mask(&mut b);
-    let bnorm = b.iter().map(|x| x * x).sum::<f64>().sqrt();
+    let reduced = k.submatrix(&free);
+    let b: Vec<f64> = f.iter().zip(&free).filter(|(_, fr)| **fr).map(|(v, _)| *v).collect();
+    let sol = pcg(&reduced, &b, inp.tol)?;
     let mut u = vec![0.0; ndof];
-    let mut iterations = 0;
-    let mut residual = 0.0;
-    if bnorm > 0.0 {
-        let mut r = b.clone();
-        let mut z: Vec<f64> = r.iter().zip(inv_diag.iter()).map(|(a, d)| a * d).collect();
-        let mut p = z.clone();
-        let mut rz: f64 = r.iter().zip(z.iter()).map(|(a, b)| a * b).sum();
-        let mut ap = vec![0.0; ndof];
-        let max_it = (10 * ndof).clamp(200, 20000);
-        while iterations < max_it {
-            matvec(&elems, &springs, &p, &mut ap);
-            mask(&mut ap);
-            let pap: f64 = p.iter().zip(ap.iter()).map(|(a, b)| a * b).sum();
-            if pap <= 0.0 {
-                return Err("the stiffness matrix is not positive definite: the body is under-constrained".into());
-            }
-            let alpha = rz / pap;
-            for i in 0..ndof {
-                u[i] += alpha * p[i];
-                r[i] -= alpha * ap[i];
-            }
-            iterations += 1;
-            residual = r.iter().map(|x| x * x).sum::<f64>().sqrt() / bnorm;
-            if residual < inp.tol {
-                break;
-            }
-            for i in 0..ndof {
-                z[i] = r[i] * inv_diag[i];
-            }
-            let rz_new: f64 = r.iter().zip(z.iter()).map(|(a, b)| a * b).sum();
-            let beta = rz_new / rz;
-            rz = rz_new;
-            for i in 0..ndof {
-                p[i] = z[i] + beta * p[i];
-            }
-        }
-        if residual >= inp.tol.max(1e-6) {
-            return Err(format!("the solver did not converge (relative residual {residual:.2e}): the body may be under-constrained"));
+    let mut xs = sol.x.iter();
+    for (v, fr) in u.iter_mut().zip(&free) {
+        if *fr {
+            *v = *xs.next().unwrap_or(&0.0);
         }
     }
 
     // reactions: support force on the body = K u - f at the constrained dofs (springs: -k u)
     let mut ku = vec![0.0; ndof];
-    matvec(&elems, &springs, &u, &mut ku);
+    k.mul(&u, &mut ku);
     let mut reactions = BTreeMap::new();
-    for (k, dofs) in mount_dofs.iter().enumerate() {
+    for (m, dofs) in mount_dofs.iter().enumerate() {
         let mut r = [0.0; 3];
         for &d in dofs {
             if fixed[d] {
@@ -314,53 +318,55 @@ pub fn solve(inp: &RefInput) -> Result<RefOutput, String> {
                 r[d % 3] += -springs[d] * u[d];
             }
         }
-        reactions.insert(format!("MOUNT{}", k + 1), r);
+        reactions.insert(format!("MOUNT{}", m + 1), r);
     }
 
     // element and nodal results
+    let mut ip_stress = Vec::with_capacity(elems.len());
     let mut elem_stress = Vec::with_capacity(elems.len());
     let mut acc = vec![([0.0f64; 6], 0.0f64); mesh.points.len()];
-    for (ei, el) in elems.iter().enumerate() {
-        let mut ue = [0.0; 12];
+    for (el, prim) in elems.iter().zip(&mesh.prims) {
+        let mut ue = vec![0.0; nd];
         for (a, &n) in el.n.iter().enumerate() {
             ue[3 * a..3 * a + 3].copy_from_slice(&u[3 * n..3 * n + 3]);
         }
-        let mut s = [0.0; 6];
-        for (i, v) in s.iter_mut().enumerate() {
-            *v = el.sb[i].iter().zip(ue.iter()).map(|(a, b)| a * b).sum();
-        }
-        for &c in &corners(mesh, ei) {
-            let a = &mut acc[c as usize];
-            for (v, x) in a.0.iter_mut().zip(s.iter()) {
-                *v += x * el.vol;
+        let at_ips: Vec<[f64; 6]> = el
+            .sb
+            .iter()
+            .map(|sb| std::array::from_fn(|i| sb[i * nd..(i + 1) * nd].iter().zip(&ue).map(|(a, b)| a * b).sum()))
+            .collect();
+        // linear field through the four points: corner j = sum (delta_ij - a) / (b - a) s_i
+        let at_corner = |j: usize| -> [f64; 6] {
+            if at_ips.len() == 1 {
+                return at_ips[0];
             }
-            a.1 += el.vol;
+            std::array::from_fn(|c| (0..4).map(|i| (f64::from(u8::from(i == j)) - IP_A) / (IP_B - IP_A) * at_ips[i][c]).sum())
+        };
+        let cs: [[f64; 6]; 4] = std::array::from_fn(at_corner);
+        for (a, &v) in prim.vertices.iter().enumerate() {
+            let s: [f64; 6] = if a < 4 {
+                cs[a]
+            } else {
+                let (p, q) = EDGES10[a - 4];
+                std::array::from_fn(|c| 0.5 * (cs[p][c] + cs[q][c]))
+            };
+            let t = &mut acc[v as usize];
+            for (x, y) in t.0.iter_mut().zip(s.iter()) {
+                *x += y * el.vol;
+            }
+            t.1 += el.vol;
         }
-        elem_stress.push(s);
+        let w = 1.0 / at_ips.len() as f64;
+        elem_stress.push(std::array::from_fn(|c| w * at_ips.iter().map(|s| s[c]).sum::<f64>()));
+        ip_stress.push(at_ips);
     }
     let mut disp = vec![DVec3::ZERO; mesh.points.len()];
-    for (k, &c) in used.iter().enumerate() {
-        disp[c as usize] = DVec3::new(u[3 * k], u[3 * k + 1], u[3 * k + 2]);
+    for (m, &c) in used.iter().enumerate() {
+        disp[c as usize] = DVec3::new(u[3 * m], u[3 * m + 1], u[3 * m + 2]);
     }
-    let mut node_stress = vec![[0.0; 6]; mesh.points.len()];
-    for (i, (s, w)) in acc.iter().enumerate() {
-        if *w > 0.0 {
-            node_stress[i] = s.map(|v| v / w);
-        }
-    }
-    if np == 10 {
-        for (e, prim) in mesh.prims.iter().enumerate() {
-            let c = corners(mesh, e);
-            for (k, (a, b)) in EDGES10.iter().enumerate() {
-                let mid = prim.vertices[4 + k] as usize;
-                disp[mid] = 0.5 * (disp[c[*a] as usize] + disp[c[*b] as usize]);
-                let (sa, sb) = (node_stress[c[*a] as usize], node_stress[c[*b] as usize]);
-                node_stress[mid] = std::array::from_fn(|i| 0.5 * (sa[i] + sb[i]));
-            }
-        }
-    }
-    let volume = (0..mesh.prims.len()).map(|e| element_volume(mesh, e)).sum();
-    Ok(RefOutput { disp, elem_stress, node_stress, reactions, volume, iterations, residual })
+    let node_stress = acc.iter().map(|(s, w)| if *w > 0.0 { s.map(|v| v / w) } else { [0.0; 6] }).collect();
+    let volume = elems.iter().map(|e| e.vol).sum();
+    Ok(RefOutput { disp, ip_stress, elem_stress, node_stress, reactions, volume, iterations: sol.iterations, residual: sol.residual, preconditioner: sol.preconditioner })
 }
 
 /// The `.dat` text in the layout the solver writes, so the same reader serves both.
@@ -371,8 +377,10 @@ pub fn dat_text(out: &RefOutput) -> String {
         let _ = writeln!(s, "  {}  {}  {}\n", format_frd_value(r[0]), format_frd_value(r[1]), format_frd_value(r[2]));
     }
     let _ = writeln!(s, " stresses (elem, integ.pnt.,sxx,syy,szz,sxy,sxz,syz) for set EALL and time  0.1000000E+01\n");
-    for (e, t) in out.elem_stress.iter().enumerate() {
-        let _ = writeln!(s, "{:>10}{:>5}  {}  {}  {}  {}  {}  {}", e + 1, 1, format_frd_value(t[0]), format_frd_value(t[1]), format_frd_value(t[2]), format_frd_value(t[3]), format_frd_value(t[5]), format_frd_value(t[4]));
+    for (e, ips) in out.ip_stress.iter().enumerate() {
+        for (ip, t) in ips.iter().enumerate() {
+            let _ = writeln!(s, "{:>10}{:>5}  {}  {}  {}  {}  {}  {}", e + 1, ip + 1, format_frd_value(t[0]), format_frd_value(t[1]), format_frd_value(t[2]), format_frd_value(t[3]), format_frd_value(t[5]), format_frd_value(t[4]));
+        }
     }
     let _ = writeln!(s, "\n total volume for set EALL and time  0.1000000E+01\n\n  {}", format_frd_value(out.volume));
     s
@@ -447,8 +455,8 @@ mod tests {
         let o = bar(&card(), &OrientationCard::identity(), 10.0);
         let mesh = tet4_to_tet10(&box_tets(DVec3::new(100.0, 10.0, 10.0), [10, 1, 1])).unwrap();
         let dat = parse_dat(&dat_text(&o));
-        assert_eq!(dat.ip_stress.len(), o.elem_stress.len());
-        assert!((dat.ip_stress[0].2[0] - o.elem_stress[0][0]).abs() < 1e-4);
+        assert_eq!(dat.ip_stress.len(), 4 * o.elem_stress.len());
+        assert!((dat.ip_stress[0].2[0] - o.ip_stress[0][0][0]).abs() < 1e-4);
         assert!((dat.totals["MOUNT1"][0] - o.reactions["MOUNT1"][0]).abs() < 1e-2);
         assert!((dat.volume.unwrap() - 10000.0).abs() < 1e-2);
         let frd = parse_frd(&write_frd(&mesh.points, Some(&o.disp), Some(&o.node_stress))).unwrap();
@@ -463,9 +471,9 @@ mod tests {
     #[test]
     fn g3_cantilever_is_stiffer_than_beam_theory_with_four_node_tetrahedra() {
         // L 100, b = h = 10, E 2500, tip load 10 N: beam theory 1.6000 mm (1.613 with shear).
-        // Four-node tetrahedra lock in bending, so the reference solver must come out stiffer
-        // (smaller deflection) but not absurdly so; this is why its report never passes a gate.
-        let mesh = tet4_to_tet10(&box_tets(DVec3::new(100.0, 10.0, 10.0), [40, 4, 4])).unwrap();
+        // Four-node tetrahedra lock in bending, so the solver must come out stiffer
+        // (smaller deflection) but not absurdly so.
+        let mesh = box_tets(DVec3::new(100.0, 10.0, 10.0), [40, 4, 4]);
         let left: Vec<u32> = (0..mesh.points.len() as u32).filter(|&i| (mesh.points[i as usize].x + 50.0).abs() < 1e-9).collect();
         let tip: Vec<u32> = (0..mesh.points.len() as u32).filter(|&i| (mesh.points[i as usize].x - 50.0).abs() < 1e-9).collect();
         let forces = tip.iter().map(|&n| crate::types::NodalForce { node: n, f_n: [0.0, 0.0, -10.0 / tip.len() as f64] }).collect();
