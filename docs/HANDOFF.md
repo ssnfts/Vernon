@@ -470,13 +470,15 @@ then the external solvers, then UI polish, then release.
   real runs are optional.
 
 ### WP10 — FEA: tet meshing and native linear solver (`fea.tet_mesh`, `fea.solve_linear`)
-- **`tet_mesh`:** run fTetWild (MPL-2.0, run as a process):
+- **`tet_mesh`:** DONE. Runs fTetWild (MPL-2.0, run as a process):
   `FloatTetwild_bin -i in.stl -o out.msh -l <rel_edge> -e <eps>`.
-  - Parse the Gmsh v4 `.msh` into nodes and C3D4 elements.
-  - Keep the voxel fallback, but have it emit
-    `placeholder = 0` when fTetWild ran. Then remove that node's
-    `expect_fail` from `examples/bodykit_pipeline.vrn` only if the example
-    actually runs fTetWild.
+  - `msh4.rs` parses Gmsh 4.1 `.msh`, ASCII and binary, into nodes and C3D4
+    elements.
+  - The voxel fallback stays. `placeholder` is 0 when fTetWild ran, 1 otherwise.
+  - The example does not run fTetWild, so that node keeps its `expect_fail`.
+  - The `#[ignore = "needs fTetWild"]` end-to-end test has not been run yet:
+    the program is not installed here. Tests use a stand-in script, and the
+    real program's output format is still unconfirmed.
 - **`solve_linear`:** native reference solver for C3D4 and C3D10.
   - Element stiffness from linear/quadratic tet shape functions; orthotropic
     material via the existing material model.
