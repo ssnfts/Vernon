@@ -397,6 +397,39 @@ cook and say so in a warning.
 - `print.snap_joint` (white-box): snap-fit arms (`arm_length`, `flex_room`, `bulge`) on one half and recesses on the
   other; until the arm geometry is specified it falls back to a plain plug and says so in a warning.
 
+## 5b. Part hierarchy attributes
+
+Implemented by `crates/vernon-nodes-print/src/hierarchy.rs` [design]. `print.plane_cut`, `print.polyline_cut`,
+`print.grid_partition`, `print.smart_partition`, `print.connectivity` and `print.by_attribute` derive the hierarchy and
+replace any stored one. The joint nodes and `print.build_fit` carry it over unchanged. `print.part_extract` keeps the
+prim attributes and drops the detail ones, so an extracted part reports a parent that is not present.
+
+| Class | Name | Type | Meaning |
+|---|---|---|---|
+| prim | `part_parent` | Int | part id of the parent; -1 for a root |
+| prim | `part_pivot` | Vec3, mm | area centroid of the seam to the parent; bounding-box centre for a root |
+| prim | `part_datum_normal` | Vec3 | unit seam normal from parent to child; zero for a root |
+| prim | `part_datum_cap` | Int | `cap` id of the seam to the parent; 0 for a root |
+| detail | `part_datums` | Str | JSON array, one object per seam: `cap`, `a`, `b` (part ids, `a` < `b`), `origin` (mm), `normal` (unit, a to b), `area_mm2`, `tree` (true when the seam is a parent link) |
+| detail | `part_roots` | Int | number of root parts |
+
+Every face of a part holds the same prim values.
+
+Rules:
+- Two parts share a seam when they hold caps with one `cap` id, opposite normals (dot below -0.99), coplanar within
+  1e-5 of the bounding diagonal (at least 1e-5 mm), and a sampled triangle centre of one cap (64 per cap at most) lies
+  on the other. Cells that only touch along an edge are not seams.
+- `origin` and `area_mm2` come from the smaller cap of the pair.
+- Links form a maximum spanning forest: seams are taken largest area first, lowest listing order on a tie. Each
+  connected group is rooted at its part with the most surface area, lowest id on a tie. Parts with no seam are roots.
+- Pivots and datums are in assembly coordinates, the frame of the cut. They do not follow `print.build_fit` poses or
+  any later transform. The per-part matrices in the `print.build_fit` placement output map them to the bed.
+
+Limits: this is a derived assembly order, not a designer's choice, and not a structural or load path. A grid split of
+input that already has caps can reuse a cap id on another plane for one part; that seam can then be missed, never
+invented. Non-print nodes that renumber `part` leave stale links; readers treat a missing parent or a loop as
+unresolved and show that part as a root. Joint features are counted per part from the `joint` attribute when read back.
+
 ## 6. Sources
 
 Read in this pass:

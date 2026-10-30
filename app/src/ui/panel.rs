@@ -2,6 +2,7 @@
 
 use eframe::egui::{self, vec2, Color32, RichText, Stroke, Ui};
 use vernon_graph::{NodeId, Stage};
+use vernon_nodes_print::hierarchy::{Datum, PartNode, PartTree};
 
 use super::icons::{self, Icon};
 use super::{params, PanelTab, Utility, VernonApp};
@@ -388,23 +389,74 @@ fn hierarchy_tab(app: &mut VernonApp, ui: &mut Ui) {
         return;
     };
     rollout(ui, "Pipeline tree (upstream)", true, |ui| upstream_tree(app, ui, p, 0));
-    rollout(ui, "Parts", true, |ui| {
-        let geo = app.st.geometry(app.st.display_node(p));
-        match geo.as_ref().and_then(|g| g.prim_attribs.ints("part").ok().map(|v| v.to_vec())) {
-            Some(parts) => {
-                let mut counts = std::collections::BTreeMap::new();
-                for v in parts {
-                    *counts.entry(v).or_insert(0usize) += 1;
-                }
-                for (part, n) in counts {
-                    ui.label(format!("part {part}: {n} faces"));
-                }
+    let geo = app.st.geometry(app.st.display_node(p));
+    let tree = geo.as_deref().and_then(PartTree::from_geometry);
+    rollout(ui, "Parts", true, |ui| part_tree_ui(ui, tree.as_ref()));
+    if let Some(tree) = tree.as_ref().filter(|t| !t.datums.is_empty()) {
+        rollout(ui, "Seam datums", false, |ui| {
+            for d in &tree.datums {
+                ui.label(datum_line(d));
             }
-            None => {
-                ui.label(RichText::new("No 'part' attribute yet: split nodes write it.").color(theme::TEXT_DIM));
-            }
+        });
+    }
+}
+
+fn part_tree_ui(ui: &mut Ui, tree: Option<&PartTree>) {
+    let Some(tree) = tree else {
+        ui.label(RichText::new("No 'part' attribute yet: split nodes write it.").color(theme::TEXT_DIM));
+        return;
+    };
+    if !tree.linked {
+        ui.label(RichText::new("No parent links on these parts: run them through a cut or split node.").small().color(theme::TEXT_DIM));
+    }
+    for &root in &tree.roots {
+        part_branch(ui, tree, root);
+    }
+}
+
+fn part_branch(ui: &mut Ui, tree: &PartTree, part: i64) {
+    let node = &tree.nodes[&part];
+    egui::CollapsingHeader::new(part_title(node)).id_salt(("part", part)).default_open(true).show(ui, |ui| {
+        for line in part_details(node) {
+            ui.label(RichText::new(line).small().color(theme::TEXT_DIM));
+        }
+        for &child in &node.children {
+            part_branch(ui, tree, child);
         }
     });
+}
+
+fn part_title(node: &PartNode) -> String {
+    match &node.label {
+        Some(label) => format!("{label} (part {}): {} faces", node.part, node.faces),
+        None => format!("part {}: {} faces", node.part, node.faces),
+    }
+}
+
+fn part_details(node: &PartNode) -> Vec<String> {
+    let (p, n) = (node.pivot, node.datum_normal);
+    let mut lines = Vec::new();
+    if let Some(up) = node.unresolved_parent {
+        lines.push(format!("parent part {up} is not linked in this geometry"));
+    }
+    if node.datum_cap > 0 {
+        lines.push(format!("seam pivot {:.2}, {:.2}, {:.2} mm", p.x, p.y, p.z));
+        lines.push(format!("datum: cap {}, normal {:.3}, {:.3}, {:.3}", node.datum_cap, n.x, n.y, n.z));
+    } else if node.parent.is_none() && node.unresolved_parent.is_none() && p.length_squared() > 0.0 {
+        lines.push(format!("root pivot {:.2}, {:.2}, {:.2} mm", p.x, p.y, p.z));
+    }
+    if node.joint_features > 0 {
+        lines.push(format!("{} joint features", node.joint_features));
+    }
+    lines
+}
+
+fn datum_line(d: &Datum) -> String {
+    let role = if d.tree { "parent link" } else { "extra seam" };
+    format!(
+        "part {} to {}, cap {}: {:.0} mm2 at {:.1}, {:.1}, {:.1} mm ({role})",
+        d.a, d.b, d.cap, d.area_mm2, d.origin.x, d.origin.y, d.origin.z
+    )
 }
 
 fn motion_tab(app: &mut VernonApp, ui: &mut Ui) {
@@ -849,5 +901,56 @@ fn measure(app: &mut VernonApp, ui: &mut Ui) {
     }
     if geos.is_empty() {
         ui.label(RichText::new("The selection has no geometry.").color(theme::TEXT_DIM));
+    }
+}
+
+#[cfg(test)]
+mod hierarchy_tab_tests {
+    use super::*;
+    use glam::{DMat4, DVec3};
+    use vernon_core::{AttribArray, Geometry};
+    use vernon_nodes_print::hierarchy::annotate;
+
+    /// Two boxes that meet on a capped face at x = 5, the second one longer.
+    fn two_parts() -> Geometry {
+        let mut g = Geometry::make_box(DVec3::splat(10.0));
+        let mut b = Geometry::make_box(DVec3::new(30.0, 10.0, 10.0));
+        b.transform(DMat4::from_translation(DVec3::new(20.0, 0.0, 0.0)));
+        let cap_of = |g: &Geometry| -> Vec<i64> {
+            g.prims.iter().map(|pr| i64::from(pr.vertices.iter().all(|&v| (g.points[v as usize].x - 5.0).abs() < 1e-9))).collect()
+        };
+        let (ca, cb) = (cap_of(&g), cap_of(&b));
+        let (na, nb) = (g.prims.len(), b.prims.len());
+        g.prim_attribs.set("part", AttribArray::Int(vec![0; na]));
+        g.prim_attribs.set("cap", AttribArray::Int(ca));
+        b.prim_attribs.set("part", AttribArray::Int(vec![1; nb]));
+        b.prim_attribs.set("cap", AttribArray::Int(cb));
+        g.merge(&b);
+        annotate(&mut g);
+        g
+    }
+
+    #[test]
+    fn tree_lines_name_parents_pivots_and_seams() {
+        let tree = PartTree::from_geometry(&two_parts()).unwrap();
+        assert_eq!(tree.roots, vec![1]);
+        assert_eq!(part_title(&tree.nodes[&1]), "part 1: 6 faces");
+        let child = part_details(&tree.nodes[&0]);
+        assert_eq!(child[0], "seam pivot 5.00, 0.00, 0.00 mm");
+        assert_eq!(child[1], "datum: cap 1, normal -1.000, 0.000, 0.000");
+        assert!(part_details(&tree.nodes[&1])[0].starts_with("root pivot 20.00"));
+        assert_eq!(datum_line(&tree.datums[0]), "part 0 to 1, cap 1: 100 mm2 at 5.0, 0.0, 0.0 mm (parent link)");
+    }
+
+    #[test]
+    fn tree_draws_nested_and_for_missing_data() {
+        let tree = PartTree::from_geometry(&two_parts()).unwrap();
+        let ctx = egui::Context::default();
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                part_tree_ui(ui, Some(&tree));
+                part_tree_ui(ui, None);
+            });
+        });
     }
 }

@@ -73,7 +73,8 @@ fn finish(ctx: &CookContext, title: &str, input: &Geometry, out: JointOutcome, p
 }
 
 fn run(ctx: &CookContext, geo: &Geometry, spec: JointSpec, title: &str, pins_out: bool) -> CookResult<Vec<Data>> {
-    let out = apply_joints(geo, &spec);
+    let mut out = apply_joints(geo, &spec);
+    crate::hierarchy::carry(geo, &mut out.geo);
     finish(ctx, title, geo, out, pins_out)
 }
 
