@@ -19,6 +19,7 @@ use eframe::egui::{Color32, Painter, Rect};
 use vernon_graph::NodeId;
 
 pub use camera::{Camera, OrbitMode, ViewKind};
+pub use grid::GridGeometry;
 pub use mesh::{ColorBy, RenderMesh};
 
 /// How surfaces are drawn.
@@ -38,12 +39,14 @@ impl Shading {
 }
 
 /// Per-tile view settings handed to the backend.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct ViewParams {
     pub camera: Camera,
     pub shading: Shading,
     /// Draw triangle edges over shaded surfaces.
     pub edged: bool,
+    /// Home grid of the tile, when shown.
+    pub grid: Option<Arc<GridGeometry>>,
 }
 
 /// One visible object.
@@ -64,6 +67,6 @@ pub trait ViewportBackend {
     /// reach its render state through `frame` here.
     fn begin_frame(&mut self, _frame: &mut eframe::Frame) {}
 
-    /// Draw `items` into `rect` (grid and overlays are drawn by the app).
+    /// Draw `items` into `rect` and the view's grid (other overlays are drawn by the app).
     fn paint(&mut self, painter: &Painter, rect: Rect, view: &ViewParams, items: &[DrawItem]);
 }

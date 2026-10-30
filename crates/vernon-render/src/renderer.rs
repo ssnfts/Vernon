@@ -75,6 +75,12 @@ pub struct ViewDesc {
     pub grid_color: Color32,
     pub grid_major_color: Color32,
     pub grid_axis_color: Color32,
+    /// Explicit grid line list (world, linear colours) that replaces the
+    /// built-in square grid when set; still needs `show_grid`.
+    pub grid_lines: Option<Vec<PointVertex>>,
+    /// World-space quad that writes depth only: an opaque ground plane that
+    /// hides what lies behind it without drawing anything itself.
+    pub occluder: Option<[Vec3; 4]>,
     /// Size of points in physical pixels.
     pub point_size: f32,
 }
@@ -97,6 +103,8 @@ impl ViewDesc {
             grid_color: Color32::from_gray(82),
             grid_major_color: Color32::from_gray(104),
             grid_axis_color: Color32::from_gray(24),
+            grid_lines: None,
+            occluder: None,
             point_size: 2.0,
         }
     }
@@ -209,7 +217,15 @@ struct Target {
     uniform_buf: wgpu::Buffer,
     uniform_slots: usize,
     bind_group: wgpu::BindGroup,
-    grid: Option<(GridKey, wgpu::Buffer, u32)>,
+    grid: Option<(GridSource, wgpu::Buffer, u32)>,
+    occluder: Option<([Vec3; 4], wgpu::Buffer)>,
+}
+
+/// What the cached grid buffer was built from.
+#[derive(Debug, Clone, PartialEq)]
+enum GridSource {
+    Built(GridKey),
+    Lines(Vec<PointVertex>),
 }
 
 struct Pipelines {
@@ -217,6 +233,7 @@ struct Pipelines {
     edge: wgpu::RenderPipeline,
     curve: wgpu::RenderPipeline,
     point: wgpu::RenderPipeline,
+    occluder: wgpu::RenderPipeline,
 }
 
 const MESH_ATTRS: [wgpu::VertexAttribute; 3] =
@@ -565,21 +582,26 @@ impl ViewportRenderer {
 
         // ---- grid -----------------------------------------------------
         let grid = if view.show_grid {
-            let key = grid_key(view);
-            let stale = target.grid.as_ref().is_none_or(|(k, _, _)| *k != key);
+            let source = match &view.grid_lines {
+                Some(lines) => GridSource::Lines(lines.clone()),
+                None => GridSource::Built(grid_key(view)),
+            };
+            let stale = target.grid.as_ref().is_none_or(|(k, _, _)| *k != source);
             if stale {
-                let colors = GridColors {
-                    minor: rgb(view.grid_color),
-                    major: rgb(view.grid_major_color),
-                    axis: rgb(view.grid_axis_color),
+                let verts = match &source {
+                    GridSource::Lines(lines) => lines.clone(),
+                    GridSource::Built(_) => build_grid(
+                        view.grid_plane,
+                        view.grid_center,
+                        view.grid_extent,
+                        view.grid_spacing,
+                        &GridColors {
+                            minor: rgb(view.grid_color),
+                            major: rgb(view.grid_major_color),
+                            axis: rgb(view.grid_axis_color),
+                        },
+                    ),
                 };
-                let verts = build_grid(
-                    view.grid_plane,
-                    view.grid_center,
-                    view.grid_extent,
-                    view.grid_spacing,
-                    &colors,
-                );
                 let b = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                     label: Some("vernon grid"),
                     contents: bytemuck::cast_slice(&verts),
@@ -588,12 +610,18 @@ impl ViewportRenderer {
                 if let Some((_, old, _)) = target.grid.take() {
                     old.destroy();
                 }
-                target.grid = Some((key, b, verts.len() as u32));
+                target.grid = Some((source, b, verts.len() as u32));
             }
             target.grid.as_ref().map(|(_, b, n)| (b, *n))
         } else {
             None
         };
+        if target.occluder.as_ref().map(|(q, _)| q) != view.occluder.as_ref() {
+            if let Some((_, old)) = target.occluder.take() {
+                old.destroy();
+            }
+            target.occluder = view.occluder.map(|q| (q, occluder_buffer(device, &q)));
+        }
 
         // ---- pass -----------------------------------------------------
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -634,6 +662,13 @@ impl ViewportRenderer {
                 occlusion_query_set: None,
             });
             let slot = |i: usize| (i * stride) as u32;
+
+            if let Some((_, b)) = &target.occluder {
+                pass.set_pipeline(&pipelines.occluder);
+                pass.set_bind_group(0, &target.bind_group, &[slot(0)]);
+                pass.set_vertex_buffer(0, b.slice(..));
+                pass.draw(0..6, 0..1);
+            }
 
             if let Some((b, n)) = grid {
                 pass.set_pipeline(&pipelines.curve);
@@ -782,6 +817,7 @@ impl ViewportRenderer {
                 uniform_slots: cap,
                 bind_group,
                 grid: None,
+                occluder: None,
             }
         });
         if target.frame.size != size {
@@ -826,6 +862,20 @@ fn linear(c: Color32) -> [f32; 4] {
 fn rgb(c: Color32) -> [f32; 3] {
     let l = linear(c);
     [l[0], l[1], l[2]]
+}
+
+/// Two triangles of an occluder quad; only their positions matter.
+fn occluder_buffer(device: &wgpu::Device, q: &[Vec3; 4]) -> wgpu::Buffer {
+    let verts = [q[0], q[1], q[2], q[0], q[2], q[3]].map(|p| MeshVertex {
+        pos: p.to_array(),
+        normal: [0.0, 0.0, 1.0],
+        color: [0.0; 3],
+    });
+    device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("vernon occluder"),
+        contents: bytemuck::cast_slice(&verts),
+        usage: wgpu::BufferUsages::VERTEX,
+    })
 }
 
 fn grid_key(view: &ViewDesc) -> GridKey {
@@ -951,6 +1001,7 @@ fn create_pipelines(device: &wgpu::Device, bgl: &wgpu::BindGroupLayout, samples:
         depth_write: bool,
         bias: wgpu::DepthBiasState,
         blend: wgpu::BlendState,
+        write_mask: wgpu::ColorWrites,
     }
     let make = |s: Spec<'_>| {
         device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -987,7 +1038,7 @@ fn create_pipelines(device: &wgpu::Device, bgl: &wgpu::BindGroupLayout, samples:
                 targets: &[Some(wgpu::ColorTargetState {
                     format: COLOR_FORMAT,
                     blend: Some(s.blend),
-                    write_mask: wgpu::ColorWrites::ALL,
+                    write_mask: s.write_mask,
                 })],
             }),
             multiview: None,
@@ -995,21 +1046,35 @@ fn create_pipelines(device: &wgpu::Device, bgl: &wgpu::BindGroupLayout, samples:
         })
     };
     let none = wgpu::DepthBiasState::default();
+    let all = wgpu::ColorWrites::ALL;
+    // Push faces away (reverse-Z => negative) so edges and grid lines win.
+    let faces_back = wgpu::DepthBiasState {
+        constant: -8,
+        slope_scale: -1.5,
+        clamp: 0.0,
+    };
     Pipelines {
         mesh: make(Spec {
             label: "vernon mesh",
             vs: "vs_mesh",
             fs: "fs_mesh",
+            buffer: mesh_layout.clone(),
+            topology: wgpu::PrimitiveTopology::TriangleList,
+            depth_write: true,
+            bias: faces_back,
+            blend: wgpu::BlendState::REPLACE,
+            write_mask: all,
+        }),
+        occluder: make(Spec {
+            label: "vernon occluder",
+            vs: "vs_mesh",
+            fs: "fs_mesh",
             buffer: mesh_layout,
             topology: wgpu::PrimitiveTopology::TriangleList,
             depth_write: true,
-            // Push faces away (reverse-Z => negative) so edges win.
-            bias: wgpu::DepthBiasState {
-                constant: -8,
-                slope_scale: -1.5,
-                clamp: 0.0,
-            },
+            bias: faces_back,
             blend: wgpu::BlendState::REPLACE,
+            write_mask: wgpu::ColorWrites::empty(),
         }),
         edge: make(Spec {
             label: "vernon edges",
@@ -1020,6 +1085,7 @@ fn create_pipelines(device: &wgpu::Device, bgl: &wgpu::BindGroupLayout, samples:
             depth_write: false,
             bias: none,
             blend: wgpu::BlendState::ALPHA_BLENDING,
+            write_mask: all,
         }),
         curve: make(Spec {
             label: "vernon curves",
@@ -1030,6 +1096,7 @@ fn create_pipelines(device: &wgpu::Device, bgl: &wgpu::BindGroupLayout, samples:
             depth_write: true,
             bias: none,
             blend: wgpu::BlendState::REPLACE,
+            write_mask: all,
         }),
         point: make(Spec {
             label: "vernon points",
@@ -1040,6 +1107,7 @@ fn create_pipelines(device: &wgpu::Device, bgl: &wgpu::BindGroupLayout, samples:
             depth_write: true,
             bias: none,
             blend: wgpu::BlendState::REPLACE,
+            write_mask: all,
         }),
     }
 }

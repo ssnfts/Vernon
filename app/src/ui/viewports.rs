@@ -262,116 +262,8 @@ impl Viewports {
     }
 }
 
-/// The construction plane of a view: normal and the two in-plane axes.
-fn plane_of(kind: ViewKind) -> (DVec3, DVec3, DVec3) {
-    match kind {
-        ViewKind::Front | ViewKind::Back => (DVec3::X, DVec3::Y, DVec3::Z),
-        ViewKind::Left | ViewKind::Right => (DVec3::Y, DVec3::X, DVec3::Z),
-        _ => (DVec3::Z, DVec3::X, DVec3::Y),
-    }
-}
-
 fn to_screen(rect: Rect, s: DVec2) -> Pos2 {
     rect.min + vec2(s.x as f32, s.y as f32)
-}
-
-/// Clip a world segment to the near plane and project it.
-fn project_segment(cam: &Camera, rect: Rect, size: DVec2, a: DVec3, b: DVec3) -> Option<(Pos2, Pos2)> {
-    let (mut ca, mut cb) = (cam.world_to_cam(a), cam.world_to_cam(b));
-    if !cam.ortho {
-        let near = cam.near() * 2.0;
-        let (da, db) = (-ca.z, -cb.z);
-        if da < near && db < near {
-            return None;
-        }
-        if da < near {
-            ca = ca + (cb - ca) * ((near - da) / (db - da));
-        } else if db < near {
-            cb = cb + (ca - cb) * ((near - db) / (da - db));
-        }
-    }
-    let (sa, _) = cam.project_cam(ca, size)?;
-    let (sb, _) = cam.project_cam(cb, size)?;
-    Some((to_screen(rect, sa), to_screen(rect, sb)))
-}
-
-/// Draw the home grid; returns the grid square size used.
-fn draw_grid(painter: &Painter, rect: Rect, tile: &Tile, gs: &GridSettings) -> f64 {
-    let cam = &tile.cam;
-    let size = tile.size();
-    let wpp = cam.world_per_pixel(size.y);
-    let spacing = if gs.adaptive {
-        grid::adaptive_spacing(gs.spacing, wpp, gs.inhibit_subdivision)
-    } else {
-        gs.spacing
-    };
-    let (n, u, v) = plane_of(tile.kind);
-    let minor = Color32::from_rgb(0x44, 0x44, 0x44);
-    let major = Color32::from_rgb(0x52, 0x52, 0x52);
-    let axis = Color32::from_rgb(0x22, 0x22, 0x22);
-    let axis_aligned = cam.back().dot(n).abs() > 0.999;
-    if cam.ortho && axis_aligned {
-        // Lines across the whole visible region.
-        let corners = [
-            cam.focal_point(DVec2::ZERO, size),
-            cam.focal_point(size, size),
-            cam.focal_point(DVec2::new(size.x, 0.0), size),
-            cam.focal_point(DVec2::new(0.0, size.y), size),
-        ];
-        let lo_u = corners.iter().map(|c| c.dot(u)).fold(f64::MAX, f64::min);
-        let hi_u = corners.iter().map(|c| c.dot(u)).fold(f64::MIN, f64::max);
-        let lo_v = corners.iter().map(|c| c.dot(v)).fold(f64::MAX, f64::min);
-        let hi_v = corners.iter().map(|c| c.dot(v)).fold(f64::MIN, f64::max);
-        let draw = |dir: DVec3, across: DVec3, lo: f64, hi: f64, lo2: f64, hi2: f64| {
-            let k0 = (lo / spacing).floor() as i64;
-            let k1 = (hi / spacing).ceil() as i64;
-            if k1 - k0 > 600 {
-                return;
-            }
-            for line in grid::lines(k0, k1, gs.major_every) {
-                let c = line.k as f64 * spacing;
-                let a = dir * c + across * lo2;
-                let b = dir * c + across * hi2;
-                if let Some((pa, pb)) = project_segment(cam, rect, size, a, b) {
-                    let col = if line.k == 0 { axis } else if line.major { major } else { minor };
-                    painter.line_segment([pa, pb], Stroke::new(1.0_f32, col));
-                }
-            }
-        };
-        draw(u, v, lo_u, hi_u, lo_v, hi_v);
-        draw(v, u, lo_v, hi_v, lo_u, hi_u);
-    } else {
-        let e = (gs.extent * gs.major_every).clamp(4, 200);
-        let half = e as f64 * spacing;
-        // Centre the grid on the major line nearest the view target.
-        let step = spacing * gs.major_every as f64;
-        let cu = (cam.target.dot(u) / step).round() * step;
-        let cv = (cam.target.dot(v) / step).round() * step;
-        for (dir, across, c0, c1) in [(u, v, cu, cv), (v, u, cv, cu)] {
-            for line in grid::extent_lines(e, gs.major_every) {
-                let world_k = ((c0 / spacing).round() as i64) + line.k;
-                let c = world_k as f64 * spacing;
-                let a = dir * c + across * (c1 - half);
-                let b = dir * c + across * (c1 + half);
-                let alpha = grid::fade(line.k, e);
-                if alpha <= 0.0 {
-                    continue;
-                }
-                if let Some((pa, pb)) = project_segment(cam, rect, size, a, b) {
-                    let base = if world_k == 0 {
-                        axis
-                    } else if world_k % gs.major_every.max(2) == 0 {
-                        major
-                    } else {
-                        minor
-                    };
-                    let col = theme::mix(theme::VIEWPORT_BG, base, alpha);
-                    painter.line_segment([pa, pb], Stroke::new(1.0_f32, col));
-                }
-            }
-        }
-    }
-    spacing
 }
 
 /// What the pointer is over on the view cube.
@@ -620,22 +512,24 @@ fn tile_ui(app: &mut VernonApp, ui: &mut Ui, i: usize, rect: Rect, items: &[Draw
     }
 
     // Grid and scene.
-    if app.vp.show_grid {
-        let s = draw_grid(&painter, rect, &app.vp.tiles[i], &app.vp.grid);
-        if active {
-            app.vp.grid_readout = s;
-        }
+    let grid_geo = app.vp.show_grid.then(|| {
+        let t = &app.vp.tiles[i];
+        Arc::new(grid::build(&t.cam, t.kind, size, &app.vp.grid))
+    });
+    if let (true, Some(g)) = (active, &grid_geo) {
+        app.vp.grid_readout = g.spacing;
     }
     let view = ViewParams {
         camera: app.vp.tiles[i].cam,
         shading: app.vp.tiles[i].shading,
         edged: app.vp.tiles[i].edged,
+        grid: grid_geo,
     };
     app.backend.paint(&painter, rect, &view, items);
 
     // Cursor readout on the construction plane.
     if let Some(h) = hover {
-        let (n, _, _) = plane_of(app.vp.tiles[i].kind);
+        let (n, _, _) = grid::plane_of(app.vp.tiles[i].kind);
         let px = DVec2::new((h.x - rect.min.x) as f64, (h.y - rect.min.y) as f64);
         app.vp.cursor_world = app.vp.tiles[i].cam.plane_point(px, size, n, 0.0);
     }

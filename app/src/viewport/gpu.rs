@@ -1,8 +1,8 @@
 //! GPU backend: `vernon-render`'s offscreen wgpu renderer behind
 //! [`ViewportBackend`]. Each tile renders into its own depth-tested,
 //! multisampled texture which is then shown as an egui image. The texture
-//! is cleared transparent and the renderer's own grid is off, so the app's
-//! grid (drawn first) shows through and both backends look alike.
+//! is cleared transparent over the tile background; the home grid and the
+//! ground plane are depth-tested with the scene.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -16,7 +16,7 @@ use vernon_render::{
     ViewportRenderer,
 };
 
-use super::{Camera, DrawItem, RenderMesh, Shading, ViewParams, ViewportBackend};
+use super::{Camera, DrawItem, GridGeometry, RenderMesh, Shading, ViewParams, ViewportBackend};
 
 struct Uploaded {
     mesh: Arc<RenderMesh>,
@@ -154,19 +154,21 @@ impl ViewportBackend for GpuBackend {
 }
 
 /// Offscreen view description for a tile of `size` physical pixels:
-/// transparent background and no renderer grid (the app draws its own).
+/// transparent background and the tile's grid, if any.
 pub fn view_desc(view: &ViewParams, items: &[DrawItem], size: [u32; 2], ppp: f32) -> ViewDesc {
     let aspect = size[0].max(1) as f32 / size[1].max(1) as f32;
     let mut desc = ViewDesc::new(size);
     desc.view = view_matrix(&view.camera);
-    desc.proj = proj_matrix(&view.camera, aspect, scene_radius(&view.camera, items));
+    desc.proj = proj_matrix(&view.camera, aspect, scene_radius(view, items));
     desc.shading = match (view.shading, view.edged) {
         (Shading::Wireframe, _) => ShadingMode::Wireframe,
         (Shading::Shaded, true) => ShadingMode::ShadedEdges,
         (Shading::Shaded, false) => ShadingMode::Shaded,
     };
     desc.background = Color32::TRANSPARENT;
-    desc.show_grid = false;
+    desc.show_grid = view.grid.is_some();
+    desc.grid_lines = view.grid.as_ref().map(|g| grid_vertices(g));
+    desc.occluder = view.grid.as_ref().and_then(|g| g.ground).map(|q| q.map(|p| p.as_vec3()));
     desc.point_size = 2.0 * ppp;
     desc
 }
@@ -199,8 +201,24 @@ pub fn proj_matrix(cam: &Camera, aspect: f32, radius: f64) -> Mat4 {
     }
 }
 
-/// Distance from the camera target that encloses every item.
-fn scene_radius(cam: &Camera, items: &[DrawItem]) -> f64 {
+fn grid_vertices(g: &GridGeometry) -> Vec<PointVertex> {
+    g.segments
+        .iter()
+        .flat_map(|s| {
+            let color = lin([s.color.r(), s.color.g(), s.color.b()]);
+            [s.a, s.b].map(|p| PointVertex { pos: p.as_vec3().to_array(), color })
+        })
+        .collect()
+}
+
+/// Distance from the camera target that encloses every item and the grid,
+/// which sets the orthographic depth range.
+fn scene_radius(view: &ViewParams, items: &[DrawItem]) -> f64 {
+    let cam = &view.camera;
+    let grid = view.grid.iter().flat_map(|g| {
+        let lines = g.segments.iter().flat_map(|s| [s.a, s.b]);
+        lines.chain(g.ground.into_iter().flatten())
+    });
     items
         .iter()
         .flat_map(|i| {
@@ -213,6 +231,7 @@ fn scene_radius(cam: &Camera, items: &[DrawItem]) -> f64 {
                 )
             })
         })
+        .chain(grid)
         .map(|c| (c - cam.target).length())
         .fold(1.0, f64::max)
 }
@@ -362,6 +381,7 @@ mod tests {
                 camera,
                 shading: Shading::Shaded,
                 edged: false,
+                grid: None,
             };
             let desc = view_desc(&view, std::slice::from_ref(&item), [96, 96], 1.0);
             r.draw(&desc, &[GpuItem::new(MeshHandle(1))]);
@@ -378,6 +398,60 @@ mod tests {
                 "{kind:?}: Cd red expected, got {c:?}"
             );
         }
+    }
+
+    /// A red box against the ground plane, seen through the real view
+    /// description. Skips when no adapter exists.
+    #[test]
+    fn ground_plane_hides_what_is_below_it_when_a_gpu_exists() {
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+        let Ok(adapter) =
+            pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
+        else {
+            eprintln!("no adapter available; skipping");
+            return;
+        };
+        let Ok((device, queue)) =
+            pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))
+        else {
+            eprintln!("no device available; skipping");
+            return;
+        };
+        let mut r = ViewportRenderer::with_device(&device, &queue, 1);
+        let size = DVec2::new(128.0, 128.0);
+        let gs = crate::viewport::grid::GridSettings::default();
+        let mut shoot = |kind: ViewKind, z: f64, with_grid: bool| {
+            let mut g = Geometry::make_box(DVec3::splat(100.0));
+            for p in &mut g.points {
+                p.z += z;
+            }
+            let mesh = Arc::new(build(&g, ColorBy::Object));
+            r.upload_buffers(1, &buffers(&mesh, Color32::RED));
+            let it = DrawItem { id: 1, mesh, color: Color32::RED, selected: false };
+            let mut camera = Camera::new(kind);
+            camera.target = DVec3::new(0.0, 0.0, z);
+            let grid = with_grid.then(|| Arc::new(crate::viewport::grid::build(&camera, kind, size, &gs)));
+            let view = ViewParams { camera, shading: Shading::Shaded, edged: false, grid };
+            let desc = view_desc(&view, std::slice::from_ref(&it), [128, 128], 1.0);
+            r.draw(&desc, &[GpuItem::new(MeshHandle(1))]);
+            let (w, h, px) = r.read_pixels(0).unwrap();
+            let count = |f: &dyn Fn(&[u8]) -> bool| px.chunks(4).take((w * h) as usize).filter(|p| f(p)).count();
+            let red = count(&|p| p[3] > 0 && p[0] > 40 && p[0] > 2 * p[1].max(p[2]));
+            let lines = count(&|p| p[3] > 0 && p[0] == p[1] && p[1] == p[2]);
+            (red, lines)
+        };
+        // Below the ground, seen from above: hidden, but only with the grid.
+        for kind in [ViewKind::Perspective, ViewKind::Top] {
+            assert!(shoot(kind, -200.0, false).0 > 100, "{kind:?}: visible without the grid");
+            assert_eq!(shoot(kind, -200.0, true).0, 0, "{kind:?}: hidden by the ground");
+        }
+        // Seen from below, the same box is in front of the plane.
+        assert!(shoot(ViewKind::Bottom, -200.0, true).0 > 100);
+        // A box above the ground hides the grid behind it, not the reverse.
+        let (red, lines_over) = shoot(ViewKind::Top, 200.0, true);
+        assert!(red > 100, "box above the ground stays visible");
+        let (_, lines_clear) = shoot(ViewKind::Top, -200.0, true);
+        assert!(lines_over < lines_clear, "{lines_over} vs {lines_clear}");
     }
 
     #[test]

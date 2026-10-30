@@ -107,6 +107,15 @@ impl ViewportBackend for PainterBackend {
         let mut wire = MeshBuilder::default();
         let mut overlay: Vec<Shape> = Vec::new();
 
+        // No depth buffer here: the grid goes behind everything.
+        if let Some(grid) = &view.grid {
+            for s in &grid.segments {
+                if let Some(pts) = project_segment(cam, rect, size, s.a, s.b) {
+                    painter.line_segment(pts, Stroke::new(1.0_f32, s.color));
+                }
+            }
+        }
+
         for item in items {
             let m = &item.mesh;
             let cams: Vec<DVec3> = m.positions.iter().map(|p| inv * (p.as_dvec3() - eye)).collect();
@@ -199,6 +208,26 @@ impl ViewportBackend for PainterBackend {
         wire.finish(&painter);
         painter.extend(overlay);
     }
+}
+
+/// Clip a world segment to the near plane and project it.
+fn project_segment(cam: &super::Camera, rect: Rect, size: DVec2, a: DVec3, b: DVec3) -> Option<[Pos2; 2]> {
+    let (mut ca, mut cb) = (cam.world_to_cam(a), cam.world_to_cam(b));
+    if !cam.ortho {
+        let near = cam.near() * 2.0;
+        let (da, db) = (-ca.z, -cb.z);
+        if da < near && db < near {
+            return None;
+        }
+        if da < near {
+            ca += (cb - ca) * ((near - da) / (db - da));
+        } else if db < near {
+            cb += (ca - cb) * ((near - db) / (da - db));
+        }
+    }
+    let (sa, _) = cam.project_cam(ca, size)?;
+    let (sb, _) = cam.project_cam(cb, size)?;
+    Some([rect.min + vec2(sa.x as f32, sa.y as f32), rect.min + vec2(sb.x as f32, sb.y as f32)])
 }
 
 /// White corner brackets around a selected object's bounding box.
