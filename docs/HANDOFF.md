@@ -479,7 +479,8 @@ then the external solvers, then UI polish, then release.
   - The `#[ignore = "needs fTetWild"]` end-to-end test has not been run yet:
     the program is not installed here. Tests use a stand-in script, and the
     real program's output format is still unconfirmed.
-- **`solve_linear`:** native reference solver for C3D4 and C3D10.
+- **`solve_linear`:** (done 2026-10-31, except the external cross-check below,
+  which has not been run) native reference solver for C3D4 and C3D10.
   - Element stiffness from linear/quadratic tet shape functions; orthotropic
     material via the existing material model.
   - Assemble in CSR and solve with preconditioned conjugate gradient
@@ -491,6 +492,11 @@ then the external solvers, then UI polish, then release.
     are stiff.
   - Results agree with CalculiX on the same deck within 2% (an
     `#[ignore = "needs CalculiX"]` test that runs `ccx`).
+  - Measured (`crates/vernon-nodes-fea/src/cantilever.rs`, beam theory 10.000 mm):
+    C3D10 -0.34% (20x2x2 cells), C3D4 -6.32% (80x8x8 cells; -49% at 20x2x2).
+    The node stays white-box and never passes a gate until the `ccx` test has
+    been run; then drop the flag and `estimate_only`, and fix the four-node
+    wording in `nodes_result.rs`.
 
 ### WP11 — Flatten and performance white-box nodes
 - **`flatten.stretch_aware`:** ARAP parameterisation (Liu, Zhang, Xu, Gotsman,
