@@ -12,6 +12,7 @@ use vernon_graph::{CookContext, CookResult, Data, DataKind, NodeOp, NodeTypeInfo
 use crate::mesh::{
     boundary_faces, boundary_node_set, corner_points, element_size, gmsh_tet10_to_solver, mesh_volume, orient_positive, solid_from_tets, tet4_to_tet10, tet_quality, tri_surface, voxel_tets, BFace,
 };
+use crate::msh4::{read_header, read_msh4};
 use crate::solver::{find_executable, run_with_timeout, tail, RunStatus};
 use crate::spatial::ray_triangle;
 use crate::types::{finite, to_data, MountSet, MountSite};
@@ -94,6 +95,15 @@ pub fn read_msh2(text: &str) -> Result<(Vec<DVec3>, Vec<[u32; 4]>), String> {
     Ok((points, tets))
 }
 
+/// Corner-node tetrahedra of a mesher output file: Gmsh 4.1 (ASCII or binary) or ASCII 2.x.
+pub fn read_mesher_output(bytes: &[u8]) -> Result<(Vec<DVec3>, Vec<[u32; 4]>), String> {
+    let h = read_header(bytes)?;
+    if h.version.starts_with("2.") && !h.binary {
+        return read_msh2(std::str::from_utf8(bytes).map_err(|_| "non-text data in an ASCII mesh file")?);
+    }
+    read_msh4(bytes)
+}
+
 fn surface_volume(tris: &[[DVec3; 3]]) -> f64 {
     tris.iter().map(|t| t[0].dot(t[1].cross(t[2])) / 6.0).sum::<f64>().abs()
 }
@@ -162,12 +172,13 @@ impl NodeOp for TetMesh {
                     let st = run_with_timeout(&exe, &args, &ctx.work_dir, &log, Duration::from_secs_f64(params.float("timeout_s")?), &[])?;
                     match st {
                         RunStatus::Exited(0) if out.is_file() => {
-                            let text = std::fs::read_to_string(&out)?;
-                            let (p, t) = read_msh2(&text).map_err(|e| ctx.fail(format!("cannot read the mesher output: {e}")))?;
+                            let bytes = std::fs::read(&out)?;
+                            let (p, t) = read_mesher_output(&bytes).map_err(|e| ctx.fail(format!("cannot read the mesher output: {e}")))?;
                             let mut g = solid_from_tets(p, &t);
                             orient_positive(&mut g);
                             linear = Some(g);
                             source = "external mesher";
+                            r.metric("placeholder", Metric::new(0.0, "flag").with_limit(0.0, true));
                         }
                         RunStatus::TimedOut => {
                             return Err(vernon_graph::CookError::External { tool: "fTetWild".into(), message: "timed out".into() });
@@ -446,6 +457,107 @@ mod tests {
         lin.set("order", ParamValue::Int(1));
         let o = TetMesh.cook(&c, &[Some(Data::geometry(Geometry::make_box(DVec3::splat(10.0))))], &lin).unwrap();
         assert_eq!(o[0].as_geometry().unwrap().prims[0].vertices.len(), 4);
+    }
+
+    /// Stand-in mesher script: records its arguments, then copies `payload` to the `-o` path.
+    fn fake_mesher(name: &str, payload: &[u8]) -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!("vernon_fea_fake_{name}_{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join("payload.msh"), payload).unwrap();
+        #[cfg(windows)]
+        let exe = {
+            let exe = d.join("mesher.bat");
+            std::fs::write(&exe, "@echo off\r\necho %* > \"%~dp0args.txt\"\r\ncopy /y \"%~dp0payload.msh\" %4 >nul\r\n").unwrap();
+            exe
+        };
+        #[cfg(not(windows))]
+        let exe = {
+            use std::os::unix::fs::PermissionsExt;
+            let exe = d.join("mesher.sh");
+            std::fs::write(&exe, "#!/bin/sh\necho \"$@\" > \"$(dirname \"$0\")/args.txt\"\ncp \"$(dirname \"$0\")/payload.msh\" \"$4\"\n").unwrap();
+            std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+            exe
+        };
+        exe
+    }
+
+    fn run_params(exe: &str) -> Params {
+        let mut p = defaults(&TetMesh);
+        p.set("run", ParamValue::Bool(true));
+        p.set("exe_path", ParamValue::Str(exe.into()));
+        p.set("order", ParamValue::Int(1));
+        p.set("edge_len_mm", ParamValue::Float(5.0));
+        p
+    }
+
+    fn work(name: &str) -> CookContext {
+        let d = std::env::temp_dir().join(format!("vernon_fea_work_{name}_{}", std::process::id()));
+        CookContext { node_name: "t".into(), work_dir: d, frame: 0.0 }
+    }
+
+    #[test]
+    fn a_mesher_run_clears_the_placeholder_and_passes_the_contract_arguments() {
+        let exe = fake_mesher("ok", crate::msh4::tests::ASCII.as_bytes());
+        let surf = Geometry::make_box(DVec3::splat(10.0));
+        let out = TetMesh.cook(&work("ok"), &[Some(Data::geometry(surf.clone()))], &run_params(exe.to_str().unwrap())).unwrap();
+        let rep = out[1].as_report().unwrap();
+        assert_eq!(rep.metrics["placeholder"].value, 0.0);
+        assert!(!rep.notes.iter().any(|(_, n)| n.starts_with("white-box placeholder:")));
+        let mesh = out[0].as_geometry().unwrap();
+        assert_eq!((mesh.points.len(), mesh.prims.len()), (5, 2));
+        assert!((0..2).all(|e| crate::mesh::element_volume(mesh, e) > 0.0));
+        let args = std::fs::read_to_string(exe.with_file_name("args.txt")).unwrap();
+        let rel = 5.0 / surf.bounds().size().length();
+        let t: Vec<&str> = args.split_whitespace().collect();
+        assert_eq!(t[0], "-i");
+        assert!(t[1].contains("solid_surface.stl"), "{args}");
+        assert_eq!(t[2], "-o");
+        assert!(t[3].contains("solid_mesh.msh"), "{args}");
+        assert_eq!(t[4], "-l");
+        assert!((t[5].parse::<f64>().unwrap() - rel).abs() < 1e-12, "{args}");
+        assert_eq!(t[6], "-e");
+        assert_eq!(t[7].parse::<f64>().unwrap(), 1e-3);
+    }
+
+    #[test]
+    fn a_missing_mesher_falls_back_and_keeps_the_placeholder() {
+        let surf = Geometry::make_box(DVec3::splat(10.0));
+        let out = TetMesh.cook(&work("none"), &[Some(Data::geometry(surf))], &run_params("definitely/not/here.exe")).unwrap();
+        let rep = out[1].as_report().unwrap();
+        assert_eq!(rep.metrics["placeholder"].value, 1.0);
+        assert!(!rep.passes());
+        assert!(rep.notes.iter().any(|(s, n)| *s == Severity::Warning && n.starts_with("white-box placeholder:")));
+    }
+
+    #[test]
+    fn bad_mesher_output_and_a_failing_mesher_are_errors_not_fallbacks() {
+        let surf = Geometry::make_box(DVec3::splat(10.0));
+        let bad = fake_mesher("bad", b"$MeshFormat\n4.1 0 8\n$EndMeshFormat\n$Nodes\n1 1");
+        let e = TetMesh.cook(&work("bad"), &[Some(Data::geometry(surf.clone()))], &run_params(bad.to_str().unwrap())).unwrap_err();
+        assert!(e.to_string().contains("cannot read the mesher output"), "{e}");
+        // the test binary refuses the mesher's arguments and exits non-zero
+        let failing = std::env::current_exe().unwrap();
+        let e = TetMesh.cook(&work("fail"), &[Some(Data::geometry(surf))], &run_params(failing.to_str().unwrap())).unwrap_err();
+        assert!(matches!(e, vernon_graph::CookError::External { .. }), "{e}");
+    }
+
+    #[test]
+    fn mesher_output_dispatches_on_the_format_version() {
+        assert_eq!(read_mesher_output(crate::msh4::tests::ASCII.as_bytes()).unwrap().1.len(), 2);
+        let v2 = "$MeshFormat\n2.2 0 8\n$EndMeshFormat\n$Nodes\n4\n1 0 0 0\n2 1 0 0\n3 0 1 0\n4 0 0 1\n$EndNodes\n$Elements\n1\n1 4 2 0 1 1 2 3 4\n$EndElements\n";
+        assert_eq!(read_mesher_output(v2.as_bytes()).unwrap().1.len(), 1);
+        assert!(read_mesher_output(b"$MeshFormat\n2.2 1 8\n$EndMeshFormat\n").unwrap_err().contains("version 2.2"));
+    }
+
+    #[test]
+    #[ignore = "needs fTetWild"]
+    fn real_mesher_fills_a_box() {
+        let surf = Geometry::make_box(DVec3::new(40.0, 20.0, 10.0));
+        let out = TetMesh.cook(&work("real"), &[Some(Data::geometry(surf))], &run_params("")).unwrap();
+        let rep = out[1].as_report().unwrap();
+        assert_eq!(rep.metrics["placeholder"].value, 0.0, "fTetWild must be on the program path: {:?}", rep.notes);
+        assert!(rep.metrics["volume_error_pct"].value < 1.0, "{:?}", rep.metrics);
+        assert!(rep.metrics["min_dihedral_deg"].value > 0.0, "{:?}", rep.metrics);
     }
 
     #[test]

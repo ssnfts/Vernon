@@ -11,6 +11,7 @@ pub mod linalg;
 pub mod loads;
 pub mod material;
 pub mod mesh;
+pub mod msh4;
 pub mod nodes_load;
 pub mod nodes_material;
 pub mod nodes_mesh;
