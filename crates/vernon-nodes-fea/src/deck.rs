@@ -307,10 +307,11 @@ pub fn write_deck(inp: &DeckInput) -> Result<DeckOutput, String> {
     } else {
         let _ = writeln!(s, "*SOLID SECTION,ELSET=EALL,MATERIAL=PRINT,ORIENTATION={}", inp.orient.name);
     }
-    if let Some((_, tref)) = opts.thermal_strain {
-        s.push_str("*INITIAL CONDITIONS,TYPE=TEMPERATURE\nNALL,");
-        let _ = writeln!(s, "{}", fmt_val(tref));
-    }
+    // The solver rejects a step's temperature card without an initial one.
+    // Without an expansion card the value causes no strain.
+    let initial_c = opts.thermal_strain.map_or(opts.temperature_c, |(_, tref)| tref);
+    s.push_str("*INITIAL CONDITIONS,TYPE=TEMPERATURE\nNALL,");
+    let _ = writeln!(s, "{}", fmt_val(initial_c));
 
     // constraints
     let mut spring_elem = mesh.prims.len();
