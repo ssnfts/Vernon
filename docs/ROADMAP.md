@@ -11,10 +11,10 @@ stop a wrong number reaching the next stage.
    firmware commands. Needed: a full per-dialect table (command set, arc moves, pressure-advance syntax, object
    labelling, thumbnail comments) for the Klipper, Marlin 2 and RepRapFirmware dialects, each entry with the
    documentation URL it came from, so a G-code file is rejected before it reaches the printer.
-2. **Tuft detection** (`perf.tuft_analysis`). Tufts are the cheap physical check of the airflow stage, but the node only
-   reads an angle series or shows a synthetic example. Needed: find tufts in a still or video frame (thin line
-   segments against the panel), measure their angle to the free-stream direction, and report attached, fluttering or
-   reversed per tuft.
+2. **Tuft detection from photographs** (`perf.tuft_analysis`). The node classifies a CSV or JSON of tuft positions and
+   measured angles as attached, separated, reversed or unsteady and maps the classes onto a surface. Needed: find the tufts in a
+   still or video frame (thin line segments against the panel) and measure their angle to the free-stream direction,
+   so the CSV no longer has to be made by hand. Until then a photo input only gets the white-box warning.
 
 ## Second: items that make a white-box node usable
 
@@ -26,8 +26,9 @@ stop a wrong number reaching the next stage.
    engagement angle) with a fit test.
 6. `print.polyline_cut`, `print.smart_partition`, `print.cut_region_select`: the cut-line projection, the search over
    split plans and the per-island choice are placeholders.
-7. `flatten.stretch_aware`: rigid and floppy material weighting, hard stretch-only and compress-only constraints and
-   a fold-free line search. The ply mode (`fibre_dir`) already reports the warp angle and weave shear.
+7. `flatten.stretch_aware` runs the as-rigid-as-possible map. Still open: separate rigid and floppy material weighting,
+   hard stretch-only and compress-only constraints (today the opposite deformation is weighted 10000 times) and a
+   fold-free line search. The ply mode (`fibre_dir`) reports the warp angle and weave shear.
 8. `capture.sfm_*` and `capture.mvs_*` need an external COLMAP run for any real result; Vernon writes the commands and
    reads the outputs.
 

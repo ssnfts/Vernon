@@ -214,7 +214,7 @@ nearest surface triangle and area-averaging over the puck radius; residual_i = C
 ### 3.10 Tuft image analysis (white-box first)
 Per frame: detect tuft segments (ridge or threshold plus skeleton), estimate image-plane angle theta_k, map to the surface through a user-picked planar patch homography (or camera pose), compare with the local
 CFD streamline direction. Classes (Vernon-proposed placeholders, no published thresholds): attached if |dtheta| <= 30 degrees and the angle SD over the sequence <= 15 degrees; reversed if |dtheta| > 120 degrees;
-separated/unsteady if SD > 30 degrees. Output a per-tuft table and a coloured map. Cite the research method (continuous capture, orientation measurement, streamline, separation line, saddle point), not any numbers.
+separated/unsteady if SD > 30 degrees. Vernon adds a fourth class, unsteady (code 3, after attached 0, separated 1 and reversed 2, which keep their numbers): |dtheta| <= 30 degrees and 15 < SD <= 30 degrees, between attached and separated. Output a per-tuft table and a coloured map. Cite the research method (continuous capture, orientation measurement, streamline, separation line, saddle point), not any numbers.
 
 ### 3.11 Aero balance and duct heat (closed-form rows of the report table)
 Aero balance: front percent = 100 L_f/(L_f + L_r), with L_f, L_r from per-axle ClA (CFD force split about the axle line) at the same q; report it per speed and warn
@@ -243,7 +243,7 @@ Contracts (Json): `env.v1` {rho, t_c, p_pa, rh (fraction), rh_pct, plus the olde
 | `perf.coastdown_fit` | Coastdown Fit | `log` (CSV: t, v, optional wind, grade, T, p, heading) | `fit` (`coast_fit.v1`), `report` | `mass_kg`, `rot_mass_kg` (0), `method` (integrated/accel), `speed_hi_kmh` (120), `speed_lo_kmh` (20), `min_runs` (8), `wind_max_ms` (2.7), `outlier_sd` (2) | now (core), wb (wind/yaw correction) |
 | `perf.pressure_cp` | Pressure To Cp | `taps` (CSV: id, x,y,z, dp_pa, speed_ms, rho or `env`) | `cp` (`cp_table.v1`) | `gauge_range_pa` (249), `speed_sd_ms` (0.3), `dp_sd_pa` (3), `ref_mode` (static_port/sealed) | now |
 | `perf.cp_compare` | Cp Versus Simulation | `cp`, `surface` Geometry with attrib `Cp` | `table`, `report` (bias, RMS, max, sign agreement) | `tap_radius_mm` (20; 1-100), `tol` (0.05; 0.005-0.5), `sigma_k` (2) | now |
-| `perf.tuft_analysis` | Tuft Analysis | `images` (Image list), `patch` Json (homography) | `table`, `geometry` (coloured markers) | `attached_deg` (30), `reversed_deg` (120), `sd_attached_deg` (15), `sd_separated_deg` (30) | wb |
+| `perf.tuft_analysis` | Tuft Analysis | `images` (Image list), `patch` Json (homography), `tufts` (CSV file or Json series), `surface` (optional Geometry) | `table`, `geometry` (coloured markers), `report`, `surface` (prim attribs `tuft_class` 0 attached / 1 separated / 2 reversed / 3 unsteady, -1 where no tuft is in reach, and `Cd`) | `attached_deg` (30), `reversed_deg` (120), `sd_attached_deg` (15), `sd_separated_deg` (30), `csv_path`, `reach_mm` (75), `region_attrib` (part) | now (CSV / series, % separated and % reversed per region), wb (photos) |
 | `perf.validation_gate` | Validation Gate | `lap`/`sweep` report, `fit`, `cp` report | `report` (`perf_report.v1`, pass/warn/fail) | `claimed_dcda_m2`, `claimed_dcla_m2`, `fail_on_miss` (false) | now |
 
 Gate rules: (1) warn if |claimed dCdA| < the coastdown minimum detectable change; (2) fail if CFD CdA lies outside the coastdown 95 percent interval by more than 0.05 m2;

@@ -26,9 +26,9 @@ catalogue, with what each node emulates, is in [docs/NODES.md](docs/NODES.md)
 | 5 Airflow (CFD) | Vehicle prep, frontal area, virtual tunnel, refinement plan, OpenFOAM case writing, convergence, force coefficients, Cp maps | 19 | 2 |
 | 6 Structure (FEA) | Printed orthotropic materials with temperature derating, mounts, aero/bump loads, CalculiX decks and results, safety factors | 18 | 2 |
 | 7 Solar / Heat | Sun position, weather files, sky matrix, incident radiation, surface temperature balance vs heat-deflection temperature | 14 | 0 |
-| 7b Flatten | Seam cutting, conformal flattening, strain report, pattern map-back | 5 | 1 |
-| 8 Performance | Aero loads, top speed, point-mass lap model and sweeps, coastdown fit, pressure-tap validation | 18 | 1 |
-| **All** | | **190** | **7** |
+| 7b Flatten | Seam cutting, conformal flattening, as-rigid-as-possible stretch-aware flattening, strain report, pattern map-back | 6 | 0 |
+| 8 Performance | Aero loads, top speed, point-mass lap model and sweeps, coastdown fit, pressure-tap validation, tuft classification from measured angles | 19 | 0 |
+| **All** | | **192** | **5** |
 
 Nodes that drive external open-source programs (COLMAP, OpenFOAM,
 CalculiX, fTetWild, OrcaSlicer) write complete inputs without them and only
