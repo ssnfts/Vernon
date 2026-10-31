@@ -1,4 +1,4 @@
-//! Deck writing, the external solver run and the white-box reference solver.
+//! Deck writing, the external solver run and the built-in reference solver.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -11,7 +11,7 @@ use crate::frd::write_frd;
 use crate::material::MaterialCard;
 use crate::refsolve::{dat_text, solve, RefInput};
 use crate::solver::{find_executable, run_with_timeout, tail, RunStatus};
-use crate::types::{fnv_hex, from_data, opt_from_data, placeholder_report, to_data, CaseSet, DeckEntry, DeckManifest, MountSet, OrientationCard, RunEntry, SolveManifest};
+use crate::types::{fnv_hex, from_data, opt_from_data, to_data, CaseSet, DeckEntry, DeckManifest, MountSet, OrientationCard, RunEntry, SolveManifest};
 use crate::util::{fea_info, sanitize, solid_mesh};
 
 fn orientation(inputs: &[Option<Data>], index: usize) -> CookResult<OrientationCard> {
@@ -248,8 +248,9 @@ impl NodeOp for SolveLinear {
             .output(PortSpec::new("fields", DataKind::Geometry))
             .param(ParamSpec::float("tol", "Tolerance", 1.0e-10, 1.0e-14, 1.0e-4).help("Relative residual of the conjugate-gradient solve"))
             .param(ParamSpec::int("max_dof", "Largest model", 60000, 1000, 300000).help("Largest number of unknowns this solver accepts"))
-            .help("Built-in linear static solver for four-node and ten-node tetrahedra with orthotropic printed material, used to run the chain without the external solver and to check it. Writes the same result files as the external solver, plus the mesh with disp_<case> on the points and vm_mpa_<case> on the elements. Four-node tetrahedra are stiff in bending and need a fine mesh. Its report never passes a gate.")
+            .help("Built-in linear static solver for four-node and ten-node tetrahedra with orthotropic printed material, used to run the chain without the external solver and to check it. Writes the same result files as the external solver, plus the mesh with disp_<case> on the points and vm_mpa_<case> on the elements. Four-node tetrahedra are stiff in bending and need a fine mesh, so safety factors from them stay estimates that cannot pass a gate. Thermal expansion is not modelled, and the temperature comes only from a temp_c point attribute (23 degC without one), so safety factors on a model with temp_c stay estimates too; use the external solver for those.")
             .emulates("linear static solution of a tetrahedral model")
+            .implemented()
     }
 
     fn cook(&self, ctx: &CookContext, inputs: &[Option<Data>], params: &Params) -> CookResult<Vec<Data>> {
@@ -261,12 +262,22 @@ impl NodeOp for SolveLinear {
         card.check_stability().map_err(|e| ctx.fail(format!("material constants rejected: {e}")))?;
         let root = ctx.work_dir.join("reference");
         std::fs::create_dir_all(&root)?;
-        let mut r = placeholder_report("Reference linear solution", "the built-in solver is a check on the external solver, not a replacement, so its report cannot pass a gate");
+        let mut r = Report::new("Reference linear solution");
         let element_type = if mesh.prims.first().is_some_and(|p| p.vertices.len() == 10) { "C3D10" } else { "C3D4" };
         let mut fields = (*mesh).clone();
         let mut sm = SolveManifest { dir: root.to_string_lossy().into_owned(), solver: "reference_linear".into(), element_type: element_type.into(), mount_sets: (1..=mounts.sites.len()).map(|k| format!("MOUNT{k}")).collect(), runs: vec![] };
         for case in &cases.cases {
             let name = sanitize(&case.name).to_lowercase();
+            // Same refusal as the deck writer: a wrong-unit model must not reach a gate.
+            let (errors, warnings) = crate::deck::unit_gate(&mesh, &card, &case.loads);
+            if !errors.is_empty() {
+                return Err(ctx.fail(format!("case '{}': {}", case.name, errors.join("; "))));
+            }
+            for w in warnings {
+                if !r.notes.iter().any(|(_, t)| *t == w) {
+                    r.note(Severity::Warning, w);
+                }
+            }
             let out = solve(&RefInput { mesh: &mesh, card: &card, orient: &orient, mounts: &mounts, load: &case.loads, max_dof: params.int("max_dof")? as usize, tol: params.float("tol")? }).map_err(|e| ctx.fail(format!("case '{}': {e}", case.name)))?;
             let dir = root.join(&name);
             std::fs::create_dir_all(&dir)?;
@@ -285,6 +296,9 @@ impl NodeOp for SolveLinear {
             sm.runs.push(RunEntry { case: name.clone(), job: job.clone(), status: "solved".into(), frd: format!("{name}/{job}.frd"), dat: format!("{name}/{job}.dat"), log: String::new(), hash: fnv_hex(dat.as_bytes()), speed_factor: case.speed_factor });
         }
         r.note(Severity::Info, format!("{} load cases solved with {element_type} elements", sm.runs.len()));
+        if mesh.point_attribs.contains("temp_c") {
+            r.note(Severity::Warning, "temperatures soften the material here but thermal expansion is not modelled, so restrained parts miss their thermal stress");
+        }
         if element_type == "C3D4" {
             r.note(Severity::Warning, "four-node tetrahedra are stiff in bending: deflections and stresses come out low unless the mesh is fine");
         }
@@ -417,7 +431,7 @@ mod tests {
     }
 
     #[test]
-    fn reference_solver_writes_readable_files_and_never_passes_a_gate() {
+    fn reference_solver_writes_readable_files() {
         let c = chain("lin1");
         let x = ctx("lin1w");
         let out = SolveLinear.cook(&x, &deck_inputs(&c), &defaults(&SolveLinear)).unwrap();
@@ -435,7 +449,8 @@ mod tests {
             assert!(Path::new(&sm.dir).join(&r.frd).is_file() && Path::new(&sm.dir).join(&r.dat).is_file());
         }
         let rep = out[1].as_report().unwrap();
-        assert!(!rep.passes());
+        assert!(rep.passes(), "{:?}", rep.metrics);
+        assert!(rep.notes.iter().all(|(_, t)| !t.starts_with("white-box placeholder:")));
         assert!(rep.metrics["aero_max_disp_mm"].value > 0.0);
         // the overspeed case deflects 1.25^2 times more (linear model)
         let ratio = rep.metrics["aero_overspeed_max_disp_mm"].value / rep.metrics["aero_max_disp_mm"].value;

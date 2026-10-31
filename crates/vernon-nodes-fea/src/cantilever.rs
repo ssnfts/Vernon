@@ -34,6 +34,11 @@ fn card() -> MaterialCard {
     MaterialCard::trans_iso("iso", E, E, NU, NU, E / (2.0 * (1.0 + NU)))
 }
 
+/// Printed-style material: weak and soft across the layers.
+fn printed_card() -> MaterialCard {
+    MaterialCard::trans_iso("printed", E, 0.6 * E, NU, 0.3, 0.25 * E)
+}
+
 fn nodes_at(mesh: &Geometry, x: f64) -> Vec<u32> {
     (0..mesh.points.len() as u32).filter(|&i| (mesh.points[i as usize].x - x).abs() < 1e-9).collect()
 }
@@ -146,13 +151,13 @@ fn gravity_is_distributed_consistently_on_quadratic_elements() {
 }
 
 /// The same deck through the external solver. Set `VERNON_CCX` or put it on the program path.
-fn external(mesh: &Geometry, tag: &str) -> (Vec<DVec3>, Vec<[f64; 6]>) {
+fn external(mesh: &Geometry, c: &MaterialCard, id: &OrientationCard, l: &LoadSet, tag: &str) -> (Vec<DVec3>, Vec<[f64; 6]>) {
     let exe = find_executable(&std::env::var("VERNON_CCX").unwrap_or_default(), &["ccx", "ccx_2.21", "ccx_2.20", "ccx_static", "ccx_MT"]).expect("the external solver is not installed");
     let dir = std::env::temp_dir().join(format!("vernon_fea_cantilever_{tag}_{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
-    let (c, id, m, l) = (card(), OrientationCard::identity(), mounts(mesh), tip_load(mesh));
+    let m = mounts(mesh);
     let opts = DeckOptions { job: "cantilever".into(), allow_linear_tet: true, ..Default::default() };
-    let deck = write_deck(&DeckInput { mesh, card: &c, orient: &id, mounts: &m, load: &l, opts: &opts }).unwrap();
+    let deck = write_deck(&DeckInput { mesh, card: c, orient: id, mounts: &m, load: l, opts: &opts }).unwrap();
     std::fs::write(dir.join("cantilever.inp"), &deck.text).unwrap();
     let st = run_with_timeout(&exe, &["-i".to_string(), "cantilever".to_string()], &dir, &dir.join("cantilever.log"), Duration::from_secs(600), &[]).unwrap();
     assert!(matches!(st, RunStatus::Exited(0)), "the solver failed, see {}", dir.display());
@@ -162,9 +167,22 @@ fn external(mesh: &Geometry, tag: &str) -> (Vec<DVec3>, Vec<[f64; 6]>) {
     (dense_vec3(frd.dataset("DISP").unwrap(), n, &needed).unwrap(), dense_tensor6(frd.dataset("STRESS").unwrap(), n, &needed).unwrap())
 }
 
-fn assert_agrees(mesh: &Geometry, tag: &str) {
-    let o = run(mesh);
-    let (u, s) = external(mesh, tag);
+fn assert_agrees(mesh: &Geometry, c: &MaterialCard, tag: &str) {
+    assert_agrees_with(mesh, c, &OrientationCard::identity(), &tip_load(mesh), tag);
+}
+
+fn assert_agrees_with(mesh: &Geometry, c: &MaterialCard, id: &OrientationCard, l: &LoadSet, tag: &str) {
+    let m = mounts(mesh);
+    let o = solve(&RefInput { mesh, card: c, orient: id, mounts: &m, load: l, max_dof: 60000, tol: 1e-10 }).unwrap();
+    let (u, s) = external(mesh, c, id, l, tag);
+    // Every stress component, since von Mises hides a swapped shear.
+    let span = nodes_at(mesh, 0.0);
+    let scale = span.iter().map(|&n| von_mises(&s[n as usize])).fold(0.0, f64::max);
+    for &n in &span {
+        for (k, (a, b)) in o.node_stress[n as usize].iter().zip(&s[n as usize]).enumerate() {
+            assert!((a - b).abs() < 0.02 * scale, "{tag} node {n} component {k}: {a} {b}");
+        }
+    }
     let (ours, theirs) = (tip_deflection(mesh, &o.disp), tip_deflection(mesh, &u));
     println!("{tag}: tip {ours:.4} mm here, {theirs:.4} mm external");
     assert!((ours - theirs).abs() < 0.02 * theirs.abs(), "tip {ours} {theirs}");
@@ -177,11 +195,35 @@ fn assert_agrees(mesh: &Geometry, tag: &str) {
 #[test]
 #[ignore = "needs CalculiX"]
 fn c3d10_agrees_with_the_external_solver_within_2_percent() {
-    assert_agrees(&mesh_tet10(2), "c3d10");
+    assert_agrees(&mesh_tet10(2), &card(), "c3d10");
 }
 
 #[test]
 #[ignore = "needs CalculiX"]
 fn c3d4_agrees_with_the_external_solver_within_2_percent() {
-    assert_agrees(&mesh_tet4(8), "c3d4");
+    assert_agrees(&mesh_tet4(8), &card(), "c3d4");
+}
+
+#[test]
+#[ignore = "needs CalculiX"]
+fn printed_material_agrees_with_the_external_solver_within_2_percent() {
+    assert_agrees(&mesh_tet10(2), &printed_card(), "c3d10_printed");
+}
+
+#[test]
+#[ignore = "needs CalculiX"]
+fn rotated_printed_material_agrees_with_the_external_solver_within_2_percent() {
+    let mesh = mesh_tet10(2);
+    let mut id = OrientationCard::identity();
+    // The weak axis along the width instead of the height.
+    id.axes = [[1.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, -1.0, 0.0]];
+    assert_agrees_with(&mesh, &printed_card(), &id, &tip_load(&mesh), "c3d10_rotated");
+}
+
+#[test]
+#[ignore = "needs CalculiX"]
+fn gravity_agrees_with_the_external_solver_within_2_percent() {
+    let mesh = mesh_tet10(2);
+    let load = LoadSet { gravity: Some(crate::types::Gravity { accel_mm_s2: 9810.0, dir: [0.0, 0.0, -1.0] }), ..Default::default() };
+    assert_agrees_with(&mesh, &printed_card(), &OrientationCard::identity(), &load, "c3d10_gravity");
 }
