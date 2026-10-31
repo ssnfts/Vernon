@@ -5,6 +5,11 @@
 //! predefined entities and numeric character references are decoded, so no
 //! entity expansion attack is possible. Element names are reported without
 //! their namespace prefix; attributes keep theirs.
+//!
+//! The text that sat in front of the most recent event is available from
+//! [`Reader::text`]; after an end tag that is the element's character data.
+//! Markup inside that run (a comment, say) stays in it as raw text, so a
+//! numeric parse of such a value fails instead of silently reading half of it.
 
 use std::borrow::Cow;
 
@@ -51,6 +56,8 @@ pub(crate) struct Reader<'a> {
     pos: usize,
     stack: Vec<&'a str>,
     pending_end: Option<&'a str>,
+    /// Raw text between the previous event and the one just returned.
+    last_text: &'a str,
 }
 
 impl<'a> Reader<'a> {
@@ -61,7 +68,14 @@ impl<'a> Reader<'a> {
             pos: 0,
             stack: Vec::new(),
             pending_end: None,
+            last_text: "",
         }
+    }
+
+    /// Character data in front of the most recent event, trimmed and with the
+    /// predefined entities decoded. Empty for an element written as `<a/>`.
+    pub(crate) fn text(&self) -> Result<Cow<'a, str>, String> {
+        unescape(self.last_text.trim())
     }
 
     fn err<T>(&self, at: usize, msg: &str) -> Result<T, String> {
@@ -76,8 +90,10 @@ impl<'a> Reader<'a> {
     /// Next event, `Ok(None)` at a clean end of document.
     pub(crate) fn next_event(&mut self) -> Result<Option<Event<'a>>, String> {
         if let Some(n) = self.pending_end.take() {
+            self.last_text = "";
             return Ok(Some(Event::End(n)));
         }
+        let run_start = self.pos;
         loop {
             let Some(rel) = self.src[self.pos..].find('<') else {
                 self.pos = self.src.len();
@@ -101,6 +117,7 @@ impl<'a> Reader<'a> {
                     return self.err(at, "unterminated end tag");
                 };
                 let name = rest[2..close].trim();
+                self.last_text = &self.src[run_start..at];
                 self.pos = at + close + 1;
                 return match self.stack.pop() {
                     Some(open) if open == name => Ok(Some(Event::End(local(open)))),
@@ -108,6 +125,7 @@ impl<'a> Reader<'a> {
                     None => self.err(at, &format!("stray </{name}>")),
                 };
             } else {
+                self.last_text = &self.src[run_start..at];
                 return self.start_tag(at).map(Some);
             }
         }

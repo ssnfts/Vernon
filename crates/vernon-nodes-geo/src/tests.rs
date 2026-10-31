@@ -365,6 +365,140 @@ fn file_write_then_read_round_trip() {
     assert!(close(geo_of(&r[0]).bounds().size().x, 10_000.0, 1e-6));
 }
 
+/// A LAS 1.2 file with point format 0, scale 0.001 and no offset.
+fn tiny_las(points: &[[i32; 3]]) -> Vec<u8> {
+    let mut b = vec![0u8; 227];
+    b[0..4].copy_from_slice(b"LASF");
+    b[24] = 1;
+    b[25] = 2;
+    b[94..96].copy_from_slice(&227u16.to_le_bytes());
+    b[96..100].copy_from_slice(&227u32.to_le_bytes());
+    b[105..107].copy_from_slice(&20u16.to_le_bytes());
+    b[107..111].copy_from_slice(&(points.len() as u32).to_le_bytes());
+    for a in 0..3 {
+        b[131 + 8 * a..139 + 8 * a].copy_from_slice(&0.001f64.to_le_bytes());
+    }
+    for p in points {
+        let mut r = vec![0u8; 20];
+        for (a, v) in p.iter().enumerate() {
+            r[4 * a..4 * a + 4].copy_from_slice(&v.to_le_bytes());
+        }
+        b.extend(r);
+    }
+    b
+}
+
+#[test]
+fn file_read_loads_las_in_millimetres_and_takes_a_unit_parameter() {
+    let dir = std::env::temp_dir().join("vernon-nodes-geo-tests");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("tiny.las");
+    // 1 m, 2 m and 3 m after the 0.001 scale.
+    std::fs::write(&path, tiny_las(&[[0, 0, 0], [1000, 2000, 3000]])).unwrap();
+    let p = s(path.to_str().unwrap());
+    // Default: no unit stated in the file, so metres -> 1000 mm per unit.
+    let out = cook("geo.file_read", &[], &[("path", p.clone())]).unwrap();
+    let g = geo_of(&out[0]);
+    assert_eq!(g.points.len(), 2);
+    assert!(close(g.points[1].x, 1000.0, 1e-9) && close(g.points[1].z, 3000.0, 1e-9));
+    // The plain unit parameter does not apply to LAS.
+    let out = cook("geo.file_read", &[], &[("path", p.clone()), ("unit", s("in"))]).unwrap();
+    assert!(close(geo_of(&out[0]).points[1].x, 1000.0, 1e-9));
+    // The LAS unit parameter does.
+    let out = cook("geo.file_read", &[], &[("path", p.clone()), ("las_unit", s("mm"))]).unwrap();
+    assert!(close(geo_of(&out[0]).points[1].x, 1.0, 1e-9));
+    let out = cook("geo.file_read", &[], &[("path", p), ("las_unit", s("in"))]).unwrap();
+    assert!(close(geo_of(&out[0]).points[1].y, 2.0 * 25.4, 1e-9));
+    // A damaged file is a clear node failure.
+    let bad = dir.join("bad.las");
+    std::fs::write(&bad, &tiny_las(&[[0, 0, 0], [1, 1, 1]])[..230]).unwrap();
+    let e = cook("geo.file_read", &[], &[("path", s(bad.to_str().unwrap()))]).unwrap_err();
+    assert!(e.to_string().contains("truncated"), "{e}");
+    // Writing LAS or E57 is refused before anything is created.
+    let g = make_box(DVec3::ONE, DVec3::ZERO, 1);
+    let target = dir.join("never.las");
+    let e = cook("geo.file_write", &[some(&g)], &[("path", s(target.to_str().unwrap()))]).unwrap_err();
+    assert!(e.to_string().contains("not written"), "{e}");
+    assert!(!target.exists());
+}
+
+/// `tiny_las` with a GeoTIFF key directory holding the given (key, value) pairs.
+fn tiny_las_with_geokeys(points: &[[i32; 3]], keys: &[(u16, u16)]) -> Vec<u8> {
+    let mut words = vec![1u16, 1, 0, keys.len() as u16];
+    for (k, v) in keys {
+        words.extend([*k, 0, 1, *v]);
+    }
+    let body: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
+    let mut vlr = vec![0u8; 54];
+    vlr[2..17].copy_from_slice(b"LASF_Projection");
+    vlr[18..20].copy_from_slice(&34735u16.to_le_bytes());
+    vlr[20..22].copy_from_slice(&(body.len() as u16).to_le_bytes());
+    vlr.extend(body);
+    let mut b = tiny_las(points);
+    b[96..100].copy_from_slice(&((227 + vlr.len()) as u32).to_le_bytes());
+    b[100..104].copy_from_slice(&1u32.to_le_bytes());
+    b.splice(227..227, vlr);
+    b
+}
+
+#[test]
+fn file_read_warns_when_the_las_unit_is_assumed_and_records_how_it_was_decided() {
+    let dir = std::env::temp_dir().join("vernon-nodes-geo-tests");
+    std::fs::create_dir_all(&dir).unwrap();
+    let pts = [[0, 0, 0], [1000, 2000, 3000]]; // 1, 2 and 3 file units after the scale
+    let read = |name: &str, bytes: Vec<u8>, extra: &[(&str, ParamValue)]| {
+        let path = dir.join(name);
+        std::fs::write(&path, bytes).unwrap();
+        let mut set = vec![("path", s(path.to_str().unwrap()))];
+        set.extend_from_slice(extra);
+        let out = cook("geo.file_read", &[], &set).unwrap();
+        let source = geo_of(&out[0]).detail_attribs.strs("las_unit_source").unwrap().join("|");
+        let report = out[1].as_report().unwrap();
+        let warnings: Vec<String> = report
+            .notes
+            .iter()
+            .filter(|(sev, _)| *sev == vernon_core::Severity::Warning)
+            .map(|(_, t)| t.clone())
+            .collect();
+        (geo_of(&out[0]), source, warnings)
+    };
+
+    // No coordinate-system record: metres are a guess, and the warning says
+    // so and names the parameter that fixes it.
+    let (g, source, warnings) = read("assumed_none.las", tiny_las(&pts), &[]);
+    assert_eq!(source, "assumed_metres");
+    assert!(close(g.points[1].x, 1000.0, 1e-9));
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(warnings[0].contains("metres") && warnings[0].contains("las_unit"), "{}", warnings[0]);
+
+    // A projected CRS given only by an EPSG code (ProjectedCSTypeGeoKey) is
+    // the same guess: it is read as metres, never refused.
+    let (g, source, warnings) = read("assumed_epsg.las", tiny_las_with_geokeys(&pts, &[(1024, 1), (3072, 2263)]), &[]);
+    assert_eq!(source, "assumed_metres");
+    assert!(close(g.points[1].x, 1000.0, 1e-9));
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(warnings[0].contains("metres") && warnings[0].contains("las_unit"), "{}", warnings[0]);
+
+    // A unit key in the file is a decision, not a guess: no warning.
+    let (g, source, warnings) = read("header_ft.las", tiny_las_with_geokeys(&pts, &[(1024, 1), (3076, 9002)]), &[]);
+    assert_eq!(source, "header");
+    assert!(close(g.points[1].x, 304.8, 1e-9) && close(g.points[1].z, 3.0 * 304.8, 1e-9));
+    assert!(warnings.is_empty(), "{warnings:?}");
+
+    // Metre horizontal and foot vertical units give a different factor for Z.
+    let keys = [(1024, 1), (3076, 9001), (4099, 9002)];
+    let (g, source, warnings) = read("header_m_ft.las", tiny_las_with_geokeys(&pts, &keys), &[]);
+    assert_eq!(source, "header");
+    assert!(close(g.points[1].y, 2000.0, 1e-9) && close(g.points[1].z, 3.0 * 304.8, 1e-9));
+    assert!(warnings.is_empty(), "{warnings:?}");
+
+    // A unit named through the parameter wins and is recorded as such.
+    let (g, source, warnings) = read("param.las", tiny_las(&pts), &[("las_unit", s("cm"))]);
+    assert_eq!(source, "parameter");
+    assert!(close(g.points[1].x, 10.0, 1e-9));
+    assert!(warnings.is_empty(), "{warnings:?}");
+}
+
 #[test]
 fn file_nodes_reject_missing_or_unknown_paths() {
     assert!(cook("geo.file_read", &[], &[]).is_err());
