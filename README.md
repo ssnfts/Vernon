@@ -24,11 +24,11 @@ catalogue, with what each node emulates, is in [docs/NODES.md](docs/NODES.md)
 | 3 Mesh → Surface | Region refinement, field-aligned quad remeshing, connected B-spline layouts, measured subdivision continuity, analytic primitive recognition, sections, loft, thicken, surface deviation, STEP export | 23 | 0 |
 | 4 Split / Print | Projected body-line cuts, bounded partition search, dovetail/dowel/plug keys, strain-screened snap hooks, bed fit, 3MF packages, JSON/INI presets and G-code checks | 25 | 1 |
 | 5 Airflow (CFD) | Vehicle prep, frontal area, virtual tunnel, refinement plan, OpenFOAM case writing, convergence, force coefficients, Cp maps | 19 | 2 |
-| 6 Structure (FEA) | Printed orthotropic materials with temperature derating, mounts, aero/bump loads, CalculiX decks and results, safety factors | 18 | 2 |
+| 6 Structure (FEA) | Printed orthotropic materials with temperature derating, mounts, aero/bump loads, CalculiX decks and results, safety factors | 19 | 1 |
 | 7 Solar / Heat | Sun position, weather files, sky matrix, incident radiation, surface temperature balance vs heat-deflection temperature | 14 | 0 |
 | 7b Flatten | Seam cutting, conformal flattening, as-rigid-as-possible stretch-aware flattening, strain report, pattern map-back | 6 | 0 |
 | 8 Performance | Aero loads, top speed, point-mass lap model and sweeps, coastdown fit, pressure-tap validation, tuft classification from measured angles | 19 | 0 |
-| **All** | | **192** | **5** |
+| **All** | | **193** | **4** |
 
 Nodes that drive external open-source programs (COLMAP, OpenFOAM,
 CalculiX, fTetWild, OrcaSlicer) write complete inputs without them and only

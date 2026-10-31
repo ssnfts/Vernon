@@ -163,7 +163,7 @@ Labels contain no vendor names. Status: **now** = fully specified above and smal
 | fea.load_cases | Load Case Set | loads, mounts | named cases and envelope list | cases (aero, aero_1.25v, bump, aero+bump), speed_factors | step/load-case managers | now |
 | fea.deck_write | Structural Deck Writer | mesh, materials, mounts, cases | deck text, id maps | unit_check, solver_options, output_keys | ccx input deck | now |
 | fea.solve_external | Run Structural Solver | deck | frd/dat paths, log, status | exe_path, solver, threads, timeout_s | ccx run | now |
-| fea.solve_linear | Reference Linear Solver | mesh (small), materials, loads | displacement, stress at points | tol (1e-10), max_dof (60000) | linear tet10 static | WB |
+| fea.solve_linear | Reference Linear Solver | mesh (small), materials, loads | displacement, stress at points | tol (1e-10), max_dof (60000) | linear tet10 and tet4 static; checked against ccx 2.21 | now |
 | fea.result_read | Structural Result Reader | frd, dat, maps | fields (u, s, e, rf), totals | stress_frame (global/material), use_ip_stress | frd reader | now |
 | fea.safety_factor | Safety Factor Map | stress fields, material, r(T) | per-node SF per criterion, min per mount, verdict | criterion, sf_target (3), avg_radius_mm, yield_or_ultimate | static-study safety factor, Tsai-Wu | now (vm, principal, interlayer), WB (tsai_wu) |
 | fea.mount_report | Mount Reaction Report | rf totals, loads | table: reaction per mount, equilibrium error, SF | tol (1e-3) | reaction output | now |

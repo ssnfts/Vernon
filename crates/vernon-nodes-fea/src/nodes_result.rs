@@ -163,8 +163,8 @@ impl NodeOp for ResultRead {
         if ip_missing {
             r.note(Severity::Warning, "integration-point stresses are not available for every case: the mount stress is averaged from nodal values");
         }
-        if man.solver == "reference_linear" {
-            r.note(Severity::Warning, "white-box placeholder: the results come from the reference solver with four-node tetrahedra");
+        if man.solver == "reference_linear" && man.element_type == "C3D4" {
+            r.note(Severity::Warning, "these results use four-node tetrahedra, which are stiff in bending: deflections and stresses come out low unless the mesh is fine");
         }
         r.note(Severity::Info, "peak stresses at constrained nodes are singular: judge a mount by the averaged value");
         Ok(vec![Data::geometry(out), to_data(&set), Data::report(r)])
@@ -401,9 +401,19 @@ impl NodeOp for SafetyFactor {
         let wp = mesh.points[worst_node];
         r.note(Severity::Info, format!("governing case: {}; lowest raw safety factor at ({:.1}, {:.1}, {:.1}) mm", governing.0, wp.x, wp.y, wp.z));
         r.note(Severity::Info, format!("criterion {}; target {target}; the von Mises value overstates the safety of printed parts because it ignores the weak stacking direction", crit.name()));
-        if rs.source == "reference_linear" {
+        // Stiff elements read low stresses and the built-in solver has no
+        // thermal strain: both flatter a safety factor.
+        let stiff = rs.source == "reference_linear" && mesh.prims.first().is_some_and(|p| p.vertices.len() == 4);
+        let no_thermal = rs.source == "reference_linear" && mesh.point_attribs.contains("temp_c");
+        let estimate_only = stiff || no_thermal;
+        if estimate_only {
             r.metric("estimate_only", Metric::new(1.0, "flag").with_limit(0.0, true));
-            r.note(Severity::Warning, "white-box placeholder: the stresses come from the reference solver with four-node tetrahedra, so this safety factor cannot pass a gate");
+        }
+        if stiff {
+            r.note(Severity::Warning, "the stresses come from four-node tetrahedra, which read low, so this safety factor cannot pass a gate");
+        }
+        if no_thermal {
+            r.note(Severity::Warning, "the built-in solver does not model thermal expansion, so this safety factor on a model with temperatures cannot pass a gate");
         }
         if card.retention.as_ref().is_some_and(|t| t.uncalibrated) {
             r.note(Severity::Warning, "the temperature retention curve is uncalibrated");
@@ -416,7 +426,7 @@ impl NodeOp for SafetyFactor {
         }
         let table = json!({
             "criterion": crit.name(), "sf_target": target, "sf_min": capf(gate_value), "governing_case": governing.0,
-            "by_criterion": by_crit, "mounts": mount_rows, "cases": case_rows, "source": rs.source,
+            "by_criterion": by_crit, "mounts": mount_rows, "cases": case_rows, "source": rs.source, "estimate_only": estimate_only,
         });
         Ok(vec![Data::geometry(out), Data::report(r), Data::json(table)])
     }
@@ -497,6 +507,10 @@ impl NodeOp for MountReport {
         }
         let mut sf_rows = Vec::new();
         if let Some(t) = &table {
+            if t.get("estimate_only").and_then(|x| x.as_bool()).unwrap_or(false) {
+                r.metric("estimate_only", Metric::new(1.0, "flag").with_limit(0.0, true));
+                r.note(Severity::Warning, "these mount safety factors are estimates and cannot pass a gate");
+            }
             if let Some(ms) = t.get("mounts").and_then(|m| m.as_array()) {
                 for m in ms {
                     let name = m.get("name").and_then(|x| x.as_str()).unwrap_or("mount");
@@ -506,9 +520,6 @@ impl NodeOp for MountReport {
                     }
                 }
             }
-        }
-        if rs.source == "reference_linear" {
-            r.note(Severity::Warning, "white-box placeholder: the reactions come from the reference solver");
         }
         Ok(vec![Data::report(r), Data::json(json!({"cases": rows, "mount_sf": sf_rows, "tolerance": tol}))])
     }
@@ -778,8 +789,8 @@ mod tests {
         }
         assert!(rep.metrics["sf_min"].value <= rep.metrics["sf_mount_min"].value + 1e-9);
         assert!(rep.metrics["sf_min"].value <= rep.metrics["sf_field_min"].value + 1e-9);
-        assert!(!rep.passes(), "the reference solver must not pass a gate");
-        assert!(rep.metrics.contains_key("estimate_only"));
+        assert!(!rep.metrics.contains_key("estimate_only"), "ten-node results are checked against the external solver");
+        assert!(rep.notes.iter().all(|(_, t)| !t.starts_with("white-box placeholder:")));
         let t = out[2].as_json().unwrap();
         assert_eq!(t["mounts"].as_array().unwrap().len(), 1);
         assert_eq!(t["cases"].as_array().unwrap().len(), 4);

@@ -108,10 +108,8 @@ fn registration_is_complete_and_well_formed() {
     for (id, tool) in [("fea.deck_write", "CalculiX"), ("fea.solve_external", "CalculiX"), ("fea.result_read", "CalculiX"), ("fea.tet_mesh", "fTetWild")] {
         assert_eq!(reg.info(id).unwrap().external_tool.as_deref(), Some(tool), "{id}");
     }
-    for id in ["fea.tet_mesh", "fea.solve_linear"] {
-        assert!(reg.info(id).unwrap().whitebox, "{id} is a white-box stand-in");
-    }
-    for id in ["fea.material_fdm", "fea.material_table", "fea.load_aero", "fea.deck_write", "fea.result_read", "fea.safety_factor", "fea.mount_report", "fea.hand_check"] {
+    assert!(reg.info("fea.tet_mesh").unwrap().whitebox, "the real mesher's output has not been checked");
+    for id in ["fea.solve_linear", "fea.material_fdm", "fea.material_table", "fea.load_aero", "fea.deck_write", "fea.result_read", "fea.safety_factor", "fea.mount_report", "fea.hand_check"] {
         assert!(!reg.info(id).unwrap().whitebox, "{id} is implemented for real");
     }
 }
@@ -202,7 +200,7 @@ fn nodes_with_missing_inputs_fail_cleanly() {
 }
 
 #[test]
-fn full_chain_without_the_external_solver_cannot_pass_a_gate() {
+fn full_chain_on_the_reference_solver_gates_by_element_order() {
     let reg = registry();
     let m = model(&reg);
     let s = |d: &Data| Some(d.clone());
@@ -213,13 +211,25 @@ fn full_chain_without_the_external_solver_cannot_pass_a_gate() {
     let op = reg.get("fea.result_read").unwrap();
     let p = Params::from_specs(&reg.info("fea.result_read").unwrap().params);
     assert!(op.cook(&ctx("chain"), &[s(&ext[0]), s(&m.mesh)], &p).is_err());
-    // the reference solver gives numbers, but flagged as estimates
+    // ten-node reference results count; four-node ones stay flagged as estimates
     let lin = cook(&reg, "fea.solve_linear", vec![s(&m.mesh), s(&m.card), s(&m.mounts), s(&m.cases)], &[]);
     let fields = cook(&reg, "fea.result_read", vec![s(&lin[0]), s(&m.mesh)], &[]);
     let sf = cook(&reg, "fea.safety_factor", vec![s(&fields[0]), s(&fields[1]), s(&m.card), None, s(&m.mounts)], &[]);
     let rep = sf[1].as_report().unwrap();
+    assert!(rep.metrics["sf_min"].value > 0.0 && !rep.metrics.contains_key("estimate_only"));
+    let linear = Data::geometry(box_tets(DVec3::new(60.0, 40.0, 6.0), [36, 24, 4]));
+    let mounts = cook(&reg, "fea.mount_sites", vec![s(&linear)], &[("site_a", ParamValue::Vec3(DVec3::new(-25.0, 0.0, 3.0))), ("model", ParamValue::Str("fixed_patch".into()))]);
+    let aero = cook(&reg, "fea.load_aero", vec![s(&linear)], &[]);
+    let cases = cook(&reg, "fea.load_cases", vec![s(&aero[0]), None, s(&mounts[0])], &[]);
+    let lin = cook(&reg, "fea.solve_linear", vec![s(&linear), s(&m.card), s(&mounts[0]), s(&cases[0])], &[]);
+    let fields = cook(&reg, "fea.result_read", vec![s(&lin[0]), s(&linear)], &[]);
+    let sf = cook(&reg, "fea.safety_factor", vec![s(&fields[0]), s(&fields[1]), s(&m.card), None, s(&mounts[0])], &[]);
+    let rep = sf[1].as_report().unwrap();
     assert!(!rep.passes());
-    assert!(rep.metrics["sf_min"].value > 0.0 && rep.metrics["estimate_only"].value == 1.0);
+    assert_eq!(rep.metrics["estimate_only"].value, 1.0);
+    let cases_in = s(&cases[0]);
+    let mount = cook(&reg, "fea.mount_report", vec![s(&fields[1]), cases_in, s(&mounts[0]), s(&sf[2])], &[]);
+    assert_eq!(mount[0].as_report().unwrap().metrics["estimate_only"].value, 1.0, "the mount report carries the flag");
 }
 
 #[test]
