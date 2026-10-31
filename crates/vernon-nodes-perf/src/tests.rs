@@ -143,7 +143,9 @@ fn registration_ids_prefixes_help_and_spec() {
         assert!(ids.contains(id), "missing {id}");
     }
     let wb: Vec<&str> = r.types().filter(|i| i.whitebox).map(|i| i.id.as_str()).collect();
-    assert_eq!(wb, vec!["perf.tuft_analysis"]);
+    // WP11 made the tuft analysis real for CSV input, so no node here is white-box any more
+    // (its photo route still emits the placeholder warning, see golden_tuft_classes).
+    assert!(wb.is_empty(), "white-box nodes left: {wb:?}");
 }
 
 // ------------------------------------------------------------------ smoke
@@ -1190,11 +1192,19 @@ fn closest_point_on_triangle_cases() {
 fn golden_tuft_classes() {
     let th = TuftThresholds { attached_deg: 30.0, reversed_deg: 120.0, sd_attached_deg: 15.0, sd_separated_deg: 30.0 };
     let series = |centre: f64| -> Vec<f64> { (0..20).map(|i| centre + 5.0 * if i % 2 == 0 { 1.0 } else { -1.0 }).collect() };
+    // spec test 18 (docs/specs/performance-validation.md): synthetic tufts at 0, 20, 90 and 180 degrees to
+    // the flow with SD 5 degrees are attached, attached, separated, reversed with the default thresholds.
     let want = [(0.0, TuftClass::Attached), (20.0, TuftClass::Attached), (90.0, TuftClass::Separated), (180.0, TuftClass::Reversed)];
     for (centre, class) in want {
         let (got, off, sd) = cp::classify_tuft(&series(centre), 0.0, &th);
         assert_eq!(got, class, "tuft at {centre}: offset {off}, sd {sd}");
     }
+    // the class codes of the table and the point attributes: unsteady was added after them, so the
+    // first three keep their numbers
+    assert_eq!(
+        [TuftClass::Attached, TuftClass::Separated, TuftClass::Reversed, TuftClass::Unsteady].map(|c| c as u8),
+        [0, 1, 2, 3]
+    );
     // a fluttering tuft is separated even when centred on the flow
     let wild: Vec<f64> = (0..20).map(|i| if i % 2 == 0 { 70.0 } else { -70.0 }).collect();
     assert_eq!(cp::classify_tuft(&wild, 0.0, &th).0, TuftClass::Separated);
@@ -1216,6 +1226,307 @@ fn golden_tuft_classes() {
     // without series the node says it is a placeholder
     let ph = cook("perf.tuft_analysis", vec![None, None, None], &[]).unwrap();
     assert!(ph[2].as_report().unwrap().notes.iter().any(|(_, t)| t.starts_with("white-box placeholder")));
+}
+
+/// `n` alternating samples `centre +- amp`; the circular SD of that series is about `amp`.
+fn wobble(centre: f64, amp: f64, n: usize) -> Vec<f64> {
+    (0..n).map(|i| centre + if i % 2 == 0 { amp } else { -amp }).collect()
+}
+
+#[test]
+fn tuft_classes_attached_unsteady_separated_by_offset_and_flutter() {
+    let th = TuftThresholds { attached_deg: 30.0, reversed_deg: 120.0, sd_attached_deg: 15.0, sd_separated_deg: 30.0 };
+    let class = |centre: f64, amp: f64| {
+        let (c, off, sd) = cp::classify_tuft(&wobble(centre, amp, 20), 0.0, &th);
+        eprintln!("tuft at {centre} +- {amp}: offset {off:.2} deg, sd {sd:.2} deg -> {}", c.name());
+        c
+    };
+    // aligned and steady
+    assert_eq!(class(0.0, 5.0), TuftClass::Attached);
+    // aligned but fluttering more than an attached tuft: unsteady
+    assert_eq!(class(0.0, 20.0), TuftClass::Unsteady);
+    assert_eq!(class(25.0, 20.0), TuftClass::Unsteady);
+    // fluttering wildly: separated, even when centred on the flow
+    assert_eq!(class(0.0, 40.0), TuftClass::Separated);
+    // off the flow: separated, and reversed beyond the reversed limit (its own class, not a flag)
+    assert_eq!(class(45.0, 5.0), TuftClass::Separated);
+    assert_eq!(class(-45.0, 5.0), TuftClass::Separated);
+    assert_eq!(class(150.0, 5.0), TuftClass::Reversed);
+    assert_eq!(class(-150.0, 5.0), TuftClass::Reversed);
+    // pointing back upstream outranks fluttering
+    assert_eq!(class(180.0, 40.0), TuftClass::Reversed);
+    // boundaries are inclusive for attached: exactly at the limits is still attached
+    assert_eq!(cp::classify_deviation(30.0, 15.0, &th), TuftClass::Attached);
+    assert_eq!(cp::classify_deviation(30.0, 30.0, &th), TuftClass::Unsteady);
+    assert_eq!(cp::classify_deviation(30.1, 0.0, &th), TuftClass::Separated);
+    assert_eq!(cp::classify_deviation(0.0, 30.1, &th), TuftClass::Separated);
+    assert_eq!(cp::classify_deviation(120.0, 0.0, &th), TuftClass::Separated);
+    assert_eq!(cp::classify_deviation(120.1, 0.0, &th), TuftClass::Reversed);
+    // the flow direction is subtracted and angles wrap: 350 +- 5 against a flow of 10 is 20 off
+    let (c, off, _) = cp::classify_tuft(&wobble(350.0, 5.0, 20), 10.0, &th);
+    assert_eq!(c, TuftClass::Attached);
+    close(off, -20.0, 0.1, "wrapped offset");
+}
+
+fn tuft_csv_text() -> String {
+    // four tufts over a strip of four 100 mm quads: two in the front region, two in the rear
+    let mut s = String::from("# tuft log\nid,x,y,z,flow_deg,angle_deg\n");
+    let tufts = [("t1", 50.0, 0.0, 5.0), ("t2", 150.0, 0.0, 20.0), ("t3", 250.0, 90.0, 5.0), ("t4", 350.0, 180.0, 5.0)];
+    for frame in 0..8 {
+        for (id, x, centre, amp) in tufts {
+            let a = centre + if frame % 2 == 0 { amp } else { -amp };
+            s.push_str(&format!("{id},{x},50,1,0,{a}\n"));
+        }
+    }
+    s
+}
+
+fn tuft_strip() -> Geometry {
+    let mut pts = Vec::new();
+    for i in 0..=4 {
+        pts.push(DVec3::new(100.0 * i as f64, 0.0, 0.0));
+        pts.push(DVec3::new(100.0 * i as f64, 100.0, 0.0));
+    }
+    let faces: Vec<Vec<u32>> = (0..4u32).map(|q| vec![2 * q, 2 * q + 2, 2 * q + 3, 2 * q + 1]).collect();
+    let mut g = Geometry::from_polygons(pts, faces);
+    let part = ["front", "front", "rear", "rear"].iter().map(|s| s.to_string()).collect();
+    g.prim_attribs.set("part", AttribArray::Str(part));
+    g
+}
+
+fn tuft_files(tag: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("vernon-perf-tuft-{}-{tag}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("tufts.csv");
+    std::fs::write(&path, tuft_csv_text()).unwrap();
+    path
+}
+
+#[test]
+fn tuft_csv_is_classified_mapped_onto_the_surface_and_summarised_per_region() {
+    let path = tuft_files("csv");
+    let out = cook("perf.tuft_analysis", vec![None, None, Some(Data::File(path.clone())), Some(Data::geometry(tuft_strip()))], &[]).unwrap();
+    assert_eq!(out.len(), 4, "table, geometry, report, surface");
+    let rep = out[2].as_report().unwrap();
+    let mv = |k: &str| rep.metrics.get(k).unwrap_or_else(|| panic!("no metric {k}")).value;
+    eprintln!(
+        "tuft csv: attached {} unsteady {} separated {} reversed {} | separated_pct {} reversed_pct {} | front {} % / {} % rear {} % / {} % (separated / reversed)",
+        mv("attached_fraction"),
+        mv("unsteady_fraction"),
+        mv("separated_fraction"),
+        mv("reversed_fraction"),
+        mv("separated_pct"),
+        mv("reversed_pct"),
+        mv("separated_pct_region_front"),
+        mv("reversed_pct_region_front"),
+        mv("separated_pct_region_rear"),
+        mv("reversed_pct_region_rear")
+    );
+    close(mv("tufts"), 4.0, 0.0, "tufts");
+    close(mv("attached_fraction"), 0.25, 1e-12, "attached");
+    close(mv("unsteady_fraction"), 0.25, 1e-12, "unsteady");
+    close(mv("separated_fraction"), 0.25, 1e-12, "separated");
+    close(mv("reversed_fraction"), 0.25, 1e-12, "reversed");
+    // the percentages are per class: a reversed tuft is in reversed_pct, not in separated_pct
+    close(mv("separated_pct"), 25.0, 1e-9, "separated pct");
+    close(mv("reversed_pct"), 25.0, 1e-9, "reversed pct");
+    close(mv("separated_pct_region_front"), 0.0, 1e-9, "front");
+    close(mv("reversed_pct_region_front"), 0.0, 1e-9, "front reversed");
+    close(mv("separated_pct_region_rear"), 50.0, 1e-9, "rear");
+    close(mv("reversed_pct_region_rear"), 50.0, 1e-9, "rear reversed");
+    close(mv("tufts_region_front"), 2.0, 0.0, "front tufts");
+    close(mv("tufts_on_surface"), 4.0, 0.0, "on surface");
+    close(mv("faces_in_reach_pct"), 100.0, 1e-9, "faces in reach");
+    assert!(!rep.notes.iter().any(|(_, t)| t.contains("white-box placeholder")));
+    // the classes are prim attribs on the surface: 0 attached, 1 separated, 2 reversed, 3 unsteady
+    let surf = out[3].as_geometry().unwrap();
+    assert_eq!(surf.prim_attribs.ints("tuft_class").unwrap(), &[0, 3, 1, 2]);
+    assert_eq!(surf.prim_attribs.strs("part").unwrap().len(), 4, "the input attribs are kept");
+    assert_eq!(surf.prim_attribs.vec3s("Cd").unwrap().len(), 4);
+    surf.validate().unwrap();
+    // the marker cloud and the table agree with the report
+    assert_eq!(out[1].as_geometry().unwrap().point_count(), 4);
+    let table = out[0].as_json().unwrap();
+    assert_eq!(table["rows"].as_array().unwrap().len(), 4);
+    assert_eq!(table["regions"].as_array().unwrap().len(), 2);
+    assert_eq!(table["regions"][1]["name"], "rear");
+    assert_eq!(table["regions"][1]["separated"], 1);
+    assert_eq!(table["regions"][1]["reversed"], 1);
+    close(table["regions"][1]["reversed_pct"].as_f64().unwrap(), 50.0, 1e-9, "table reversed pct");
+    // the table's class column carries the same codes as the surface and the markers
+    let classes: Vec<f64> = table["rows"].as_array().unwrap().iter().map(|r| r[8].as_f64().unwrap()).collect();
+    assert_eq!(classes, vec![0.0, 3.0, 1.0, 2.0]);
+    assert_eq!(out[1].as_geometry().unwrap().point_attribs.ints("class").unwrap(), &[0, 3, 1, 2]);
+    // the same file through the csv_path parameter, without a surface: one region, no prim attribs
+    let p = ParamValue::Str(path.to_string_lossy().into_owned());
+    let flat = cook("perf.tuft_analysis", vec![None, None, None, None], &[("csv_path", p)]).unwrap();
+    let r2 = flat[2].as_report().unwrap();
+    close(r2.metrics["separated_pct"].value, 25.0, 1e-9, "separated pct without a surface");
+    close(r2.metrics["reversed_pct"].value, 25.0, 1e-9, "reversed pct without a surface");
+    assert!(!r2.metrics.keys().any(|k| k.starts_with("separated_pct_region_")));
+    assert_eq!(flat[3].as_geometry().unwrap().prim_count(), 0);
+    assert!(!r2.notes.iter().any(|(_, t)| t.contains("white-box placeholder")));
+}
+
+#[test]
+fn tuft_photo_route_stays_white_box_and_invents_no_numbers() {
+    let photo = std::env::temp_dir().join("vernon-perf-tuft-photo-not-read.jpg");
+    // a photo and no CSV: the placeholder warning, no tuft, no metric
+    let out = cook("perf.tuft_analysis", vec![Some(Data::File(photo.clone())), None, None, Some(Data::geometry(tuft_strip()))], &[]).unwrap();
+    let rep = out[2].as_report().unwrap();
+    assert!(rep.notes.iter().any(|(s, t)| *s == vernon_core::Severity::Warning && t.starts_with("white-box placeholder:")), "{:?}", rep.notes);
+    assert!(rep.metrics.is_empty(), "no numbers without data: {:?}", rep.metrics.keys().collect::<Vec<_>>());
+    assert_eq!(out[1].as_geometry().unwrap().point_count(), 0);
+    assert_eq!(out[0].as_json().unwrap()["rows"].as_array().unwrap().len(), 0);
+    // nothing connected at all: the same warning
+    let none = cook("perf.tuft_analysis", vec![None, None, None, None], &[]).unwrap();
+    let rn = none[2].as_report().unwrap();
+    assert!(rn.notes.iter().any(|(s, t)| *s == vernon_core::Severity::Warning && t.starts_with("white-box placeholder:")));
+    assert!(rn.metrics.is_empty());
+    // the surface passes through unclassified: every face is -1 (no tuft), none invented
+    let surf = out[3].as_geometry().unwrap();
+    assert!(surf.prim_attribs.ints("tuft_class").unwrap().iter().all(|&c| c == -1));
+    // a photo and a CSV: the photo is ignored with the warning, the CSV is still classified
+    let both = cook("perf.tuft_analysis", vec![Some(Data::File(photo)), None, Some(Data::File(tuft_files("photo"))), None], &[]).unwrap();
+    let rb = both[2].as_report().unwrap();
+    assert!(rb.notes.iter().any(|(s, t)| *s == vernon_core::Severity::Warning && t.starts_with("white-box placeholder:")));
+    close(rb.metrics["tufts"].value, 4.0, 0.0, "csv tufts");
+}
+
+#[test]
+fn tuft_csv_errors_and_notes_are_explicit() {
+    let bad = |text: &str| crate::tuft::parse_csv(text).unwrap_err();
+    assert!(bad("").contains("empty"));
+    assert!(bad("x,y,z\n1,2,3\n").contains("angle_deg"));
+    assert!(bad("x,y,angle_deg\n1,2,3\n").contains("z"));
+    assert!(bad("x,y,z,angle_deg\n1,2,3,abc\n").contains("line 2"));
+    assert!(bad("x,y,z,angle_deg\n1,2,NaN,5\n").contains("finite"));
+    assert!(bad("x,y,z,angle_deg\n").contains("no data rows"));
+    // a single sample per tuft cannot show flutter: said in a note, still classified
+    let p = crate::tuft::parse_csv("X,Y,Z,Angle_Deg,Flow\n0,0,0,10,0\n100,0,0,200,0\n").unwrap();
+    assert_eq!(p.tufts.len(), 2);
+    assert!(p.notes.iter().any(|n| n.contains("single angle sample")));
+    // rows of one id at far apart positions: the first position wins, with a note
+    let p = crate::tuft::parse_csv("id,x,y,z,angle_deg\na,0,0,0,1\na,50,0,0,2\n").unwrap();
+    assert_eq!(p.tufts.len(), 1);
+    assert_eq!(p.tufts[0].angles, vec![1.0, 2.0]);
+    assert!(p.notes.iter().any(|n| n.contains("first position")));
+    // through the node a bad CSV is a clean error, not a panic or an empty result
+    let dir = std::env::temp_dir().join(format!("vernon-perf-tuft-{}-bad", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("bad.csv");
+    std::fs::write(&path, "x,y,z\n1,2,3\n").unwrap();
+    let err = cook("perf.tuft_analysis", vec![None, None, Some(Data::File(path))], &[]).unwrap_err().to_string();
+    assert!(err.contains("angle_deg"), "{err}");
+    // tufts far from the surface are reported as off it, and their faces stay unobserved
+    let g = tuft_strip();
+    let far = serde_json::json!({"tufts": [{"id": "far", "x": 50.0, "y": 50.0, "z": 5000.0, "angles_deg": [0.0, 1.0]}]});
+    let out = cook("perf.tuft_analysis", vec![None, None, Some(Data::json(far)), Some(Data::geometry(g))], &[]).unwrap();
+    let r = out[2].as_report().unwrap();
+    close(r.metrics["tufts_off_surface"].value, 1.0, 0.0, "off surface");
+    assert!(r.notes.iter().any(|(s, t)| *s == vernon_core::Severity::Warning && t.contains("from the surface")));
+    assert!(out[3].as_geometry().unwrap().prim_attribs.ints("tuft_class").unwrap().iter().all(|&c| c == -1));
+}
+
+#[test]
+fn tuft_json_without_a_position_is_refused_like_the_csv() {
+    let one = |t: Value| crate::tuft::parse_json(&json!({"tufts": [t]}));
+    let good = json!({"id": "a", "x": 1.0, "y": 2.0, "z": 3.0, "angles_deg": [0.0, 1.0]});
+    let p = one(good.clone()).unwrap();
+    assert_eq!(p.tufts[0].pos, DVec3::new(1.0, 2.0, 3.0));
+    assert_eq!(p.tufts[0].flow_deg, 0.0, "flow_deg may be left out");
+    for axis in ["x", "y", "z"] {
+        // missing
+        let mut t = good.clone();
+        t.as_object_mut().unwrap().remove(axis);
+        let e = one(t).unwrap_err();
+        assert!(e.contains(&format!("{axis} is missing or not a finite number")), "{e}");
+        // not a number
+        let mut t = good.clone();
+        t[axis] = json!("12");
+        let e = one(t).unwrap_err();
+        assert!(e.contains(&format!("{axis} is missing")), "{e}");
+        let mut t = good.clone();
+        t[axis] = Value::Null;
+        assert!(one(t).is_err());
+    }
+    // a flow direction that is there must be a number; one that is left out is 0
+    let mut t = good.clone();
+    t["flow_deg"] = json!("north");
+    assert!(one(t).unwrap_err().contains("flow_deg"));
+    let mut t = good;
+    t["flow_deg"] = json!(15.0);
+    assert_eq!(one(t).unwrap().tufts[0].flow_deg, 15.0);
+    // through the node it is a clean error naming the tuft, not a tuft at the origin
+    let bad = json!({"tufts": [
+        {"id": "ok", "x": 10.0, "y": 0.0, "z": 0.0, "angles_deg": [0.0]},
+        {"id": "no_z", "x": 50.0, "y": 0.0, "angles_deg": [0.0]}
+    ]});
+    let err = cook("perf.tuft_analysis", vec![None, None, Some(Data::json(bad)), Some(Data::geometry(tuft_strip()))], &[]).unwrap_err().to_string();
+    assert!(err.contains("tuft 1") && err.contains("z is missing"), "{err}");
+}
+
+#[test]
+fn tuft_regions_whose_names_differ_only_in_punctuation_keep_separate_metrics() {
+    // two regions, "a-b" (every tuft separated) and "a_b" (every tuft attached)
+    let mut g = tuft_strip();
+    let part = ["a-b", "a-b", "a_b", "a_b"].iter().map(|s| s.to_string()).collect();
+    g.prim_attribs.set("part", AttribArray::Str(part));
+    let tufts = json!({"tufts": [
+        {"id": "p", "x": 50.0, "y": 50.0, "z": 1.0, "angles_deg": wobble(90.0, 5.0, 8)},
+        {"id": "q", "x": 350.0, "y": 50.0, "z": 1.0, "angles_deg": wobble(0.0, 5.0, 8)}
+    ]});
+    let out = cook("perf.tuft_analysis", vec![None, None, Some(Data::json(tufts)), Some(Data::geometry(g))], &[]).unwrap();
+    let rep = out[2].as_report().unwrap();
+    let keys: Vec<&String> = rep.metrics.keys().filter(|k| k.starts_with("separated_pct_region_")).collect();
+    assert_eq!(keys.len(), 2, "one separated_pct metric per region: {keys:?}");
+    // sorted by name, "a-b" comes first and keeps the plain key; "a_b" gets a suffix
+    close(rep.metrics["separated_pct_region_a_b"].value, 100.0, 1e-9, "a-b separated");
+    close(rep.metrics["separated_pct_region_a_b_2"].value, 0.0, 1e-9, "a_b separated");
+    close(rep.metrics["tufts_region_a_b"].value, 1.0, 0.0, "a-b tufts");
+    close(rep.metrics["tufts_region_a_b_2"].value, 1.0, 0.0, "a_b tufts");
+    let warn = rep.notes.iter().find(|(s, t)| *s == vernon_core::Severity::Warning && t.contains("same metric key")).expect("a collision warning");
+    assert!(warn.1.contains("'a-b'") && warn.1.contains("'a_b'") && warn.1.contains("a_b_2"), "{}", warn.1);
+    // the table still names both regions with their own counts
+    let table = out[0].as_json().unwrap();
+    assert_eq!(table["regions"][0]["name"], "a-b");
+    assert_eq!(table["regions"][1]["name"], "a_b");
+    // names that do not collide keep their plain keys and raise no warning
+    let g2 = tuft_strip();
+    let out2 = cook("perf.tuft_analysis", vec![None, None, Some(Data::File(tuft_files("labels"))), Some(Data::geometry(g2))], &[]).unwrap();
+    let r2 = out2[2].as_report().unwrap();
+    assert!(r2.metrics.contains_key("separated_pct_region_front") && r2.metrics.contains_key("separated_pct_region_rear"));
+    assert!(!r2.notes.iter().any(|(_, t)| t.contains("same metric key")));
+    // the label helper: first come first served, suffixes never clash with a real name
+    let names: Vec<String> = ["a b", "a-b", "a_b_2", "a_b", "", "-"].iter().map(|s| s.to_string()).collect();
+    let (labels, warnings) = crate::tuft::metric_labels(&names);
+    assert_eq!(labels, ["a_b", "a_b_2", "a_b_2_2", "a_b_3", "_", "__2"]);
+    let unique: HashSet<&String> = labels.iter().collect();
+    assert_eq!(unique.len(), names.len(), "labels must all differ: {labels:?}");
+    assert_eq!(warnings.len(), 4, "{warnings:?}");
+}
+
+#[test]
+fn tuft_surface_faces_without_a_tuft_are_minus_one_in_every_field() {
+    // one tuft over the first face; reach 75 mm also takes the second face, not the last two
+    let one = json!({"tufts": [{"id": "t", "x": 50.0, "y": 50.0, "z": 1.0, "flow_deg": 0.0, "angles_deg": wobble(10.0, 5.0, 8)}]});
+    let out = cook("perf.tuft_analysis", vec![None, None, Some(Data::json(one)), Some(Data::geometry(tuft_strip()))], &[]).unwrap();
+    let surf = out[3].as_geometry().unwrap();
+    let class = surf.prim_attribs.ints("tuft_class").unwrap();
+    assert_eq!(class, &[0, 0, -1, -1]);
+    for name in ["tuft_offset_deg", "tuft_sd_deg", "tuft_dist_mm"] {
+        let v = surf.prim_attribs.floats(name).unwrap();
+        assert_eq!(v.len(), 4);
+        assert_eq!(&v[2..], &[-1.0, -1.0], "{name}: no tuft in reach is -1, not a number that looks like a perfect tuft");
+        assert!(v[0] != -1.0 && v[1] != -1.0, "{name}: observed faces carry the tuft's own values {v:?}");
+    }
+    close(surf.prim_attribs.floats("tuft_dist_mm").unwrap()[0], 1.0, 1e-9, "distance to the first face");
+    close(surf.prim_attribs.floats("tuft_offset_deg").unwrap()[0], 10.0, 0.5, "offset on the first face");
+    // the help says so
+    let help = reg().get("perf.tuft_analysis").unwrap().info().help;
+    for field in ["tuft_class", "tuft_offset_deg", "tuft_sd_deg", "tuft_dist_mm", "-1"] {
+        assert!(help.contains(field), "the node help does not mention {field}");
+    }
 }
 
 // ------------------------------------------------------------------ gate

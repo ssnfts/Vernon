@@ -13,6 +13,7 @@ use crate::gate::{self, GateInput};
 use crate::lapsim::{self, LapOptions};
 use crate::physics::Vehicle;
 use crate::track::Track;
+use crate::tuft;
 use crate::util::{env_in, json_in, read_text, rho_param, table_json, FnNode, OrFail, SPEC};
 
 fn node(id: &str, label: &str) -> NodeTypeInfo {
@@ -240,66 +241,61 @@ fn compare_cook(ctx: &CookContext, inputs: &[Option<Data>], p: &Params) -> CookR
 // ------------------------------------------------------------------ tufts
 
 fn tuft_info() -> NodeTypeInfo {
-    NodeTypeInfo::new("perf.tuft_analysis", "Tuft Analysis", Stage::Performance)
-        .spec(SPEC)
+    node("perf.tuft_analysis", "Tuft Analysis")
         .input(PortSpec::optional("images", DataKind::File))
         .input(PortSpec::optional("patch", DataKind::Json))
-        .input(PortSpec::optional("tufts", DataKind::Json))
+        .input(PortSpec::optional("tufts", DataKind::Any))
+        .input(PortSpec::optional("surface", DataKind::Geometry))
         .output(PortSpec::new("table", DataKind::Json))
         .output(PortSpec::new("geometry", DataKind::Geometry))
         .output(PortSpec::new("report", DataKind::Report))
-        .param(ParamSpec::float("attached_deg", "Attached limit", 30.0, 1.0, 90.0).unit("deg").help("Largest mean offset from the flow for an attached tuft"))
-        .param(ParamSpec::float("reversed_deg", "Reversed limit", 120.0, 90.0, 180.0).unit("deg").help("Mean offset beyond which a tuft counts as reversed"))
-        .param(ParamSpec::float("sd_attached_deg", "Steadiness limit", 15.0, 1.0, 90.0).unit("deg").help("Largest angle spread for an attached tuft"))
-        .param(ParamSpec::float("sd_separated_deg", "Fluttering limit", 30.0, 5.0, 120.0).unit("deg").help("Angle spread above which a tuft counts as separated"))
-        .help("Classifies tufts as attached, separated or reversed from their angle over a video sequence, against the local flow direction, and colours a marker per tuft. Finding the tufts in the images is not implemented yet: supply angle series, or the node shows a synthetic example.")
-        .emulates("tuft flow-visualisation analysis (attached / separated / reversed map)")
+        .output(PortSpec::new("surface", DataKind::Geometry))
+        .param(ParamSpec::float("attached_deg", "Attached limit", 30.0, 1.0, 90.0).unit("deg").help("Largest mean offset from the flow for an attached or unsteady tuft; a tuft beyond it is separated (or reversed, beyond the reversed limit)"))
+        .param(ParamSpec::float("reversed_deg", "Reversed limit", 120.0, 90.0, 180.0).unit("deg").help("Mean offset beyond which a tuft counts as reversed (class 2): it points back upstream"))
+        .param(ParamSpec::float("sd_attached_deg", "Steadiness limit", 15.0, 1.0, 90.0).unit("deg").help("Largest angle spread (std-dev) for an attached tuft; a tuft that follows the flow but flutters more is unsteady"))
+        .param(ParamSpec::float("sd_separated_deg", "Fluttering limit", 30.0, 5.0, 120.0).unit("deg").help("Angle spread (std-dev) above which a tuft counts as separated"))
+        .param(ParamSpec::path("csv_path", "Tuft CSV", &["csv"], false).help("CSV of tuft samples, used when nothing is connected to the tufts port. Columns x, y, z (mm) and angle_deg, optionally id and flow_deg (the local flow direction, default 0). One row per tuft per frame; rows with the same id are the samples of one tuft"))
+        .param(ParamSpec::float("reach_mm", "Surface reach", 75.0, 1.0, 1000.0).unit("mm").help("A surface face takes the class of the nearest tuft within this distance; faces farther from every tuft stay unobserved (-1 in tuft_class, tuft_offset_deg, tuft_sd_deg and tuft_dist_mm). Tufts farther than this from the surface are reported as off it"))
+        .param(ParamSpec::string("region_attrib", "Region attribute", "part").help("Face attribute of the surface that names its regions (for example the panel id); % separated is reported per region. Without it the whole surface is one region"))
+        .help("Classifies tufts as attached, separated, reversed or unsteady from a CSV of tuft positions and measured angles: the offset of the mean angle from the flow direction and the angle spread (std-dev) are compared with the limits. A tuft that follows the flow steadily is attached (class 0); one that is off the flow or fluttering wildly is separated (1); one that points back upstream is reversed (2); one that follows the flow but flutters more than an attached tuft is unsteady (3). The classes are written onto the faces of a connected surface (tuft_class, colour) and the share of separated and of reversed tufts is reported per region. Faces with no tuft in reach get -1 in tuft_class, tuft_offset_deg, tuft_sd_deg and tuft_dist_mm: -1 means no tuft, not a perfect one (test tuft_class, since a real offset can also be -1 degree). Finding tufts in photographs is not implemented: with no CSV, or a photo input connected, the report says so and no numbers are made up.")
+        .emulates("tuft flow-visualisation analysis (attached / separated / reversed / unsteady map)")
 }
 
-struct Tuft {
-    id: String,
-    pos: DVec3,
-    flow_deg: f64,
-    angles: Vec<f64>,
+/// Marker and face colour of a class.
+fn class_colour(c: TuftClass) -> DVec3 {
+    match c {
+        TuftClass::Attached => DVec3::new(0.1, 0.8, 0.2),
+        TuftClass::Separated => DVec3::new(1.0, 0.8, 0.1),
+        TuftClass::Reversed => DVec3::new(0.9, 0.1, 0.1),
+        TuftClass::Unsteady => DVec3::new(1.0, 0.5, 0.1),
+    }
 }
 
-fn parse_tufts(v: &Value) -> Result<Vec<Tuft>, String> {
-    let list = v.get("tufts").and_then(Value::as_array).or_else(|| v.as_array()).ok_or("tufts: expected a list")?;
-    list.iter()
-        .enumerate()
-        .map(|(i, t)| {
-            let g = |k: &str| t.get(k).and_then(Value::as_f64).unwrap_or(0.0);
-            let angles: Vec<f64> = t
-                .get("angles_deg")
-                .and_then(Value::as_array)
-                .ok_or_else(|| format!("tuft {i}: missing angles_deg"))?
-                .iter()
-                .filter_map(Value::as_f64)
-                .collect();
-            if angles.is_empty() {
-                return Err(format!("tuft {i}: no angles"));
-            }
-            Ok(Tuft {
-                id: t.get("id").and_then(Value::as_str).map(String::from).unwrap_or_else(|| format!("tuft{}", i + 1)),
-                pos: DVec3::new(g("x"), g("y"), g("z")),
-                flow_deg: g("flow_deg"),
-                angles,
-            })
-        })
-        .collect()
-}
-
-fn synthetic_tufts() -> Vec<Tuft> {
-    let base = [0.0, 10.0, 25.0, 60.0, 100.0, 150.0, 180.0, 5.0, 15.0, 90.0, 175.0, 0.0];
-    base.iter()
-        .enumerate()
-        .map(|(k, b)| Tuft {
-            id: format!("tuft{}", k + 1),
-            pos: DVec3::new((k % 4) as f64 * 50.0, (k / 4) as f64 * 50.0, 0.0),
-            flow_deg: 0.0,
-            angles: (0..8).map(|j| b + 4.0 * ((7 * j + k) as f64).sin()).collect(),
-        })
-        .collect()
+/// The surface with the class of the nearest tuft on every face in reach. Faces out of reach
+/// get -1 ("no tuft") in `tuft_class`, `tuft_offset_deg`, `tuft_sd_deg` and `tuft_dist_mm`, never
+/// a number that could pass for a perfect tuft. An empty geometry when no surface is connected.
+fn surface_output(surface: Option<&Geometry>, verdicts: &[tuft::Verdict], map: &tuft::SurfaceMap) -> Geometry {
+    let Some(s) = surface else { return Geometry::new() };
+    let mut g = s.clone();
+    let n = g.prims.len();
+    let (mut class, mut off, mut sd, mut dist) = (vec![-1i64; n], vec![-1.0; n], vec![-1.0; n], vec![-1.0; n]);
+    let mut cd = vec![DVec3::splat(0.6); n];
+    for (f, hit) in map.face_tuft.iter().enumerate() {
+        if let Some((ti, d)) = hit {
+            let v = &verdicts[*ti];
+            class[f] = v.class as i64;
+            off[f] = v.offset_deg;
+            sd[f] = v.sd_deg;
+            dist[f] = *d;
+            cd[f] = class_colour(v.class);
+        }
+    }
+    g.prim_attribs.set("tuft_class", AttribArray::Int(class));
+    g.prim_attribs.set("tuft_offset_deg", AttribArray::Float(off));
+    g.prim_attribs.set("tuft_sd_deg", AttribArray::Float(sd));
+    g.prim_attribs.set("tuft_dist_mm", AttribArray::Float(dist));
+    g.prim_attribs.set("Cd", AttribArray::Vec3(cd));
+    g
 }
 
 fn tuft_cook(ctx: &CookContext, inputs: &[Option<Data>], p: &Params) -> CookResult<Vec<Data>> {
@@ -309,56 +305,192 @@ fn tuft_cook(ctx: &CookContext, inputs: &[Option<Data>], p: &Params) -> CookResu
         sd_attached_deg: p.float("sd_attached_deg")?,
         sd_separated_deg: p.float("sd_separated_deg")?,
     };
+    let reach = p.float("reach_mm")?;
     let mut rep = Report::new("Tuft analysis");
-    let tufts = match json_in(inputs, 2)? {
-        Some(v) => {
-            rep.note(Severity::Info, "classification of the supplied tuft angle series");
-            parse_tufts(&v).or_fail(ctx)?
-        }
+    let photo_route = inputs.first().is_some_and(Option::is_some);
+    // Angles come from the tufts port (a CSV file or a JSON series) or the CSV path parameter.
+    let parsed = match inputs.get(2).and_then(|d| d.as_ref()) {
+        Some(Data::Json(v)) => Some(tuft::parse_json(v).or_fail(ctx)?),
+        Some(Data::File(f)) => Some(tuft::parse_csv(&read_text(ctx, f)?).or_fail(ctx)?),
+        Some(other) => return Err(CookError::WrongInput { index: 2, expected: DataKind::Any, found: other.kind() }),
         None => {
-            rep.note(
-                Severity::Warning,
-                "white-box placeholder: finding tufts in the images (ridge detection, skeleton, homography to the surface, comparison with the simulated streamline) is not implemented; the table shows synthetic tufts",
-            );
-            synthetic_tufts()
+            let path = p.str("csv_path")?;
+            if path.trim().is_empty() {
+                None
+            } else {
+                Some(tuft::parse_csv(&read_text(ctx, std::path::Path::new(path))?).or_fail(ctx)?)
+            }
         }
     };
+    match (&parsed, photo_route) {
+        (None, _) => {
+            rep.note(
+                Severity::Warning,
+                "white-box placeholder: no tuft CSV is connected and finding tufts in photographs (ridge detection, skeleton, homography to the surface, comparison with the simulated streamline) is not implemented, so no tuft is classified and no numbers are produced. Supply a CSV of tuft positions (x, y, z in mm) and measured angles",
+            );
+        }
+        (Some(_), true) => {
+            rep.note(
+                Severity::Warning,
+                "white-box placeholder: finding tufts in the connected photographs is not implemented, so the photographs are ignored; only the supplied CSV angles are classified",
+            );
+        }
+        (Some(_), false) => {}
+    }
+    let (tufts, parse_notes) = parsed.map_or((Vec::new(), Vec::new()), |pr| (pr.tufts, pr.notes));
+    for n in parse_notes {
+        rep.note(Severity::Warning, n);
+    }
+    if th.sd_attached_deg > th.sd_separated_deg {
+        rep.note(
+            Severity::Warning,
+            "the steadiness limit is above the fluttering limit: a tuft with a spread between them counts as separated, and none is unsteady because of flutter",
+        );
+    }
+    let verdicts: Vec<tuft::Verdict> = tufts.iter().map(|t| tuft::judge(t, &th)).collect();
+    let surface = inp::opt_geometry(inputs, 3);
+    let map = match &surface {
+        Some(s) => tuft::map_to_surface(s, &tufts, reach),
+        None => tuft::SurfaceMap { tuft_face: vec![None; tufts.len()], face_tuft: Vec::new() },
+    };
+    let region_attr = p.str("region_attrib")?.trim().to_string();
+    let face_region = surface.as_ref().and_then(|s| if region_attr.is_empty() { None } else { tuft::face_regions(s, &region_attr) });
+    let labels: Vec<Option<String>> = (0..tufts.len())
+        .map(|i| match &face_region {
+            Some(fr) => map.tuft_face[i].and_then(|(f, _)| fr.get(f).cloned()),
+            None => Some("all".to_string()),
+        })
+        .collect();
+    let regions = tuft::region_stats(&labels, &verdicts);
+    let off_surface = map.tuft_face.iter().filter(|h| h.is_none()).count();
+    if !tufts.is_empty() {
+        match (&surface, &face_region) {
+            (None, _) => {
+                rep.note(Severity::Info, "no surface is connected: the classes are not written onto faces and % separated covers all tufts together");
+            }
+            (Some(_), None) => {
+                rep.note(Severity::Info, format!("the surface has no face attribute '{region_attr}': % separated covers all tufts together"));
+            }
+            (Some(_), Some(_)) => {}
+        }
+        if surface.is_some() && off_surface > 0 {
+            rep.note(
+                Severity::Warning,
+                format!(
+                    "{off_surface} of {} tufts are more than {reach} mm from the surface; check that the tuft positions are in millimetres and in the surface's frame",
+                    tufts.len()
+                ),
+            );
+        }
+    }
+
     let mut rows = Vec::new();
     let mut geo = Geometry::new();
     let (mut cd, mut class_attr, mut off_attr, mut sd_attr) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
-    let mut counts = [0usize; 3];
-    for (i, t) in tufts.iter().enumerate() {
-        let (class, off, sd) = cp::classify_tuft(&t.angles, t.flow_deg, &th);
-        counts[class as usize] += 1;
-        rows.push(vec![i as f64, t.pos.x, t.pos.y, t.pos.z, t.flow_deg, cp::circular_stats_deg(&t.angles).0, off, sd, class as u8 as f64, t.angles.len() as f64]);
+    for (i, (t, v)) in tufts.iter().zip(&verdicts).enumerate() {
+        let face = map.tuft_face[i].map_or(-1.0, |(f, _)| f as f64);
+        rows.push(vec![
+            i as f64,
+            t.pos.x,
+            t.pos.y,
+            t.pos.z,
+            t.flow_deg,
+            v.mean_deg,
+            v.offset_deg,
+            v.sd_deg,
+            v.class as u8 as f64,
+            t.angles.len() as f64,
+            face,
+        ]);
         geo.add_point(t.pos);
-        cd.push(match class {
-            TuftClass::Attached => DVec3::new(0.1, 0.8, 0.2),
-            TuftClass::Separated => DVec3::new(1.0, 0.8, 0.1),
-            TuftClass::Reversed => DVec3::new(0.9, 0.1, 0.1),
-        });
-        class_attr.push(class as i64);
-        off_attr.push(off);
-        sd_attr.push(sd);
+        cd.push(class_colour(v.class));
+        class_attr.push(v.class as i64);
+        off_attr.push(v.offset_deg);
+        sd_attr.push(v.sd_deg);
     }
     geo.point_attribs.set("Cd", AttribArray::Vec3(cd));
     geo.point_attribs.set("class", AttribArray::Int(class_attr));
     geo.point_attribs.set("offset_deg", AttribArray::Float(off_attr));
     geo.point_attribs.set("sd_deg", AttribArray::Float(sd_attr));
-    let n = tufts.len() as f64;
-    rep.metric("tufts", Metric::new(n, "-"))
-        .metric("attached_fraction", Metric::new(counts[0] as f64 / n, "-"))
-        .metric("separated_fraction", Metric::new(counts[1] as f64 / n, "-"))
-        .metric("reversed_fraction", Metric::new(counts[2] as f64 / n, "-"));
-    rep.note(Severity::Info, "class codes: 0 attached, 1 separated, 2 reversed; thresholds are Vernon-proposed, confirm on real footage");
+
+    if !tufts.is_empty() {
+        let n = tufts.len() as f64;
+        let count = |c: TuftClass| verdicts.iter().filter(|v| v.class == c).count() as f64;
+        rep.metric("tufts", Metric::new(n, "-"))
+            .metric("attached_fraction", Metric::new(count(TuftClass::Attached) / n, "-"))
+            .metric("unsteady_fraction", Metric::new(count(TuftClass::Unsteady) / n, "-"))
+            .metric("separated_fraction", Metric::new(count(TuftClass::Separated) / n, "-"))
+            .metric("reversed_fraction", Metric::new(count(TuftClass::Reversed) / n, "-"))
+            .metric("separated_pct", Metric::new(100.0 * count(TuftClass::Separated) / n, "%"))
+            .metric("reversed_pct", Metric::new(100.0 * count(TuftClass::Reversed) / n, "%"));
+        if let Some(s) = &surface {
+            let covered = map.face_tuft.iter().filter(|h| h.is_some()).count();
+            rep.metric("tufts_on_surface", Metric::new(n - off_surface as f64, "-"))
+                .metric("tufts_off_surface", Metric::new(off_surface as f64, "-"))
+                .metric("faces_in_reach_pct", Metric::new(100.0 * covered as f64 / s.prims.len().max(1) as f64, "%"));
+        }
+        if face_region.is_some() {
+            // region names that differ only in punctuation must not share a metric key
+            let names: Vec<String> = regions.iter().map(|r| r.name.clone()).collect();
+            let (labels, collisions) = tuft::metric_labels(&names);
+            for w in collisions {
+                rep.note(Severity::Warning, w);
+            }
+            for (r, label) in regions.iter().zip(&labels) {
+                rep.metric(format!("separated_pct_region_{label}"), Metric::new(r.separated_pct(), "%"))
+                    .metric(format!("reversed_pct_region_{label}"), Metric::new(r.reversed_pct(), "%"))
+                    .metric(format!("tufts_region_{label}"), Metric::new(r.tufts as f64, "-"));
+            }
+        }
+        rep.note(
+            Severity::Info,
+            "class codes: 0 attached, 1 separated, 2 reversed, 3 unsteady; separated_pct counts class 1 only and reversed_pct class 2, so a reversed tuft is in reversed_pct, not in separated_pct; thresholds are Vernon-proposed, confirm on real footage",
+        );
+        if surface.is_some() {
+            rep.note(
+                Severity::Info,
+                format!("faces take the class of the nearest tuft within {reach} mm (-1 in tuft_class, tuft_offset_deg, tuft_sd_deg and tuft_dist_mm = no tuft in reach); no class is extrapolated beyond that"),
+            );
+        }
+    }
     let mut t = table_json(
-        &[("tuft", "-"), ("x", "mm"), ("y", "mm"), ("z", "mm"), ("flow_deg", "deg"), ("mean_deg", "deg"), ("offset_deg", "deg"), ("sd_deg", "deg"), ("class", "code"), ("frames", "-")],
+        &[
+            ("tuft", "-"),
+            ("x", "mm"),
+            ("y", "mm"),
+            ("z", "mm"),
+            ("flow_deg", "deg"),
+            ("mean_deg", "deg"),
+            ("offset_deg", "deg"),
+            ("sd_deg", "deg"),
+            ("class", "code"),
+            ("frames", "-"),
+            ("face", "index"),
+        ],
         rows,
     );
     if let Value::Object(m) = &mut t {
         m.insert("ids".into(), json!(tufts.iter().map(|x| x.id.clone()).collect::<Vec<_>>()));
+        m.insert("region".into(), json!(labels));
+        m.insert(
+            "regions".into(),
+            json!(regions
+                .iter()
+                .map(|r| json!({
+                    "name": r.name,
+                    "tufts": r.tufts,
+                    "attached": r.attached,
+                    "unsteady": r.unsteady,
+                    "separated": r.separated,
+                    "reversed": r.reversed,
+                    "separated_pct": r.separated_pct(),
+                    "reversed_pct": r.reversed_pct(),
+                }))
+                .collect::<Vec<_>>()),
+        );
     }
-    Ok(vec![Data::json(t), Data::geometry(geo), Data::report(rep)])
+    let surf = surface_output(surface.as_deref(), &verdicts, &map);
+    Ok(vec![Data::json(t), Data::geometry(geo), Data::report(rep), Data::geometry(surf)])
 }
 
 // ------------------------------------------------------------------ gate

@@ -1,7 +1,7 @@
 //! Stage 7b nodes: seam cut, conformal / stretch-aware flatten, strain
 //! report, UV stretch overlay and map-back.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use glam::{DVec2, DVec3};
 use vernon_core::{AttribArray, Geometry, Metric, Prim, Report, Severity};
@@ -11,9 +11,9 @@ use vernon_graph::{
     PortSpec, Stage,
 };
 
-use crate::lscm::{align_uv, arap, compact, lscm, plane_fit, ArapOpts, Compact};
+use crate::lscm::{align_uv, arap, compact, degenerate_tris, lscm, plane_fit, ArapOpts, ArapOut, Compact};
 use crate::strain::{angle_defect_sum, compute_strain, ply_fields, StrainOpts, StrainResult};
-use crate::topo::{analyze, auto_cut, cut_along, seam_from_polylines, TopoInfo};
+use crate::topo::{analyze, auto_cut, cut_along, ekey, seam_from_polylines, TopoInfo};
 use crate::util::*;
 
 fn mesh_in() -> PortSpec {
@@ -142,6 +142,9 @@ fn write_strain(out: &mut Geometry, g: &Geometry, res: &StrainResult, range_pct:
     );
 }
 
+/// Said in the report when the pattern is the mirror image of the surface (outside = down).
+const MIRROR_NOTE: &str = "outside = down: the pattern is the mirror image of the 3-D surface (the other side of the sheet shows). Strain, area change and the fold check are made on the un-mirrored pattern, so a mirrored pattern is not reported as folded";
+
 fn strain_metrics(r: &mut Report, res: &StrainResult, limit_pct: f64) {
     let s = &res.stats;
     r.metric("area_change_pct", Metric::new(s.area_change_pct, "%"));
@@ -154,6 +157,20 @@ fn strain_metrics(r: &mut Report, res: &StrainResult, limit_pct: f64) {
     r.metric(
         "max_length_change_pct",
         Metric::new(s.max_length_change_pct, "%").with_limit(limit_pct, true),
+    );
+    r.metric("strain_max_pct", Metric::new(s.max_length_change_pct, "%"));
+    r.metric("strain_p95_pct", Metric::new(s.strain_p95_pct, "%"));
+    r.metric(
+        "area_distortion_max_pct",
+        Metric::new(s.area_distortion_max_pct, "%"),
+    );
+    r.metric(
+        "area_distortion_p95_pct",
+        Metric::new(s.area_distortion_p95_pct, "%"),
+    );
+    r.metric(
+        "area_distortion_mean_pct",
+        Metric::new(s.area_distortion_mean_pct, "%"),
     );
     r.metric(
         "flipped_tris",
@@ -374,9 +391,13 @@ impl NodeOp for ConformalMapNode {
             &StrainOpts {
                 deadband_pct: p.float("deadband_percent")?,
                 max_markers: 10,
+                mirrored: mirror,
             },
         );
         strain_metrics(&mut r, &res, p.float("max_strain_pct")?);
+        if mirror {
+            r.note(Severity::Info, MIRROR_NOTE);
+        }
         r.metric(
             "boundary_loops",
             Metric::new(topo.loops.len() as f64, "count"),
@@ -454,7 +475,7 @@ impl NodeOp for StretchAwareNode {
             .param(ParamSpec::float("bnd_compress", "Boundary compress factor", 1.0, 0.01, 1000.0).help("Higher means less compression of boundary edges."))
             .param(ParamSpec::float("int_stretch", "Interior stretch factor", 1.0, 0.01, 1000.0).help("Higher means less stretch of interior edges."))
             .param(ParamSpec::float("int_compress", "Interior compress factor", 1.0, 0.01, 1000.0).help("Higher means less compression of interior edges."))
-            .param(ParamSpec::choice("material", "Material", "rigid", &["rigid", "floppy"]).help("Stiff sheet or pliable fabric."))
+            .param(ParamSpec::choice("material", "Material", "rigid", &["rigid", "floppy"]).help("Stiff sheet or pliable fabric. Both settings run the same edge-length energy for now; floppy adds a warning to the report."))
             .param(ParamSpec::bool("preserve_boundary", "Preserve boundary", false).help("Weight boundary edges heavily so their lengths change little."))
             .param(ParamSpec::choice("outside", "Outside", "up", &["up", "down"]).help("Which side of the sheet faces outward. It sets the sign convention for stretch and compression."))
             .param(ParamSpec::bool("auto_seam", "Automatic seams", true).help("Cut seams automatically when the surface cannot flatten as one piece."))
@@ -465,9 +486,10 @@ impl NodeOp for StretchAwareNode {
             .param(ParamSpec::float("deadband_percent", "Strain dead-band", 0.01, 0.0, 10.0).unit("%").help("Strains below this, in percent, do not count as stretched or compressed in the report."))
             .param(ParamSpec::vec3("fibre_dir", "Ply fibre direction", DVec3::ZERO).help("Composite ply mode: warp direction of a woven ply on the 3-D surface, projected onto each face. The pattern then gets the attributes fibre_deg (warp angle in the flat pattern) and shear_deg (how far the weave's right angle has closed), and the report the worst shear. Zero = off."))
             .param(ParamSpec::float("shear_limit_deg", "Weave shear limit", 40.0, 1.0, 89.0).unit("deg").help("Ply mode: shear beyond which a woven cloth wrinkles instead of draping (its locking angle). Cloth dependent; 40 degrees is a typical assumption to replace with the datasheet value. A worse shear fails the report."))
-            .help("Flattens a doubly curved panel by minimising edge-length change from a conformal start, with optional bias towards stretching or compressing. Reports stretch and compression statistics and the worst length change.")
+            .help("Flattens a doubly curved panel with an as-rigid-as-possible map (local/global iterations), started from the conformal map, with optional bias towards stretching or compressing. Reports the worst and 95th-percentile strain, the area distortion and stretch and compression statistics. Degenerate and flipped triangles and disconnected pieces are reported in the notes.")
             .emulates("Stretch-aware surface flattening (squish) from published as-rigid-as-possible methods")
             .spec(FLATTEN_SPEC)
+            .implemented()
     }
 
     fn cook(&self, ctx: &CookContext, ins: &[Option<Data>], p: &Params) -> CookResult<Vec<Data>> {
@@ -475,20 +497,15 @@ impl NodeOp for StretchAwareNode {
         if face_count(&g) == 0 {
             return Err(ctx.fail("the mesh has no faces"));
         }
-        let seam = inputs::opt_geometry(ins, 1);
-        let (geo, paths, topo) = prepare_disk(
-            ctx,
-            &g,
-            seam.as_deref(),
-            p.bool("auto_seam")?,
-            p.float("seam_tolerance_mm")?,
-        )?;
-        let comp = compact(&geo);
-        let bl: Vec<u32> = topo.loops[0]
+        if g.triangles()
             .iter()
-            .map(|&v| comp.map[v as usize])
-            .collect();
-        let (uv0, _, rel) = lscm(&comp, &bl, 1e-10, 20000).map_err(|e| ctx.fail(e))?;
+            .any(|(_, t)| t.iter().any(|&v| !g.points[v as usize].is_finite()))
+        {
+            return Err(ctx.fail(
+                "the mesh has points with non-finite coordinates (NaN or infinity); clean the mesh first",
+            ));
+        }
+        let seam = inputs::opt_geometry(ins, 1);
         let mut o = ArapOpts {
             max_iter: p.int("max_iterations")?.max(1) as usize,
             tol: p.float("tolerance")?,
@@ -499,7 +516,8 @@ impl NodeOp for StretchAwareNode {
             int_compress: p.float("int_compress")?,
             ..Default::default()
         };
-        match p.str("deformation")? {
+        let deformation = p.str("deformation")?.to_string();
+        match deformation.as_str() {
             "free" | "custom_a" | "custom_b" | "custom_c" => {}
             "stretch_mostly" => o.base_compress = 10.0,
             "compress_mostly" => o.base_stretch = 10.0,
@@ -507,40 +525,149 @@ impl NodeOp for StretchAwareNode {
             "compress_only" => o.base_stretch = 1.0e4,
             other => return Err(CookError::BadParam(format!("deformation = {other}"))),
         }
-        let out = arap(&comp, &uv0, &o);
-        let mut uvc = out.uv;
-        align_uv(&mut uvc, p.str("outside")? == "down");
-        let uv = to_orig(&comp, &uvc, geo.points.len());
+        // Disconnected input: every piece is flattened on its own.
+        let groups = components(&g);
+        let total = groups.len();
+        let pieces: Vec<Piece> = if total <= 1 {
+            vec![flatten_piece(ctx, &g, seam.as_deref(), p, &o)?]
+        } else {
+            if seam.is_some() {
+                return Err(ctx.fail(format!(
+                    "the mesh has {total} disconnected pieces and a seam input needs one connected mesh; split the pieces and flatten each separately"
+                )));
+            }
+            let mut v = Vec::with_capacity(total);
+            for (i, prims) in groups.iter().enumerate() {
+                let sub = subset(&g, prims);
+                v.push(flatten_piece(ctx, &sub, None, p, &o).map_err(|e| {
+                    ctx.fail(format!("piece {} of {total}: {}", i + 1, error_text(&e)))
+                })?);
+            }
+            v
+        };
+        // the conformal start is never mirrored; the final pattern is when outside = down
+        let mirror = p.str("outside")? == "down";
         let sopts = StrainOpts {
             deadband_pct: p.float("deadband_percent")?,
             max_markers: 10,
+            mirrored: false,
         };
-        let res = compute_strain(&geo, &uv, &sopts);
-        let init = compute_strain(&geo, &to_orig(&comp, &uv0, geo.points.len()), &sopts);
+        let init_max = pieces
+            .iter()
+            .map(|pc| compute_strain(&pc.geo, &pc.uv0, &sopts).stats.max_length_change_pct)
+            .fold(0.0, f64::max);
+        let paths: usize = pieces.iter().map(|pc| pc.paths).sum();
+        let iterations = pieces.iter().map(|pc| pc.iterations).max().unwrap_or(0);
+        let energy: f64 = pieces.iter().map(|pc| pc.energy).sum();
+        let rel = pieces.iter().map(|pc| pc.rel).fold(0.0, f64::max);
+        let skipped: usize = pieces.iter().map(|pc| pc.skipped).sum();
+        let conflicts: usize = pieces.iter().map(|pc| pc.conflicts).sum();
+        let converged = pieces.iter().all(|pc| pc.converged);
+        let fell_back = pieces.iter().any(|pc| pc.fell_back);
+        let exact = pieces.iter().all(|pc| pc.exact_weights);
+        let (geo, uv, gap) = layout(pieces);
+        let limit = p.float("max_strain_pct")?;
+        let res = compute_strain(&geo, &uv, &StrainOpts { mirrored: mirror, ..sopts.clone() });
         let mut r = Report::new("Stretch-aware flatten");
-        strain_metrics(&mut r, &res, p.float("max_strain_pct")?);
+        strain_metrics(&mut r, &res, limit);
+        if mirror {
+            r.note(Severity::Info, MIRROR_NOTE);
+        }
         r.metric(
             "arap_iterations",
-            Metric::new(out.iterations as f64, "count"),
+            Metric::new(iterations as f64, "count"),
         );
-        r.metric("arap_energy", Metric::new(out.energy, ""));
+        r.metric("arap_energy", Metric::new(energy, ""));
+        r.metric(
+            "arap_converged",
+            Metric::new(f64::from(u8::from(converged)), "flag"),
+        );
+        r.metric(
+            "arap_exact_weights",
+            Metric::new(f64::from(u8::from(exact)), "flag"),
+        );
         r.metric(
             "initial_max_length_change_pct",
-            Metric::new(init.stats.max_length_change_pct, "%"),
+            Metric::new(init_max, "%"),
         );
         r.metric("conformal_residual", Metric::new(rel, ""));
-        r.metric("seam_paths", Metric::new(paths.len() as f64, "count"));
-        placeholder(
-            &mut r,
-            "rigid/floppy material weighting, hard stretch-only and compress-only constraints and the fold-free line search; \
-             the edge-length energy with reweighted stretch/compress factors is used instead",
+        r.metric("seam_paths", Metric::new(paths as f64, "count"));
+        r.metric("pieces", Metric::new(total.max(1) as f64, "count"));
+        r.metric(
+            "skipped_degenerate_tris",
+            Metric::new(skipped as f64, "count"),
         );
+        r.metric(
+            "inconsistent_winding_edges",
+            Metric::new(conflicts as f64, "count"),
+        );
+        r.note(
+            Severity::Info,
+            "as-rigid-as-possible map: local/global iterations (closest rotation per triangle, then one sparse solve) after Liu, Zhang, Xu, Gotsman and Gortler 2008, started from the least-squares conformal map. Strain is each triangle's singular-value deviation from 1",
+        );
+        if total > 1 {
+            r.note(
+                Severity::Warning,
+                format!(
+                    "the mesh has {total} disconnected pieces: each is flattened on its own and the patterns sit side by side along +x with a {gap:.2} mm gap; the strain figures cover all pieces"
+                ),
+            );
+        }
+        if skipped > 0 {
+            r.note(
+                Severity::Warning,
+                format!(
+                    "{skipped} degenerate (zero-area or sliver) triangles are left out of the as-rigid-as-possible solve; their pattern shape follows their neighbours. Remove them with a mesh repair node"
+                ),
+            );
+        }
+        if conflicts > 0 {
+            r.note(
+                Severity::Warning,
+                format!(
+                    "{conflicts} edges are walked in the same direction by both faces that share them: some triangles are flipped in the input, so the pattern can fold there. Unify the face winding first"
+                ),
+            );
+        }
+        if !converged {
+            r.note(
+                Severity::Warning,
+                format!(
+                    "the iteration limit of {} was reached before the energy settled (tolerance {:.0e}); raise Max iterations if the strain is still falling",
+                    o.max_iter, o.tol
+                ),
+            );
+        }
+        if fell_back {
+            r.note(
+                Severity::Warning,
+                "the refinement produced non-finite coordinates for a piece, so its conformal start is returned instead",
+            );
+        }
+        if !exact {
+            r.note(
+                Severity::Info,
+                "stretch/compress factors are active: edge weights are reweighted every iteration with the cotangents clamped to be positive, so this is a weighted variant of the published energy",
+            );
+        }
+        if matches!(deformation.as_str(), "stretch_only" | "compress_only") {
+            r.note(
+                Severity::Info,
+                "stretch_only and compress_only weight the opposite deformation 10000 times heavier instead of forbidding it; what is left shows in compress_max_pct or stretch_max_pct",
+            );
+        }
+        if p.str("material")? == "floppy" {
+            r.note(
+                Severity::Warning,
+                "material = floppy is accepted but not modelled separately: the same edge-length energy runs for both materials",
+            );
+        }
         let mut out3 = geo.clone();
         set_uv(&mut out3, &uv, 1.0);
-        write_strain(&mut out3, &geo, &res, p.float("max_strain_pct")?, "signed");
+        write_strain(&mut out3, &geo, &res, limit, "signed");
         let mut pat = pattern_of(&geo, &uv);
         set_uv(&mut pat, &uv, 1.0);
-        write_strain(&mut pat, &geo, &res, p.float("max_strain_pct")?, "signed");
+        write_strain(&mut pat, &geo, &res, limit, "signed");
         let fibre = p.vec3("fibre_dir")?;
         if fibre.length_squared() > 0.0 {
             let pf = ply_fields(&geo, &uv, fibre);
@@ -574,6 +701,198 @@ impl NodeOp for StretchAwareNode {
         ])
     }
 }
+
+/// One connected piece after flattening.
+struct Piece {
+    /// The cut (disk) mesh.
+    geo: Geometry,
+    /// Pattern coordinates by `geo` point index, aligned to the origin.
+    uv: Vec<DVec2>,
+    /// The conformal start, by `geo` point index.
+    uv0: Vec<DVec2>,
+    paths: usize,
+    iterations: usize,
+    energy: f64,
+    rel: f64,
+    converged: bool,
+    exact_weights: bool,
+    skipped: usize,
+    conflicts: usize,
+    fell_back: bool,
+}
+
+/// Message text of a cook error without the node prefix.
+fn error_text(e: &CookError) -> String {
+    match e {
+        CookError::Failed { message, .. } => message.clone(),
+        other => other.to_string(),
+    }
+}
+
+/// Cut one connected mesh into a disk, map it conformally and refine it.
+fn flatten_piece(
+    ctx: &CookContext,
+    g: &Geometry,
+    seam: Option<&Geometry>,
+    p: &Params,
+    o: &ArapOpts,
+) -> CookResult<Piece> {
+    let conflicts = winding_conflicts(g);
+    let (geo, paths, topo) = prepare_disk(
+        ctx,
+        g,
+        seam,
+        p.bool("auto_seam")?,
+        p.float("seam_tolerance_mm")?,
+    )?;
+    let comp = compact(&geo);
+    if degenerate_tris(&comp).iter().all(|&d| d) {
+        return Err(ctx.fail("every triangle is degenerate (zero area); nothing to flatten"));
+    }
+    let bl: Vec<u32> = topo.loops[0]
+        .iter()
+        .map(|&v| comp.map[v as usize])
+        .collect();
+    let (uv0, _, rel) = lscm(&comp, &bl, 1e-10, 20000).map_err(|e| ctx.fail(e))?;
+    if uv0.iter().any(|u| !u.is_finite()) {
+        return Err(ctx.fail(
+            "the conformal start has non-finite coordinates; the mesh is too degenerate to flatten",
+        ));
+    }
+    let ArapOut {
+        uv: refined,
+        iterations,
+        energy,
+        converged,
+        skipped,
+        exact_weights,
+    } = arap(&comp, &uv0, o);
+    let fell_back = refined.iter().any(|u| !u.is_finite());
+    let mut uvc = if fell_back { uv0.clone() } else { refined };
+    align_uv(&mut uvc, p.str("outside")? == "down");
+    let n = geo.points.len();
+    Ok(Piece {
+        uv: to_orig(&comp, &uvc, n),
+        uv0: to_orig(&comp, &uv0, n),
+        geo,
+        paths: paths.len(),
+        iterations,
+        energy,
+        rel,
+        converged,
+        exact_weights,
+        skipped,
+        conflicts,
+        fell_back,
+    })
+}
+
+/// Put the patterns of all pieces side by side along +x. Returns the merged
+/// mesh, the pattern coordinates and the gap used (0 for a single piece).
+fn layout(pieces: Vec<Piece>) -> (Geometry, Vec<DVec2>, f64) {
+    if pieces.len() == 1 {
+        let pc = pieces.into_iter().next().expect("one piece");
+        return (pc.geo, pc.uv, 0.0);
+    }
+    let width = |pc: &Piece| pc.uv.iter().map(|u| u.x).fold(0.0, f64::max);
+    let gap = (0.05 * pieces.iter().map(width).fold(0.0, f64::max)).max(1e-6);
+    let mut geo = Geometry::new();
+    let mut uv = Vec::new();
+    let mut x0 = 0.0;
+    for pc in &pieces {
+        uv.extend(pc.uv.iter().map(|u| DVec2::new(u.x + x0, u.y)));
+        geo.merge(&pc.geo);
+        x0 += width(pc) + gap;
+    }
+    (geo, uv, gap)
+}
+
+/// Face primitives of each connected piece (faces joined by a shared point),
+/// ordered by their first primitive.
+fn components(g: &Geometry) -> Vec<Vec<usize>> {
+    fn find(parent: &mut [u32], mut x: u32) -> u32 {
+        while parent[x as usize] != x {
+            parent[x as usize] = parent[parent[x as usize] as usize];
+            x = parent[x as usize];
+        }
+        x
+    }
+    let tris = g.triangles();
+    let mut parent: Vec<u32> = (0..g.points.len() as u32).collect();
+    for (_, t) in &tris {
+        for k in 1..3 {
+            let (a, b) = (find(&mut parent, t[0]), find(&mut parent, t[k]));
+            if a != b {
+                parent[a.max(b) as usize] = a.min(b);
+            }
+        }
+    }
+    let mut index: BTreeMap<u32, usize> = BTreeMap::new();
+    let mut groups: Vec<Vec<usize>> = Vec::new();
+    for (pi, t) in &tris {
+        let root = find(&mut parent, t[0]);
+        let gi = *index.entry(root).or_insert_with(|| {
+            groups.push(Vec::new());
+            groups.len() - 1
+        });
+        if groups[gi].last() != Some(pi) {
+            groups[gi].push(*pi);
+        }
+    }
+    groups
+}
+
+/// The given primitives of `g` as a mesh of their own, with their attributes.
+fn subset(g: &Geometry, prims: &[usize]) -> Geometry {
+    let mut map = vec![u32::MAX; g.points.len()];
+    let mut used: Vec<usize> = Vec::new();
+    let mut out = Geometry::new();
+    for &pi in prims {
+        let src = &g.prims[pi];
+        let vertices: Vec<u32> = src
+            .vertices
+            .iter()
+            .map(|&v| {
+                if map[v as usize] == u32::MAX {
+                    map[v as usize] = used.len() as u32;
+                    used.push(v as usize);
+                }
+                map[v as usize]
+            })
+            .collect();
+        out.prims.push(Prim {
+            vertices,
+            closed: src.closed,
+        });
+    }
+    out.points = used.iter().map(|&i| g.points[i]).collect();
+    out.point_attribs = g.point_attribs.gather_all(&used);
+    out.prim_attribs = g.prim_attribs.gather_all(prims);
+    out
+}
+
+/// Interior edges that both faces sharing them walk in the same direction:
+/// the sign of a flipped triangle among its neighbours.
+fn winding_conflicts(g: &Geometry) -> usize {
+    let mut edges: BTreeMap<(u32, u32), (u32, u32)> = BTreeMap::new();
+    for p in g.prims.iter().filter(|p| p.closed && p.vertices.len() >= 3) {
+        let n = p.vertices.len();
+        for s in 0..n {
+            let (a, b) = (p.vertices[s], p.vertices[(s + 1) % n]);
+            let e = edges.entry(ekey(a, b)).or_insert((0, 0));
+            if a < b {
+                e.0 += 1;
+            } else {
+                e.1 += 1;
+            }
+        }
+    }
+    edges
+        .values()
+        .filter(|&&(fwd, back)| fwd + back == 2 && (fwd == 2 || back == 2))
+        .count()
+}
+
 
 // ---------------------------------------------------------------------------
 // flatten.strain_report and flatten.uv_stretch_overlay
@@ -631,6 +950,7 @@ impl NodeOp for StrainReportNode {
             &StrainOpts {
                 deadband_pct: p.float("deadband_percent")?,
                 max_markers: p.int("max_markers")?.max(0) as usize,
+                ..Default::default()
             },
         );
         let mut r = Report::new("Flatten strain");
@@ -686,6 +1006,7 @@ impl NodeOp for UvOverlayNode {
             &StrainOpts {
                 deadband_pct: p.float("deadband_percent")?,
                 max_markers: 0,
+                ..Default::default()
             },
         );
         let mode = p.str("mode")?.to_string();

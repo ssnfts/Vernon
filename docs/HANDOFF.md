@@ -491,6 +491,61 @@ then the external solvers, then UI polish, then release.
     `#[ignore = "needs CalculiX"]` test that runs `ccx`).
 
 ### WP11 — Flatten and performance white-box nodes
+**Done:** both nodes now run their real algorithm and are no longer white-box
+(workspace: 192 implemented, 5 white-box). `flatten.stretch_aware` runs
+local/global ARAP iterations (closed-form 2x2 rotation per triangle, one sparse
+solve per iteration) from the LSCM start, and reports `strain_max_pct`,
+`strain_p95_pct` and `area_distortion_*_pct`. Measured: a half-cylinder patch
+(R 100, height 200 mm) has max strain 2.9e-8 %, p95 1.2e-8 %, max area
+distortion 2.6e-8 % (5 iterations); a seam-cut closed tube 1.7e-8 % max strain.
+On hemisphere-like caps ARAP beats LSCM: half angle 60 deg, max strain 15.24 %
+vs 19.92 % and max area distortion 13.41 % vs 34.52 %; half angle 90 deg,
+38.63 % vs 58.83 % and 32.14 % vs 113.50 % (p95 is about equal: 15.21 % vs
+15.22 % and 38.58 % vs 38.45 %, so only the max and the area figures improve).
+Degenerate triangles are skipped and counted, flipped triangles are reported as
+inconsistent-winding edges, non-finite points are refused and disconnected
+pieces are flattened separately, each with an explicit note and no NaNs.
+`outside = down` mirrors the pattern, and the strain, area and fold checks now
+run on the un-mirrored pattern (`flatten.conformal_map` too), so a mirrored
+pattern is no longer reported as folded (a 264-triangle cap used to report 264
+flipped); a note says so. Stretch-only and compress-only are weights of 10000,
+not hard constraints, and the rigid and floppy materials still run the same
+energy (both said in the report). Spec F2 (cap R 1000 mm, half angle 30 deg,
+tested on 10 rings x 64 sectors): (a) holds: the free flatten changes the area
+by -0.043 % and the boundary by +3.496 %, above the isoperimetric minimum of
+3.454 % at that area (the minimum at a preserved area is 3.476 % on this mesh,
+3.53 % on the smooth cap); (e) holds: mean boundary strain 2.4365 % with
+[10,10,1,1] against 3.4958 % with [1,1,1,1]. Not met, and left as `#[ignore]`d
+tests with the spec bounds unchanged: (b) `preserve_boundary` (edge weight 10)
+leaves the boundary 2.4365 % longer, not within 0.1 %, with area -2.078 %
+instead of <= -6.5 %; (c) stretch-only has 79.82 % of the area compressed above
+the 0.01 % dead-band (worst 0.1446 %; area +2.31 %, which is >= 0); (d)
+compress-only has 9.77 % stretched (worst 0.0174 %; area -6.668 %, which is
+<= 0). No fold-free line search yet. `perf.tuft_analysis` reads a CSV
+(`x,y,z,angle_deg`, optional `id` and `flow_deg`) or the JSON series and
+classifies each tuft into the spec's classes: reversed if the mean angle is
+more than `reversed_deg` off the flow, otherwise separated if it is more than
+`attached_deg` off or the angle std-dev exceeds `sd_separated_deg`, unsteady
+if only the std-dev exceeds `sd_attached_deg`, attached otherwise. The class
+codes keep the spec's numbers, 0 attached, 1 separated, 2 reversed, with
+unsteady added as 3 (spec golden test 18: tufts at 0, 20, 90 and 180 degrees
+are attached, attached, separated, reversed). With a surface input each face
+takes the class of the nearest tuft within `reach_mm` as prim attribs
+(`tuft_class`, `Cd`); faces with no tuft in reach get -1 in `tuft_class`,
+`tuft_offset_deg`, `tuft_sd_deg` and `tuft_dist_mm` (the help says so).
+`separated_pct` (class 1 only) and `reversed_pct` (class 2) are reported for
+all tufts and per region from the `part` attribute. Region names that differ
+only in punctuation get distinct metric keys (`_2` suffix) and a warning
+naming both. A JSON tuft without a numeric x, y and z is refused, as in the
+CSV. On the test strip (2 regions, 4 tufts, one per class) the node gives 25 %
+of each class, 0 % separated and 0 % reversed in the front region and 50 % and
+50 % in the rear. Photo input stays white-box: a photo input or no CSV gives
+the `white-box placeholder:` warning and no numbers. The class thresholds are
+still Vernon-proposed. Verified: `cargo test --workspace` 1225 passed, 0
+failed, 14 ignored; clippy with `-D warnings` clean; the example pipeline
+cooks 38 nodes with 0 failing gates and 2 expected; the app launch was not
+repeated after these fixes.
+
 - **`flatten.stretch_aware`:** ARAP parameterisation (Liu, Zhang, Xu, Gotsman,
   Gortler 2008, local/global), initialised from the existing LSCM node.
   - Report max and p95 strain, plus area distortion.
@@ -499,11 +554,11 @@ then the external solvers, then UI polish, then release.
 - **`perf.tuft_analysis`:**
   - Input is a CSV of tuft positions (x, y, z mm) and measured angles, or
     photos.
-  - Implement CSV first: classify each tuft as attached, unsteady or
-    separated by angle deviation and flutter (std-dev) thresholds, and map
+  - Implement CSV first: classify each tuft as attached, separated, reversed
+    or unsteady by angle deviation and flutter (std-dev) thresholds, and map
     the classes onto the surface as prim attribs.
   - Photo input stays white-box.
-  - Report `% separated` per region.
+  - Report `% separated` and `% reversed` per region.
 
 ### WP12 — File formats (`vernon-io`)
 - **E57 reader (ASTM E2807):**

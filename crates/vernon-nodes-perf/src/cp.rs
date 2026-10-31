@@ -350,12 +350,19 @@ pub fn compare(
 
 // ---------------------------------------------------------------- tufts
 
-/// Tuft behaviour classes.
+/// Tuft behaviour classes. The codes are written to the table and the point and face
+/// attributes. `Unsteady` was added after the other three, so they keep their numbers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TuftClass {
+    /// Aligned with the flow and steady.
     Attached = 0,
+    /// Off the flow by more than the attached limit, or fluttering beyond the separated limit,
+    /// but not pointing back upstream.
     Separated = 1,
+    /// Pointing back against the flow (mean offset beyond the reversed limit).
     Reversed = 2,
+    /// Still following the flow on average, but fluttering more than an attached tuft.
+    Unsteady = 3,
 }
 
 impl TuftClass {
@@ -364,6 +371,7 @@ impl TuftClass {
             TuftClass::Attached => "attached",
             TuftClass::Separated => "separated",
             TuftClass::Reversed => "reversed",
+            TuftClass::Unsteady => "unsteady",
         }
     }
 }
@@ -400,19 +408,27 @@ pub fn angle_diff_deg(a: f64, b: f64) -> f64 {
     d
 }
 
+/// Class from the mean offset from the flow and the angle spread (std-dev), both in degrees.
+/// Reversed: offset beyond `reversed_deg`. Separated: spread beyond `sd_separated_deg`, or
+/// offset beyond `attached_deg`. Attached: offset within `attached_deg` and spread within
+/// `sd_attached_deg`. Unsteady: offset within `attached_deg` and a spread between
+/// `sd_attached_deg` and `sd_separated_deg`.
+pub fn classify_deviation(offset_deg: f64, sd_deg: f64, th: &TuftThresholds) -> TuftClass {
+    if offset_deg.abs() > th.reversed_deg {
+        TuftClass::Reversed
+    } else if sd_deg > th.sd_separated_deg || offset_deg.abs() > th.attached_deg {
+        TuftClass::Separated
+    } else if sd_deg > th.sd_attached_deg {
+        TuftClass::Unsteady
+    } else {
+        TuftClass::Attached
+    }
+}
+
 /// Classify one tuft from its angle series and the local flow direction.
 /// Returns `(class, mean offset from the flow, sd)`.
 pub fn classify_tuft(angles_deg: &[f64], flow_deg: f64, th: &TuftThresholds) -> (TuftClass, f64, f64) {
     let (mean_a, sdv) = circular_stats_deg(angles_deg);
     let off = angle_diff_deg(mean_a, flow_deg);
-    let class = if off.abs() > th.reversed_deg {
-        TuftClass::Reversed
-    } else if sdv > th.sd_separated_deg {
-        TuftClass::Separated
-    } else if off.abs() <= th.attached_deg && sdv <= th.sd_attached_deg {
-        TuftClass::Attached
-    } else {
-        TuftClass::Separated
-    };
-    (class, off, sdv)
+    (classify_deviation(off, sdv, th), off, sdv)
 }

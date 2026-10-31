@@ -13,6 +13,10 @@ pub struct StrainOpts {
     /// Strains below this (percent length change) do not count as affected.
     pub deadband_pct: f64,
     pub max_markers: usize,
+    /// The pattern is the mirror image of the surface (it shows the other side of the sheet).
+    /// It is un-mirrored before it is measured, so a mirrored pattern is not mistaken for a
+    /// folded one: only triangles that are flipped relative to their neighbours count as flipped.
+    pub mirrored: bool,
 }
 
 impl Default for StrainOpts {
@@ -20,6 +24,7 @@ impl Default for StrainOpts {
         StrainOpts {
             deadband_pct: 0.01,
             max_markers: 10,
+            mirrored: false,
         }
     }
 }
@@ -37,6 +42,13 @@ pub struct StrainStats {
     pub compress_share_pct: f64,
     /// Worst absolute length change, percent.
     pub max_length_change_pct: f64,
+    /// 95th percentile (nearest rank) of the per-triangle worst length change, percent.
+    pub strain_p95_pct: f64,
+    /// Per-triangle area distortion `|A2 / A3 - 1|`, percent: worst, 95th
+    /// percentile and mean weighted by 3-D area.
+    pub area_distortion_max_pct: f64,
+    pub area_distortion_p95_pct: f64,
+    pub area_distortion_mean_pct: f64,
     pub flipped: usize,
     pub degenerate: usize,
     pub triangles: usize,
@@ -163,7 +175,12 @@ pub fn compute_strain(g: &Geometry, uv: &[DVec2], o: &StrainOpts) -> StrainResul
             g.points[t[1] as usize],
             g.points[t[2] as usize],
         ];
-        let u = [uv[t[0] as usize], uv[t[1] as usize], uv[t[2] as usize]];
+        let mut u = [uv[t[0] as usize], uv[t[1] as usize], uv[t[2] as usize]];
+        if o.mirrored {
+            for v in &mut u {
+                v.y = -v.y;
+            }
+        }
         let area = (p[1] - p[0]).cross(p[2] - p[0]).length() * 0.5;
         a3[ti] = area;
         a2[ti] = 0.5 * (u[1] - u[0]).perp_dot(u[2] - u[0]);
@@ -211,6 +228,16 @@ pub fn compute_strain(g: &Geometry, uv: &[DVec2], o: &StrainOpts) -> StrainResul
     st.stretch_max_pct = acc[0][2];
     st.compress_max_pct = acc[1][2];
     st.max_length_change_pct = acc[0][2].max(acc[1][2]);
+    let mut per_tri: Vec<f64> = worst.iter().map(|w| w.0).collect();
+    per_tri.sort_by(f64::total_cmp);
+    st.strain_p95_pct = vernon_core::stats::percentile_pct(&per_tri, 95.0);
+    let mut dist: Vec<f64> = worst.iter().map(|&(_, ti)| tri_area[ti].abs()).collect();
+    let weighted: f64 = worst.iter().map(|&(_, ti)| a3[ti] * tri_area[ti].abs()).sum();
+    let area_sum: f64 = worst.iter().map(|&(_, ti)| a3[ti]).sum();
+    dist.sort_by(f64::total_cmp);
+    st.area_distortion_max_pct = dist.last().copied().unwrap_or(0.0);
+    st.area_distortion_p95_pct = vernon_core::stats::percentile_pct(&dist, 95.0);
+    st.area_distortion_mean_pct = if area_sum > 0.0 { weighted / area_sum } else { 0.0 };
     worst.sort_by(|a, b| b.0.total_cmp(&a.0).then(a.1.cmp(&b.1)));
     let markers = worst
         .iter()
@@ -362,6 +389,30 @@ mod tests {
         let s = compute_strain(&g, &small, &StrainOpts::default()).stats;
         assert!((s.compress_avg_pct - 0.05).abs() < 1e-9);
         assert!((s.area_change_pct + 0.09997500).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_mirrored_pattern_is_not_a_folded_one() {
+        let (g, uv) = tri_pair();
+        let stretched: Vec<DVec2> = uv.iter().map(|u| DVec2::new(u.x * 1.1, u.y)).collect();
+        let mirror = |v: &[DVec2]| -> Vec<DVec2> { v.iter().map(|u| DVec2::new(u.x, -u.y)).collect() };
+        let opts = StrainOpts { mirrored: true, ..StrainOpts::default() };
+        // measured as it is, a mirror image has every triangle flipped
+        assert_eq!(compute_strain(&g, &mirror(&stretched), &StrainOpts::default()).stats.flipped, 2);
+        // declared mirrored, it has the numbers of the original pattern and no flips
+        let (a, b) = (
+            compute_strain(&g, &stretched, &StrainOpts::default()).stats,
+            compute_strain(&g, &mirror(&stretched), &opts).stats,
+        );
+        assert_eq!(b.flipped, 0);
+        assert!((a.stretch_max_pct - b.stretch_max_pct).abs() < 1e-9 && (b.stretch_max_pct - 10.0).abs() < 1e-9);
+        assert!(b.compress_max_pct < 1e-9);
+        assert!((a.area_change_pct - b.area_change_pct).abs() < 1e-9 && (b.area_change_pct - 10.0).abs() < 1e-9);
+        assert!((a.area_distortion_max_pct - b.area_distortion_max_pct).abs() < 1e-9);
+        // a triangle that really is folded is still found in a mirrored pattern
+        let mut folded = mirror(&uv);
+        folded[3] = DVec2::new(10.0, 10.0); // the mirror of the flip in `mirrored_triangle_is_flagged`
+        assert_eq!(compute_strain(&g, &folded, &opts).stats.flipped, 1);
     }
 
     #[test]
