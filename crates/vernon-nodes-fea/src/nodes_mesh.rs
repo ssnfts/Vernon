@@ -12,7 +12,7 @@ use vernon_graph::{CookContext, CookResult, Data, DataKind, NodeOp, NodeTypeInfo
 use crate::mesh::{
     boundary_faces, boundary_node_set, corner_points, element_size, gmsh_tet10_to_solver, mesh_volume, orient_positive, solid_from_tets, tet4_to_tet10, tet_quality, tri_surface, voxel_tets, BFace,
 };
-use crate::msh4::{read_header, read_msh4};
+use crate::msh4::{read_header, read_msh2_binary, read_msh4};
 use crate::solver::{find_executable, run_with_timeout, tail, RunStatus};
 use crate::spatial::ray_triangle;
 use crate::types::{finite, to_data, MountSet, MountSite};
@@ -100,6 +100,9 @@ pub fn read_mesher_output(bytes: &[u8]) -> Result<(Vec<DVec3>, Vec<[u32; 4]>), S
     let h = read_header(bytes)?;
     if h.version.starts_with("2.") && !h.binary {
         return read_msh2(std::str::from_utf8(bytes).map_err(|_| "non-text data in an ASCII mesh file")?);
+    }
+    if h.version.starts_with("2.") {
+        return read_msh2_binary(bytes);
     }
     read_msh4(bytes)
 }
@@ -546,7 +549,8 @@ mod tests {
         assert_eq!(read_mesher_output(crate::msh4::tests::ASCII.as_bytes()).unwrap().1.len(), 2);
         let v2 = "$MeshFormat\n2.2 0 8\n$EndMeshFormat\n$Nodes\n4\n1 0 0 0\n2 1 0 0\n3 0 1 0\n4 0 0 1\n$EndNodes\n$Elements\n1\n1 4 2 0 1 1 2 3 4\n$EndElements\n";
         assert_eq!(read_mesher_output(v2.as_bytes()).unwrap().1.len(), 1);
-        assert!(read_mesher_output(b"$MeshFormat\n2.2 1 8\n$EndMeshFormat\n").unwrap_err().contains("version 2.2"));
+        // binary format 2 is what the real mesher writes; a file with no data is still refused
+        assert!(read_mesher_output(b"$MeshFormat\n2.2 1 8\n$EndMeshFormat\n").is_err());
     }
 
     #[test]

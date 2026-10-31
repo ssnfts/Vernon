@@ -59,6 +59,84 @@ pub fn read_msh4(bytes: &[u8]) -> Result<(Vec<DVec3>, Vec<[u32; 4]>), String> {
     }
     let nodes = nodes.ok_or("the mesh file has no $Nodes section")?;
     let raw = raw.ok_or("the mesh file has no $Elements section")?;
+    renumber(&nodes, raw)
+}
+
+/// Nodes and corner-node tetrahedra of a binary format 2.2 file: each node is
+/// an id and three reals; elements come in blocks of type, count and tag count.
+pub fn read_msh2_binary(bytes: &[u8]) -> Result<(Vec<DVec3>, Vec<[u32; 4]>), String> {
+    let mut c = Cursor::new(bytes, false);
+    let h = c.header()?;
+    if !h.version.starts_with("2.") || !h.binary {
+        return Err(format!("not a binary format 2 mesh file (version {})", h.version));
+    }
+    if h.data_size != 8 {
+        return Err(format!("unsupported data size {} (expected 8)", h.data_size));
+    }
+    if c.take(4)? != 1i32.to_le_bytes() {
+        return Err("binary mesh file is not little-endian".into());
+    }
+    c.binary = true;
+    c.expect_line("$EndMeshFormat")?;
+    let mut nodes: Option<HashMap<u64, DVec3>> = None;
+    let mut raw: Option<Vec<[u64; 4]>> = None;
+    while let Some(section) = c.next_section()? {
+        match section.as_str() {
+            "$Nodes" if nodes.is_some() => return Err("more than one $Nodes section".into()),
+            "$Elements" if raw.is_some() => return Err("more than one $Elements section".into()),
+            "$Nodes" => {
+                let n = c.count_line()?;
+                let mut map = HashMap::new();
+                for _ in 0..n {
+                    let id = c.int()?;
+                    let p = DVec3::new(c.real()?, c.real()?, c.real()?);
+                    if map.insert(id as u64, p).is_some() {
+                        return Err(format!("duplicate node {id}"));
+                    }
+                }
+                nodes = Some(map);
+                c.expect_line("$EndNodes")?;
+            }
+            "$Elements" => {
+                let total = c.count_line()?;
+                let mut tets = Vec::new();
+                let mut read = 0u64;
+                while read < total {
+                    let (ty, count, tags) = (c.int()?, c.int()?, c.int()?);
+                    if count <= 0 || tags < 0 {
+                        return Err(format!("bad element block: {count} elements, {tags} tags"));
+                    }
+                    let (width, tet) = element_kind(ty)?;
+                    for _ in 0..count {
+                        c.int()?;
+                        for _ in 0..tags {
+                            c.int()?;
+                        }
+                        let mut ids = Vec::with_capacity(width);
+                        for _ in 0..width {
+                            ids.push(c.int()? as u64);
+                        }
+                        if tet {
+                            tets.push([ids[0], ids[1], ids[2], ids[3]]);
+                        }
+                    }
+                    read += count as u64;
+                }
+                if read != total {
+                    return Err(format!("element blocks hold {read} elements, the section declares {total}"));
+                }
+                raw = Some(tets);
+                c.expect_line("$EndElements")?;
+            }
+            other => c.skip_section(other)?,
+        }
+    }
+    let nodes = nodes.ok_or("the mesh file has no $Nodes section")?;
+    let raw = raw.ok_or("the mesh file has no $Elements section")?;
+    renumber(&nodes, raw)
+}
+
+fn renumber(nodes: &HashMap<u64, DVec3>, raw: Vec<[u64; 4]>) -> Result<(Vec<DVec3>, Vec<[u32; 4]>), String> {
     if raw.is_empty() {
         return Err("the mesh file has no tetrahedra".into());
     }
@@ -157,6 +235,15 @@ impl<'a> Cursor<'a> {
             self.pos += 1;
         }
         Ok(MshHeader { version: t[0].to_string(), binary, data_size })
+    }
+
+    /// A text count on its own line; binary data starts right after its newline.
+    fn count_line(&mut self) -> Result<u64, String> {
+        let l = self.line().ok_or("the mesh file is truncated")?;
+        if self.b.get(self.pos) == Some(&b'\n') {
+            self.pos += 1;
+        }
+        l.parse().map_err(|_| format!("bad count '{l}'"))
     }
 
     fn expect_line(&mut self, want: &str) -> Result<(), String> {
@@ -432,6 +519,31 @@ $ElementData\n1\n\"min_dihedral\"\n$EndElementData\n";
     fn huge_declared_counts_fail_without_allocating() {
         let huge = "$MeshFormat\n4.1 0 8\n$EndMeshFormat\n$Nodes\n1 18446744073709551615 1 9\n3 1 0 18446744073709551615\n1\n$EndNodes\n";
         assert!(err(huge).contains("bad count"));
+    }
+
+    fn binary2() -> Vec<u8> {
+        let mut b = b"$MeshFormat\n2.2 1 8\n".to_vec();
+        b.extend(1i32.to_le_bytes());
+        b.extend(b"\n$EndMeshFormat\n$Nodes\n4\n");
+        for (id, p) in [(1, [0.0, 0.0, 0.0]), (2, [1.0, 0.0, 0.0]), (3, [0.0, 1.0, 0.0]), (4, [0.0, 0.0, 1.0f64])] {
+            b.extend(i32::to_le_bytes(id));
+            p.iter().for_each(|v: &f64| b.extend(v.to_le_bytes()));
+        }
+        b.extend(b"\n$EndNodes\n$Elements\n1\n");
+        for v in [4, 1, 2, 1, 7, 8, 4, 3, 2, 1i32] {
+            b.extend(v.to_le_bytes());
+        }
+        b.extend(b"\n$EndElements\n$ElementData\nignored\n$EndElementData\n");
+        b
+    }
+
+    #[test]
+    fn binary_format_2_tets_are_read_and_truncation_refused() {
+        let (p, t) = read_msh2_binary(&binary2()).unwrap();
+        assert_eq!(t, [[0, 1, 2, 3]]);
+        assert_eq!(p[0], DVec3::new(0.0, 0.0, 1.0));
+        let whole = binary2();
+        assert!(read_msh2_binary(&whole[..whole.len() / 2]).is_err());
     }
 
     #[test]
