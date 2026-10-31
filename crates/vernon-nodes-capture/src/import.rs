@@ -14,7 +14,7 @@ use crate::units::{classify_size, parse_unit, unit_name, UnitVerdict};
 use crate::util::{self, base, set_metric_flag};
 
 /// File extensions the importers accept.
-pub const SCAN_EXTENSIONS: &[&str] = &["ply", "obj", "stl", "xyz", "pts", "asc", "3mf"];
+pub const SCAN_EXTENSIONS: &[&str] = &["ply", "obj", "stl", "xyz", "pts", "asc", "3mf", "e57", "las"];
 
 /// How to interpret the numbers in a file.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -99,9 +99,18 @@ pub fn import(opts: &ImportOptions) -> Result<(Geometry, Report), String> {
     let verdict = classify_size(raw_size);
     let mut report = Report::new(opts.title);
 
-    // 3MF declares its own unit and is already in mm after reading.
-    let (factor, metric, declared) = if format == Format::ThreeMf {
-        (1.0, true, Some(FileUnit::Millimetre))
+    // 3MF, E57 and LAS declare their own unit and are already in mm after
+    // reading. A LAS file that states none was read as metres, a guess, so its
+    // scale is unverified and the geometry is not marked metric.
+    let las_assumed = format == Format::Las && vernon_io::las_unit_was_assumed(&geo);
+    if las_assumed {
+        report.note(
+            Severity::Warning,
+            "LAS: the file does not state its length unit, so metres were assumed; the geometry is marked non-metric. If the unit is right, run Set Units (from mm) to mark it metric; if the file uses another unit, fix the scale with Set Units (factor) or a scale node, or read it with File Read and its 'las_unit' parameter",
+        );
+    }
+    let (factor, metric, declared) = if matches!(format, Format::ThreeMf | Format::E57 | Format::Las) {
+        (1.0, !las_assumed, Some(FileUnit::Millimetre))
     } else {
         match opts.unit {
             UnitChoice::Fixed(u) => (u.to_mm(), true, Some(u)),
@@ -196,7 +205,7 @@ fn path_param() -> ParamSpec {
     ParamSpec::path("path", "File", SCAN_EXTENSIONS, false).help("Scan file to read.")
 }
 
-/// Import a scanner export (PLY, OBJ, STL, XYZ/PTS/ASC, 3MF).
+/// Import a scanner export (PLY, OBJ, STL, XYZ/PTS/ASC, 3MF, E57, LAS).
 pub struct ImportScan;
 
 impl NodeOp for ImportScan {
@@ -206,7 +215,7 @@ impl NodeOp for ImportScan {
                 .param(path_param())
                 .param(
                     ParamSpec::choice("unit", "File unit", "mm", &["mm", "cm", "m", "in", "auto"])
-                        .help("Unit of the numbers in the file. 'auto' uses the vehicle-scale size check and falls back to non-metric when unsure."),
+                        .help("Unit of the numbers in the file. 'auto' uses the vehicle-scale size check and falls back to non-metric when unsure. 3MF, E57 and LAS state their own unit and ignore this; a LAS file that states none is read as metres and marked non-metric."),
                 )
                 .param(ParamSpec::bool("unit_check", "Size check", true).help("Warn when the size does not match the chosen unit."))
                 .param(ParamSpec::bool("weld", "Weld STL vertices", true).help("Merge coincident vertices of STL files."))
@@ -401,5 +410,128 @@ impl NodeOp for MarkerTable {
         rep.metric("marker_count", Metric::new(geo.point_count() as f64, "markers"));
         util::bbox_metrics(&mut rep, &geo);
         Ok(vec![Data::geometry(geo), Data::report(rep)])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use glam::DVec3;
+    use vernon_graph::ParamValue;
+
+    use super::*;
+    use crate::util::metric_flag;
+
+    /// A LAS 1.2 file, point format 0, scale 0.001, with an optional GeoTIFF
+    /// key directory holding (key, value) pairs.
+    fn las(points: &[[i32; 3]], keys: Option<&[(u16, u16)]>) -> Vec<u8> {
+        let mut vlr = Vec::new();
+        if let Some(keys) = keys {
+            let mut words = vec![1u16, 1, 0, keys.len() as u16];
+            for (k, v) in keys {
+                words.extend([*k, 0, 1, *v]);
+            }
+            let body: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
+            vlr = vec![0u8; 54];
+            vlr[2..17].copy_from_slice(b"LASF_Projection");
+            vlr[18..20].copy_from_slice(&34735u16.to_le_bytes());
+            vlr[20..22].copy_from_slice(&(body.len() as u16).to_le_bytes());
+            vlr.extend(body);
+        }
+        let mut b = vec![0u8; 227];
+        b[0..4].copy_from_slice(b"LASF");
+        b[24] = 1;
+        b[25] = 2;
+        b[94..96].copy_from_slice(&227u16.to_le_bytes());
+        b[96..100].copy_from_slice(&((227 + vlr.len()) as u32).to_le_bytes());
+        b[100..104].copy_from_slice(&u32::from(keys.is_some()).to_le_bytes());
+        b[105..107].copy_from_slice(&20u16.to_le_bytes());
+        b[107..111].copy_from_slice(&(points.len() as u32).to_le_bytes());
+        for a in 0..3 {
+            b[131 + 8 * a..139 + 8 * a].copy_from_slice(&0.001f64.to_le_bytes());
+        }
+        b.extend(vlr);
+        for p in points {
+            let mut r = vec![0u8; 20];
+            for (a, v) in p.iter().enumerate() {
+                r[4 * a..4 * a + 4].copy_from_slice(&v.to_le_bytes());
+            }
+            b.extend(r);
+        }
+        b
+    }
+
+    /// Cook `capture.import_scan` on a file written under a fresh temp folder.
+    fn cook_import(name: &str, bytes: &[u8], unit: &str) -> Result<(Geometry, Report), String> {
+        let dir = std::env::temp_dir().join(format!("vernon-capture-import-{}-{}", name.replace('.', "_"), std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(name);
+        std::fs::write(&path, bytes).unwrap();
+        let node = ImportScan;
+        let mut params = Params::from_specs(&node.info().params);
+        params.set("path", ParamValue::Str(path.to_str().unwrap().to_string()));
+        params.set("unit", ParamValue::Str(unit.to_string()));
+        let ctx = CookContext { node_name: "import".into(), work_dir: dir.clone(), frame: 0.0 };
+        let out = node.cook(&ctx, &[], &params).map_err(|e| e.to_string());
+        std::fs::remove_dir_all(&dir).ok();
+        let out = out?;
+        let geo = (**out[0].as_geometry().unwrap()).clone();
+        Ok((geo, (**out[1].as_report().unwrap()).clone()))
+    }
+
+    fn warnings(r: &Report) -> Vec<&str> {
+        r.notes.iter().filter(|(s, _)| *s == Severity::Warning).map(|(_, t)| t.as_str()).collect()
+    }
+
+    // 1, 2 and 3 file units after the scale.
+    const POINTS: [[i32; 3]; 2] = [[0, 0, 0], [1000, 2000, 3000]];
+
+    #[test]
+    fn the_scan_extensions_include_e57_and_las() {
+        for ext in ["e57", "las"] {
+            assert!(SCAN_EXTENSIONS.contains(&ext), "{ext}");
+        }
+        let info = ImportScan.info();
+        let path = info.params.iter().find(|p| p.name == "path").unwrap();
+        let text = format!("{:?}", path.kind);
+        assert!(text.contains("e57") && text.contains("las"), "{text}");
+    }
+
+    #[test]
+    fn a_las_file_that_states_its_unit_imports_in_millimetres_and_metric() {
+        let keys = [(1024, 1), (3076, 9001)];
+        for unit in ["mm", "in", "auto"] {
+            // The node's unit does not apply to LAS: the file states metres.
+            let (g, r) = cook_import("states_unit.las", &las(&POINTS, Some(&keys)), unit).unwrap();
+            assert_eq!(g.point_count(), 2, "{unit}");
+            assert!((g.points[1] - DVec3::new(1000.0, 2000.0, 3000.0)).abs().max_element() < 1e-9, "{unit}");
+            assert_eq!(metric_flag(&g), Some(true), "{unit}");
+            assert_eq!(r.metrics["unit_scale"].value, 1.0);
+            assert_eq!(r.metrics["metric"].value, 1.0);
+            assert!(!warnings(&r).iter().any(|w| w.contains("LAS")), "{unit}: {:?}", warnings(&r));
+            assert_eq!(g.detail_attribs.strs("las_unit_source").unwrap(), &["header".to_string()]);
+        }
+    }
+
+    #[test]
+    fn a_las_file_without_a_stated_unit_is_read_as_metres_but_flagged() {
+        // No coordinate-system record, and an EPSG code with no unit key.
+        for keys in [None, Some(&[(1024u16, 1u16), (3072, 2263)][..])] {
+            let (g, r) = cook_import("assumed.las", &las(&POINTS, keys), "mm").unwrap();
+            assert!((g.points[1] - DVec3::new(1000.0, 2000.0, 3000.0)).abs().max_element() < 1e-9);
+            assert_eq!(metric_flag(&g), Some(false), "an assumed unit is not verified");
+            assert_eq!(r.metrics["metric"].value, 0.0);
+            let w = warnings(&r);
+            assert!(w.iter().any(|t| t.contains("metres were assumed") && t.contains("non-metric")), "{w:?}");
+        }
+    }
+
+    #[test]
+    fn e57_goes_through_the_reader_and_laz_stays_refused() {
+        // Damaged bytes with an .e57 name reach the E57 reader (not the
+        // extension check), which names the problem.
+        let e = cook_import("broken.e57", b"not an e57 file", "mm").unwrap_err();
+        assert!(e.contains("E57") && !e.contains("unsupported file type"), "{e}");
+        let e = cook_import("tile.laz", &las(&POINTS, None), "mm").unwrap_err();
+        assert!(e.contains("unsupported file type '.laz'"), "{e}");
     }
 }

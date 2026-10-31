@@ -21,6 +21,13 @@
 //! | PLY | ASCII, binary little/big endian; `x y z`, `nx ny nz` -> `N`, `red green blue` -> `Cd` (0..1), `s t` -> `uv`, other scalars -> Float/Int attribs, face `vertex_indices` | binary little endian (or ASCII); positions as `double` |
 //! | 3MF | all build items, components and transforms flattened; model `unit` honoured; prim `part` = build item index | one object per distinct prim `part` value |
 //! | XYZ/PTS | `x y z [nx ny nz] [r g b]`, PTS `x y z i [r g b]`; headers and comments skipped | XYZ: `x y z [nx ny nz] [r g b]`; PTS: count line then `x y z i [r g b]` |
+//! | E57 | every `data3D` scan: `cartesianX/Y/Z`, `colorRed/Green/Blue` -> `Cd` (0..1), `intensity`; scan pose applied; metres -> mm; page checksums verified | read only |
+//! | LAS 1.2-1.4 | point formats 0-10: scale and offset applied, `intensity`, `classification`, colour -> `Cd` (0..1); unit from the CRS records (horizontal and vertical units apart) or [`read_las_bytes`], metres by default; the detail attribute `las_unit_source` says which (`parameter`, `header` or `assumed_metres`, see [`las_unit_was_assumed`]); LAZ refused | read only |
+//!
+//! E57 and LAS carry their own length units (E57 always metres), so
+//! [`ReadOptions::unit`] does not apply to them, as with 3MF. Reading a
+//! `.laz` path reports that LAZ is unsupported. E57 refuses a kept point
+//! whose `intensity` or `Cd` value is NaN or infinite.
 //!
 //! Open polylines are only written by OBJ; STL, PLY and 3MF write closed
 //! polygons only.
@@ -39,6 +46,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use vernon_core::Geometry;
 
+mod bin;
+mod e57;
+mod las;
 mod obj;
 mod ply;
 mod stl;
@@ -63,6 +73,10 @@ pub enum Format {
     ThreeMf,
     /// Plain-text point cloud: one `x y z [nx ny nz] [r g b]` per line.
     Xyz,
+    /// ASTM E2807 point-cloud container. Read only.
+    E57,
+    /// LAS 1.2 to 1.4 airborne/terrestrial point cloud. Read only; LAZ is refused.
+    Las,
 }
 
 impl Format {
@@ -74,14 +88,23 @@ impl Format {
             "ply" => Format::Ply,
             "3mf" => Format::ThreeMf,
             "xyz" | "pts" | "txt" => Format::Xyz,
+            "e57" => Format::E57,
+            // `.laz` is accepted so that reading it says LAZ is unsupported.
+            "las" | "laz" => Format::Las,
             _ => return None,
         })
     }
 
     /// Identify a file image from its leading bytes. Only formats with a
-    /// signature are recognised (PLY, 3MF/zip, STL ASCII or binary); OBJ and
-    /// XYZ/PTS are plain text and need their extension.
+    /// signature are recognised (PLY, 3MF/zip, E57, LAS, STL ASCII or binary);
+    /// OBJ and XYZ/PTS are plain text and need their extension.
     pub fn sniff(bytes: &[u8]) -> Option<Format> {
+        if bytes.starts_with(b"ASTM-E57") {
+            return Some(Format::E57);
+        }
+        if bytes.starts_with(b"LASF") {
+            return Some(Format::Las);
+        }
         if bytes.starts_with(b"ply") && matches!(bytes.get(3), Some(b'\n' | b'\r')) {
             return Some(Format::Ply);
         }
@@ -103,8 +126,20 @@ impl Format {
         None
     }
 
+    /// Extensions [`read()`] accepts.
     pub fn extensions() -> &'static [&'static str] {
+        &["obj", "stl", "ply", "3mf", "xyz", "pts", "e57", "las"]
+    }
+
+    /// Extensions [`write()`] accepts: [`Format::extensions`] without the
+    /// read-only point-cloud containers.
+    pub fn write_extensions() -> &'static [&'static str] {
         &["obj", "stl", "ply", "3mf", "xyz", "pts"]
+    }
+
+    /// Whether this format can be written (E57 and LAS are read only).
+    pub fn can_write(self) -> bool {
+        !matches!(self, Format::E57 | Format::Las)
     }
 }
 
@@ -210,15 +245,44 @@ pub fn read_bytes(format: Format, bytes: &[u8], opts: &ReadOptions) -> IoResult<
     read_named(format, bytes, opts, "<memory>")
 }
 
+/// Read a LAS 1.2 to 1.4 file image held in memory, naming the unit of its
+/// coordinates. `None` takes the unit from the file's coordinate-system
+/// records and falls back to metres (what [`read_bytes`] does). The result is
+/// in millimetres.
+pub fn read_las_bytes(bytes: &[u8], unit: Option<FileUnit>) -> IoResult<Geometry> {
+    let geo = las::read(bytes, "<memory>", unit)?;
+    finish_read(geo, &ReadOptions::default(), Format::Las, "<memory>")
+}
+
+/// Whether `geo`, as returned by the LAS reader, took its length unit by
+/// assuming metres because the file's coordinate-system records state none
+/// (its `las_unit_source` detail attribute is `assumed_metres`). A caller
+/// should tell the user, since a foot-based file would be off by 3.28. False
+/// for every other geometry.
+pub fn las_unit_was_assumed(geo: &Geometry) -> bool {
+    geo.detail_attribs
+        .strs("las_unit_source")
+        .is_ok_and(|v| v.first().map(String::as_str) == Some(las::UNIT_ASSUMED_METRES))
+}
+
 fn read_named(format: Format, bytes: &[u8], opts: &ReadOptions, file: &str) -> IoResult<Geometry> {
-    let mut geo = match format {
+    let geo = match format {
         Format::Obj => obj::read(bytes, file)?,
         Format::Stl => stl::read(bytes, file)?,
         Format::Ply => ply::read(bytes, file)?,
         Format::ThreeMf => threemf::read(bytes, file)?,
         Format::Xyz => xyz::read(bytes, file)?,
+        Format::E57 => e57::read(bytes, file)?,
+        Format::Las => las::read(bytes, file, None)?,
     };
-    if format != Format::ThreeMf {
+    finish_read(geo, opts, format, file)
+}
+
+/// Unit conversion, finiteness check, optional STL weld and validation shared
+/// by every reader.
+fn finish_read(mut geo: Geometry, opts: &ReadOptions, format: Format, file: &str) -> IoResult<Geometry> {
+    // 3MF, E57 and LAS state their own unit and arrive in millimetres.
+    if !matches!(format, Format::ThreeMf | Format::E57 | Format::Las) {
         let k = opts.unit.to_mm();
         if k != 1.0 {
             for p in &mut geo.points {
@@ -264,12 +328,23 @@ const F32_ULP_REL: f64 = 1.192_092_9e-7;
 pub fn write(path: &Path, geo: &Geometry, opts: &WriteOptions) -> IoResult<()> {
     let format =
         Format::from_path(path).ok_or_else(|| IoError::Unsupported(path.display().to_string()))?;
+    ensure_writable_format(format)?;
     let pts = path
         .extension()
         .and_then(|e| e.to_str())
         .is_some_and(|e| e.eq_ignore_ascii_case("pts"));
     check_writable(geo)?;
     write_atomic(path, |w| write_to(w, format, geo, opts, pts))
+}
+
+fn ensure_writable_format(format: Format) -> IoResult<()> {
+    if format.can_write() {
+        Ok(())
+    } else {
+        Err(IoError::Other(format!(
+            "{format:?} files can be read but not written"
+        )))
+    }
 }
 
 /// Preconditions shared by every writer: consistent attribute lengths, valid
@@ -320,6 +395,7 @@ fn write_atomic(
 /// Encode a geometry into an in-memory file image (`Format::Xyz` writes the
 /// plain XYZ layout).
 pub fn write_bytes(format: Format, geo: &Geometry, opts: &WriteOptions) -> IoResult<Vec<u8>> {
+    ensure_writable_format(format)?;
     check_writable(geo)?;
     if format == Format::ThreeMf {
         return threemf::write(geo, opts);
@@ -342,6 +418,10 @@ fn write_to<W: Write>(
         Format::Stl => stl::write(w, geo, scale, opts.ascii),
         Format::Ply => ply::write(w, geo, scale, opts.ascii),
         Format::Xyz => xyz::write(w, geo, scale, pts),
+        Format::E57 | Format::Las => {
+            ensure_writable_format(format)?;
+            Ok(())
+        }
         Format::ThreeMf => {
             let bytes = threemf::write(geo, opts)?;
             w.write_all(&bytes)?;
@@ -787,5 +867,119 @@ endsolid t
             assert_eq!(weld_points(&mut g, tol), 0, "round {round}");
             assert_eq!(g, once, "round {round}");
         }
+    }
+
+    #[test]
+    fn point_cloud_containers_are_registered() {
+        for (name, want) in [
+            ("scan.e57", Format::E57),
+            ("SCAN.E57", Format::E57),
+            ("tile.las", Format::Las),
+            ("a/b/Tile.LAS", Format::Las),
+            ("tile.laz", Format::Las),
+        ] {
+            assert_eq!(Format::from_path(Path::new(name)), Some(want), "{name}");
+        }
+        assert!(Format::extensions().contains(&"e57") && Format::extensions().contains(&"las"));
+        assert!(!Format::write_extensions().contains(&"e57"));
+        assert!(!Format::write_extensions().contains(&"las"));
+        assert!(Format::write_extensions()
+            .iter()
+            .all(|e| Format::extensions().contains(e)));
+        assert!(!Format::E57.can_write() && !Format::Las.can_write() && Format::Ply.can_write());
+        assert_eq!(
+            Format::sniff(&crate::e57::testing::sample_file()),
+            Some(Format::E57)
+        );
+        assert_eq!(
+            Format::sniff(&crate::las::testing::sample_file()),
+            Some(Format::Las)
+        );
+    }
+
+    #[test]
+    fn e57_and_las_read_in_millimetres_whatever_unit_is_asked_for() {
+        let dir = temp_dir("pointcloud-read");
+        let e57_path = dir.join("scan.e57");
+        let las_path = dir.join("tile.las");
+        std::fs::write(&e57_path, crate::e57::testing::sample_file()).unwrap();
+        std::fs::write(&las_path, crate::las::testing::sample_file()).unwrap();
+        let inch = ReadOptions {
+            unit: FileUnit::Inch,
+            ..Default::default()
+        };
+        for path in [&e57_path, &las_path] {
+            let a = read(path, &ReadOptions::default()).unwrap();
+            let b = read(path, &inch).unwrap();
+            assert!(a.is_point_cloud(), "{}", path.display());
+            assert_eq!(a.points, b.points, "{}", path.display());
+            assert!(a.point_attribs.vec3s("Cd").is_ok(), "{}", path.display());
+            let from_memory = read_bytes(
+                Format::from_path(path).unwrap(),
+                &std::fs::read(path).unwrap(),
+                &ReadOptions::default(),
+            )
+            .unwrap();
+            assert_eq!(from_memory.points, a.points);
+        }
+        assert_eq!(read(&e57_path, &inch).unwrap().point_count(), 40);
+        assert_eq!(read(&las_path, &inch).unwrap().point_count(), 25);
+        // LAS coordinates are metres unless told otherwise.
+        let las_bytes = std::fs::read(&las_path).unwrap();
+        let as_metres = read_las_bytes(&las_bytes, None).unwrap();
+        let as_mm = read_las_bytes(&las_bytes, Some(FileUnit::Millimetre)).unwrap();
+        assert_eq!(as_metres, read(&las_path, &ReadOptions::default()).unwrap());
+        for (m, mm) in as_metres.points.iter().zip(&as_mm.points) {
+            assert!((*m - *mm * 1000.0).abs().max_element() < 1e-6);
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn laz_paths_report_that_laz_is_unsupported() {
+        let dir = temp_dir("laz");
+        let mut bytes = crate::las::testing::sample_file();
+        bytes[104] |= 0x80; // the point format byte carries the compression flag
+        let path = dir.join("tile.laz");
+        std::fs::write(&path, &bytes).unwrap();
+        let err = read(&path, &ReadOptions::default()).unwrap_err().to_string();
+        assert!(err.contains("LAZ"), "{err}");
+        let err = read_las_bytes(&bytes, Some(FileUnit::Metre)).unwrap_err().to_string();
+        assert!(err.contains("LAZ"), "{err}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn e57_and_las_are_read_only() {
+        let dir = temp_dir("pointcloud-write");
+        let g = Geometry::make_box(DVec3::splat(10.0));
+        for ext in ["e57", "las"] {
+            let path = dir.join(format!("out.{ext}"));
+            let err = write(&path, &g, &WriteOptions::default())
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains("read but not written"), "{ext}: {err}");
+            assert!(!path.exists(), "{ext}: a refused write must not create the file");
+        }
+        for format in [Format::E57, Format::Las] {
+            assert!(write_bytes(format, &g, &WriteOptions::default()).is_err());
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn damaged_point_cloud_files_fail_cleanly_through_the_public_api() {
+        let mut e57 = crate::e57::testing::sample_file();
+        let last = e57.len() - 1;
+        e57[last] ^= 0xFF; // inside the last page's checksum
+        let err = read_bytes(Format::E57, &e57, &ReadOptions::default())
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("checksum"), "{err}");
+        let las = crate::las::testing::sample_file();
+        let err = read_bytes(Format::Las, &las[..las.len() - 1], &ReadOptions::default())
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("truncated"), "{err}");
     }
 }

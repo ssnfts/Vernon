@@ -1,6 +1,6 @@
 [package]
 name = "vernon-io"
-description = "Vernon file I/O: OBJ, STL, PLY, 3MF and XYZ/PTS point clouds"
+description = "Vernon file I/O: OBJ, STL, PLY, 3MF and XYZ/PTS, plus E57 and LAS point-cloud readers"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

@@ -569,6 +569,62 @@ repeated after these fixes.
   - Report `% separated` and `% reversed` per region.
 
 ### WP12 — File formats (`vernon-io`)
+**Done:** E57 and LAS 1.2–1.4 readers are in `crates/vernon-io` (`e57.rs`,
+`las.rs`, shared bounds-checked reads in `bin.rs`; `xml.rs` gained
+`Reader::text`). Both read in millimetres and are read only. **STEP was
+skipped** (it was optional); there is no STEP reader. LAZ is detected and
+refused with a clear error; no decoder was added and no dependency changed.
+- **E57:** every page CRC-32C is checked before anything else, and the header
+  length, page size and all offsets and counts are checked against the file, so
+  a flipped byte, a cut file or a lying record count is an error, not wrong
+  points. Reads `cartesianX/Y/Z`, `colorRed/Green/Blue` (to `Cd`, 0..1),
+  `intensity` and `cartesianInvalidState` (invalid points dropped) from
+  Integer, ScaledInteger and single/double Float fields, applies each scan's
+  quaternion and translation, and converts metres to mm. Spherical-only scans,
+  custom codecs, nested prototypes and compressor restarts return explicit errors.
+  A kept point whose `intensity` or colour value is NaN or infinite (Float
+  fields can hold them) is an error, so no non-finite attribute reaches the
+  geometry; points dropped as invalid are not examined.
+- **LAS:** point formats 0–10, scale and offset, `intensity`, `classification`,
+  `Cd`. The unit comes from the file's GeoTIFF or WKT coordinate-system records,
+  else a parameter (`read_las_bytes(bytes, Some(unit))`, and the new `las_unit`
+  choice on `geo.file_read`), else metres; a geographic (degrees) system is an
+  error unless a unit is given. `.laz` maps to `Format::Las` so reading it says
+  LAZ is unsupported. GeoTIFF keys: `ProjLinearUnitsGeoKey` (3076) sets X and Y,
+  `VerticalUnitsGeoKey` (4099) sets Z (Z follows X and Y when it is absent). A
+  CRS given only by an EPSG code (`ProjectedCSTypeGeoKey`, 3072) states no unit,
+  so it is read as metres, not refused. The geometry records how the unit was
+  decided in the detail attribute `las_unit_source` (`parameter`, `header` or
+  `assumed_metres`), and `geo.file_read` emits a `Warning` naming the
+  assumption and the `las_unit` parameter when it is `assumed_metres`. Known
+  gaps: a WKT compound system's vertical unit is still not applied to Z (a test
+  asserts it), and `las_unit` has no foot choice (for feet, read with `mm` and
+  scale by 304.8).
+- **Capture import:** `capture.import_scan` (and `capture.import_phone_scan`,
+  which shares the list) now accept `.e57` and `.las` through `vernon_io`.
+  Like 3MF they state their own unit, so the node's unit choice is ignored. A
+  LAS file with an assumed unit is read as metres, marked non-metric and given
+  a `Warning`; Set Units (from `mm`) marks it metric once the unit is confirmed.
+  Tested with synthetic LAS files; E57 through the node is tested only as far as
+  reaching the E57 reader (a damaged file), because the E57 builder is private
+  to `vernon-io`'s tests.
+- **Formats:** `Format::E57` and `Format::Las` in `from_path`, `sniff` and
+  `extensions()`; `write_extensions()` and `can_write()` keep them out of
+  writing, and the writers refuse them before touching any file.
+- **Not proven against real files:** the tests build small E57 and LAS files
+  inside the test from the public format descriptions (the CRC-32C matches the
+  standard check value `0xE3069283`), so the page-checksum byte order (big
+  endian) and field layouts are only checked against our own builder. Try a
+  real scanner E57 and a real LAS before relying on them.
+- **Verified:** `cargo test --workspace` 1251 passed, 0 failed, 11 ignored
+  (`vernon-io` 115 passed, including 19 E57, 15 LAS and 4 integration tests with
+  every-byte-flipped, every-length-truncated and lying-count cases);
+  `cargo clippy --workspace --all-targets -- -D warnings` clean; example cook 38
+  nodes, 0 failing gates, 2 expected; the app stayed open for 8 seconds.
+  `docs/NODES.md` regenerates with no content change (the new parameter is not
+  listed there).
+
+The original brief:
 - **E57 reader (ASTM E2807):**
   - Physical file: 1024-byte pages with CRC-32C, an XML section, then binary
     sections.
