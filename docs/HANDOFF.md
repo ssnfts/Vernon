@@ -472,13 +472,16 @@ then the external solvers, then UI polish, then release.
 ### WP10 — FEA: tet meshing and native linear solver (`fea.tet_mesh`, `fea.solve_linear`)
 - **`tet_mesh`:** DONE. Runs fTetWild (MPL-2.0, run as a process):
   `FloatTetwild_bin -i in.stl -o out.msh -l <rel_edge> -e <eps>`.
-  - `msh4.rs` parses Gmsh 4.1 `.msh`, ASCII and binary, into nodes and C3D4
-    elements.
+  - `msh4.rs` parses Gmsh `.msh` into nodes and C3D4 elements: 4.1 ASCII and
+    binary, 2.2 ASCII, and the binary 2.2 the real program writes.
   - The voxel fallback stays. `placeholder` is 0 when fTetWild ran, 1 otherwise.
   - The example does not run fTetWild, so that node keeps its `expect_fail`.
-  - The `#[ignore = "needs fTetWild"]` end-to-end test has not been run yet:
-    the program is not installed here. Tests use a stand-in script, and the
-    real program's output format is still unconfirmed.
+  - Real program: fTetWild commit `8118f81`, built in the `Vernon-Ubuntu-24.04`
+    WSL distro at `/opt/ftetwild`. `tools/ftetwild/FloatTetwild_bin.cmd`, outside
+    the repo, translates Windows paths. Run the `needs fTetWild` tests with that
+    folder on PATH. They mesh a box, a curved prism and a non-convex prism at
+    order 2, all within 1% volume. The node is implemented; its voxel fallback
+    stays flagged. This has not been tried on a scanned car panel.
 - **`solve_linear`:** DONE, including the external cross-check. Native reference
   solver for C3D4 and C3D10.
   - Element stiffness from linear/quadratic tet shape functions; orthotropic

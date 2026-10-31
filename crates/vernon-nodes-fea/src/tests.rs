@@ -108,8 +108,7 @@ fn registration_is_complete_and_well_formed() {
     for (id, tool) in [("fea.deck_write", "CalculiX"), ("fea.solve_external", "CalculiX"), ("fea.result_read", "CalculiX"), ("fea.tet_mesh", "fTetWild")] {
         assert_eq!(reg.info(id).unwrap().external_tool.as_deref(), Some(tool), "{id}");
     }
-    assert!(reg.info("fea.tet_mesh").unwrap().whitebox, "the real mesher's output has not been checked");
-    for id in ["fea.solve_linear", "fea.material_fdm", "fea.material_table", "fea.load_aero", "fea.deck_write", "fea.result_read", "fea.safety_factor", "fea.mount_report", "fea.hand_check"] {
+    for id in ["fea.tet_mesh", "fea.solve_linear", "fea.material_fdm", "fea.material_table", "fea.load_aero", "fea.deck_write", "fea.result_read", "fea.safety_factor", "fea.mount_report", "fea.hand_check"] {
         assert!(!reg.info(id).unwrap().whitebox, "{id} is implemented for real");
     }
 }

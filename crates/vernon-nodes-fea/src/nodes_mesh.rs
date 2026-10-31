@@ -130,8 +130,9 @@ impl NodeOp for TetMesh {
             .param(ParamSpec::bool("run", "Run external mesher", false).help("Run the executable below once on the written surface file and read its mesh; switches itself off again").action())
             .param(ParamSpec::path("exe_path", "Mesher executable", &["exe", ""], false).help("Empty searches the program path"))
             .param(ParamSpec::float("timeout_s", "Timeout", 600.0, 1.0, 86400.0).unit("s").help("Longest the mesher may run before it is stopped, in seconds."))
-            .help("Tetrahedral mesh of a closed triangle surface. The built-in mesher fills the surface with stair-stepped voxel tetrahedra (not conformal); an external open-source mesher can be run instead on the written surface file.")
+            .help("Tetrahedral mesh of a closed triangle surface. With run on, an external open-source mesher builds a mesh that follows the surface within the envelope tolerance. Otherwise, or when the mesher is not found, a built-in stand-in fills the surface with stair-stepped voxel tetrahedra; that result is flagged and fails its gate.")
             .emulates("conformal tetrahedral meshing of a closed triangle surface")
+            .implemented()
             .external("fTetWild")
     }
 
@@ -560,6 +561,59 @@ mod tests {
         let out = TetMesh.cook(&work("real"), &[Some(Data::geometry(surf))], &run_params("")).unwrap();
         let rep = out[1].as_report().unwrap();
         assert_eq!(rep.metrics["placeholder"].value, 0.0, "fTetWild must be on the program path: {:?}", rep.notes);
+        assert!(rep.metrics["volume_error_pct"].value < 1.0, "{:?}", rep.metrics);
+        assert!(rep.metrics["min_dihedral_deg"].value > 0.0, "{:?}", rep.metrics);
+    }
+
+    /// A closed prism over `outline` (counter-clockwise, star-shaped about its
+    /// first point), from z = 0 to `height`.
+    fn prism(outline: &[(f64, f64)], height: f64) -> Geometry {
+        let n = outline.len() as u32;
+        let points = [0.0, height].iter().flat_map(|&z| outline.iter().map(move |&(x, y)| DVec3::new(x, y, z))).collect();
+        let mut faces = Vec::new();
+        for i in 1..n - 1 {
+            faces.push(vec![0, i + 1, i]);
+            faces.push(vec![n, n + i, n + i + 1]);
+        }
+        for i in 0..n {
+            let j = (i + 1) % n;
+            faces.push(vec![i, j, n + j]);
+            faces.push(vec![i, n + j, n + i]);
+        }
+        Geometry::from_polygons(points, faces)
+    }
+
+    #[test]
+    #[ignore = "needs fTetWild"]
+    fn real_mesher_builds_quadratic_elements_that_follow_a_non_convex_shape() {
+        let surf = prism(&[(20.0, 20.0), (20.0, 40.0), (0.0, 40.0), (0.0, 0.0), (40.0, 0.0), (40.0, 20.0)], 10.0);
+        let mut p = run_params("");
+        p.set("order", ParamValue::Int(2));
+        p.set("edge_len_mm", ParamValue::Float(4.0));
+        let out = TetMesh.cook(&work("real-l"), &[Some(Data::geometry(surf))], &p).unwrap();
+        let rep = out[1].as_report().unwrap();
+        assert_eq!(rep.metrics["placeholder"].value, 0.0, "{:?}", rep.notes);
+        assert!((rep.metrics["surface_volume_mm3"].value - 12000.0).abs() < 1e-6);
+        assert!(rep.metrics["volume_error_pct"].value < 1.0, "{:?}", rep.metrics);
+        assert!(rep.metrics["min_dihedral_deg"].value > 0.0, "{:?}", rep.metrics);
+        let mesh = out[0].as_geometry().unwrap();
+        assert!(mesh.prims.iter().all(|e| e.vertices.len() == 10));
+        // Nothing fills the notch, and the mesh reaches the far corners.
+        for e in 0..mesh.prims.len() {
+            let c = corner_points(mesh, e).iter().copied().sum::<DVec3>() / 4.0;
+            assert!(!(c.x > 20.5 && c.y > 20.5), "element in the notch at {c}");
+        }
+        let b = mesh.bounds();
+        assert!((b.size() - DVec3::new(40.0, 40.0, 10.0)).length() < 0.5, "{:?}", b.size());
+    }
+
+    #[test]
+    #[ignore = "needs fTetWild"]
+    fn real_mesher_fills_a_curved_shape() {
+        let outline: Vec<(f64, f64)> = (0..48).map(|i| (f64::from(i) * std::f64::consts::TAU / 48.0).sin_cos()).map(|(s, c)| (15.0 * c, 15.0 * s)).collect();
+        let out = TetMesh.cook(&work("real-round"), &[Some(Data::geometry(prism(&outline, 12.0)))], &run_params("")).unwrap();
+        let rep = out[1].as_report().unwrap();
+        assert_eq!(rep.metrics["placeholder"].value, 0.0, "{:?}", rep.notes);
         assert!(rep.metrics["volume_error_pct"].value < 1.0, "{:?}", rep.metrics);
         assert!(rep.metrics["min_dihedral_deg"].value > 0.0, "{:?}", rep.metrics);
     }
