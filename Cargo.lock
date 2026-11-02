@@ -3192,11 +3192,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "vernon-agent-tools"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "serde",
+ "serde_json",
+ "vernon-core",
+ "vernon-graph",
+]
+
+[[package]]
 name = "vernon-cli"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "serde_json",
+ "vernon-agent-tools",
  "vernon-core",
  "vernon-graph",
  "vernon-io",
