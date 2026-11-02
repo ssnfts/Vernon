@@ -412,8 +412,24 @@ pub fn parse_chord(text: &str) -> Result<Chord, String> {
     Ok(chord)
 }
 
-/// The per-user config directory (no directory is created here).
+/// Portable mode: a `portable.txt` beside the executable (or in its parent
+/// folder, for the packaged `binernon.exe` layout) keeps settings in
+/// `data/config` next to that marker instead of the per-user directory.
+fn portable_config_dir(exe: &std::path::Path) -> Option<PathBuf> {
+    let dir = exe.parent()?;
+    [Some(dir), dir.parent()]
+        .into_iter()
+        .flatten()
+        .find(|d| d.join("portable.txt").is_file())
+        .map(|d| d.join("data").join("config"))
+}
+
+/// The config directory (no directory is created here): the portable one when
+/// a `portable.txt` marker is present, otherwise the per-user directory.
 pub fn config_dir() -> Option<PathBuf> {
+    if let Some(dir) = std::env::current_exe().ok().and_then(|exe| portable_config_dir(&exe)) {
+        return Some(dir);
+    }
     let var = |name: &str| std::env::var_os(name).filter(|v| !v.is_empty()).map(PathBuf::from);
     if cfg!(windows) {
         var("APPDATA").map(|d| d.join("Vernon"))
@@ -648,5 +664,19 @@ mod tests {
         assert_eq!(Keymap::from_file(&path).warnings.len(), 1, "not UTF-8");
         assert_eq!(Keymap::from_file(&dir).warnings.len(), 1, "a directory");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn portable_marker_moves_the_config_dir() {
+        let root = std::env::temp_dir().join(format!("vernon_portable_{}", std::process::id()));
+        let bin = root.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let exe = bin.join("vernon.exe");
+        assert_eq!(portable_config_dir(&exe), None, "no marker");
+        std::fs::write(root.join("portable.txt"), "x").unwrap();
+        assert_eq!(portable_config_dir(&exe), Some(root.join("data").join("config")), "marker in the parent");
+        std::fs::write(bin.join("portable.txt"), "x").unwrap();
+        assert_eq!(portable_config_dir(&exe), Some(bin.join("data").join("config")), "marker beside the exe wins");
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
