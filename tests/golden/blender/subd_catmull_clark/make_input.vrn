@@ -1,0 +1,10 @@
+{
+  "display": 2,
+  "nodes": {
+    "0": { "type_id": "geo.box", "name": "cage", "pos": [0, 0], "params": { "size": [100.0, 60.0, 40.0], "divisions": 2 } },
+    "1": { "type_id": "geo.transform", "name": "pose", "pos": [0, 120], "inputs": [[0, 0]],
+           "params": { "translate": [12.5, -7.25, 3.0], "rotate": [17.0, -31.0, 8.0] } },
+    "2": { "type_id": "geo.file_write", "name": "write", "pos": [0, 240], "inputs": [[1, 0]],
+           "params": { "path": "__GOLDEN_DIR__/input.obj" } }
+  }
+}

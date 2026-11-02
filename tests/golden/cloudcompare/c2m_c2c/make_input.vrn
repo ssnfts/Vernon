@@ -1,0 +1,8 @@
+{ "display": 3, "nodes": {
+ "0": { "type_id": "geo.car_panel", "name": "panel", "pos": [0,0], "params": { "length": 900.0, "width": 600.0, "crown": 40.0, "flare": 60.0, "cols": 36, "rows": 24 } },
+ "1": { "type_id": "geo.file_write", "name": "write_mesh", "pos": [0,120], "inputs": [[0,0]], "params": { "path": "__GOLDEN_DIR__/reference.obj" } },
+ "2": { "type_id": "geo.car_panel", "name": "dense", "pos": [200,0], "params": { "length": 900.0, "width": 600.0, "crown": 40.0, "flare": 60.0, "cols": 90, "rows": 60 } },
+ "3": { "type_id": "geo.noise", "name": "noise", "pos": [200,120], "inputs": [[2,0]], "params": { "sigma": 0.8, "direction": "normal", "seed": 11 } },
+ "4": { "type_id": "geo.file_write", "name": "write_cloud", "pos": [200,240], "inputs": [[3,0]], "params": { "path": "__GOLDEN_DIR__/compared.xyz" } },
+ "5": { "type_id": "geo.file_write", "name": "write_ref_cloud", "pos": [0,240], "inputs": [[0,0]], "params": { "path": "__GOLDEN_DIR__/reference.xyz" } }
+}}

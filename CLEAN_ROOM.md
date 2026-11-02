@@ -43,7 +43,8 @@ processes**, not linked into Vernon, so Vernon's own code stays Apache-2.0:
 | fTetWild | MPL-2.0 | tetrahedral meshing of watertight surfaces (`fea.tet_mesh`); driven as a process, no source copied, so the file-level copyleft never reaches Vernon's files |
 | OrcaSlicer / PrusaSlicer | AGPL-3.0 | slicing and G-code (`print.slice_external`) |
 | Klipper | GPL-3.0 | printer firmware (target only: Vernon writes macros, never links it) |
-| CloudCompare (CLI) | GPL-2.0+ | not driven by any node: the stage-2 deviation checks are native. Listed so a user can cross-check a result by hand |
+| CloudCompare (CLI) | GPL-2.0+ | not driven by any node: the stage-2 deviation checks are native. Run headless as a separate process to record golden references (`tests/golden/cloudcompare/`) |
+| Blender | GPL-2.0+ | not driven by any node. Run headless as a separate process to record golden references (`tests/golden/blender/`, script `scripts/golden/blender_subd.py`) |
 | FreeCAD (command line) | LGPL-2.1 ([project licence](https://github.com/FreeCAD/FreeCAD/blob/main/LICENSE)) | optional ignored STEP import validation test; runs as a separate process, no library linked or source copied |
 | Instant Meshes / QuadriFlow | BSD-3-Clause / MIT | not driven by any node: `surface` quad remeshing is native (`surface.quad_remesh`). Candidates for an optional external route; licences are as recalled and must be verified against each repository before a node drives either one |
 

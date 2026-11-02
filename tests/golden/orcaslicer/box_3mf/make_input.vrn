@@ -1,0 +1,4 @@
+{ "display": 1, "nodes": {
+ "0": { "type_id": "geo.box", "name": "part", "pos": [0,0], "params": { "size": [40.0, 30.0, 20.0], "divisions": 1 } },
+ "1": { "type_id": "print.package_write", "name": "package", "pos": [0,120], "inputs": [[0,0]], "params": { "path": "__GOLDEN_DIR__/part.3mf" } }
+}}
