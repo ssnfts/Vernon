@@ -45,9 +45,10 @@ Delete `reference_out.asc` afterwards; only `c2c.asc` is used.
 ### OrcaSlicer (open)
 
 `part.3mf` is written by `print.package_write`. Slicing it with
-`orca-slicer --slice 0 --outputdir <dir> part.3mf` stops with "found error,
-exit" and code 127, with and without `--load-settings` / `--load-filaments`
-files, and no log explains why. The next step is a complete printer, process
+`orca-slicer --slice 0 --outputdir <dir> part.3mf` stops with code 127. With hand-written printer, process and filament files
+(`--load-settings`, `--load-filaments`), even ones whose `compatible_printers`
+names the printer, its log (`00000.log` in the working folder) says "process
+not compatible with printer". The next step is a complete printer, process
 and filament profile set exported from the slicer's own interface, then the
 same command with those files.
 
