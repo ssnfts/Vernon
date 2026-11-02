@@ -1,0 +1,40 @@
+{
+ "name": "04_recover_bad_type",
+ "goal": "Add a smoothing node.",
+ "replies": [
+  {
+   "content": "",
+   "tool_calls": [
+    {
+     "name": "add_node",
+     "arguments": {
+      "type": "clean.smoothing",
+      "name": "sm1"
+     }
+    }
+   ]
+  },
+  {
+   "content": "",
+   "tool_calls": [
+    {
+     "name": "add_node",
+     "arguments": {
+      "type": "clean.smooth",
+      "name": "sm1"
+     }
+    }
+   ]
+  },
+  {
+   "content": "Added clean.smooth as sm1."
+  }
+ ],
+ "expect": {
+  "nodes": {
+   "sm1": "clean.smooth"
+  },
+  "tool_errors": 1,
+  "calls": 2
+ }
+}

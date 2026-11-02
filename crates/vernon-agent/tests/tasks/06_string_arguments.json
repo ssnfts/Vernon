@@ -1,0 +1,24 @@
+{
+ "name": "06_string_arguments",
+ "goal": "Add a box named b.",
+ "replies": [
+  {
+   "content": "",
+   "tool_calls": [
+    {
+     "name": "add_node",
+     "arguments": "{\"type\": \"geo.box\", \"name\": \"b\"}"
+    }
+   ]
+  },
+  {
+   "content": "ok"
+  }
+ ],
+ "expect": {
+  "nodes": {
+   "b": "geo.box"
+  },
+  "calls": 1
+ }
+}

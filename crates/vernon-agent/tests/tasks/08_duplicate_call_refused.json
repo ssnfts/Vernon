@@ -1,0 +1,52 @@
+{
+ "name": "08_duplicate_call_refused",
+ "goal": "Add a box, then stop.",
+ "replies": [
+  {
+   "content": "",
+   "tool_calls": [
+    {
+     "name": "add_node",
+     "arguments": {
+      "type": "geo.box",
+      "name": "box1"
+     }
+    }
+   ]
+  },
+  {
+   "content": "",
+   "tool_calls": [
+    {
+     "name": "add_node",
+     "arguments": {
+      "type": "geo.box",
+      "name": "box1"
+     }
+    }
+   ]
+  },
+  {
+   "content": "",
+   "tool_calls": [
+    {
+     "name": "add_node",
+     "arguments": {
+      "type": "geo.box",
+      "name": "box1"
+     }
+    }
+   ]
+  },
+  {
+   "content": "one box"
+  }
+ ],
+ "expect": {
+  "nodes": {
+   "box1": "geo.box"
+  },
+  "tool_errors": 2,
+  "calls": 3
+ }
+}

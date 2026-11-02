@@ -1,0 +1,66 @@
+{
+ "name": "12_missing_node_error",
+ "goal": "Connect a to b.",
+ "replies": [
+  {
+   "content": "",
+   "tool_calls": [
+    {
+     "name": "connect",
+     "arguments": {
+      "from": "a",
+      "to": "b"
+     }
+    }
+   ]
+  },
+  {
+   "content": "",
+   "tool_calls": [
+    {
+     "name": "add_node",
+     "arguments": {
+      "type": "geo.box",
+      "name": "a"
+     }
+    },
+    {
+     "name": "add_node",
+     "arguments": {
+      "type": "clean.smooth",
+      "name": "b"
+     }
+    }
+   ]
+  },
+  {
+   "content": "",
+   "tool_calls": [
+    {
+     "name": "connect",
+     "arguments": {
+      "from": "a",
+      "to": "b"
+     }
+    }
+   ]
+  },
+  {
+   "content": "connected"
+  }
+ ],
+ "expect": {
+  "nodes": {
+   "a": "geo.box",
+   "b": "clean.smooth"
+  },
+  "edges": [
+   [
+    "a",
+    "b"
+   ]
+  ],
+  "tool_errors": 1,
+  "calls": 4
+ }
+}

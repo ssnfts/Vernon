@@ -1,0 +1,120 @@
+{
+ "name": "13_full_pipeline",
+ "goal": "Wrap a sphere, slice it and set up CFD with a 300 mm width.",
+ "replies": [
+  {
+   "content": "",
+   "tool_calls": [
+    {
+     "name": "add_node",
+     "arguments": {
+      "type": "geo.sphere",
+      "name": "s"
+     }
+    },
+    {
+     "name": "add_node",
+     "arguments": {
+      "type": "surface.wrap",
+      "name": "w"
+     }
+    },
+    {
+     "name": "add_node",
+     "arguments": {
+      "type": "print.slice",
+      "name": "p"
+     }
+    },
+    {
+     "name": "add_node",
+     "arguments": {
+      "type": "cfd.setup",
+      "name": "c"
+     }
+    }
+   ]
+  },
+  {
+   "content": "",
+   "tool_calls": [
+    {
+     "name": "connect",
+     "arguments": {
+      "from": "s",
+      "to": "w"
+     }
+    },
+    {
+     "name": "connect",
+     "arguments": {
+      "from": "w",
+      "to": "p"
+     }
+    },
+    {
+     "name": "connect",
+     "arguments": {
+      "from": "p",
+      "to": "c"
+     }
+    },
+    {
+     "name": "set_param",
+     "arguments": {
+      "node": "s",
+      "name": "size_x",
+      "value": 300
+     }
+    }
+   ]
+  },
+  {
+   "content": "",
+   "tool_calls": [
+    {
+     "name": "cook",
+     "arguments": {
+      "node": "c"
+     }
+    }
+   ]
+  },
+  {
+   "content": "Pipeline built. Cook of c: 4 nodes, width 300."
+  }
+ ],
+ "expect": {
+  "nodes": {
+   "s": "geo.sphere",
+   "w": "surface.wrap",
+   "p": "print.slice",
+   "c": "cfd.setup"
+  },
+  "edges": [
+   [
+    "s",
+    "w"
+   ],
+   [
+    "w",
+    "p"
+   ],
+   [
+    "p",
+    "c"
+   ]
+  ],
+  "params": {
+   "s.size_x": 300
+  },
+  "last_cook": {
+   "node": "c",
+   "metrics": {
+    "upstream_nodes": 4,
+    "size_x": 300.0
+   }
+  },
+  "calls": 9
+ }
+}

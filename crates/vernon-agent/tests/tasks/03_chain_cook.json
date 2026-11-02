@@ -1,0 +1,75 @@
+{
+ "name": "03_chain_cook",
+ "goal": "Smooth a sphere and cook it.",
+ "replies": [
+  {
+   "content": "",
+   "tool_calls": [
+    {
+     "name": "add_node",
+     "arguments": {
+      "type": "geo.sphere",
+      "name": "s1"
+     }
+    }
+   ]
+  },
+  {
+   "content": "",
+   "tool_calls": [
+    {
+     "name": "add_node",
+     "arguments": {
+      "type": "clean.smooth",
+      "name": "sm1"
+     }
+    }
+   ]
+  },
+  {
+   "content": "",
+   "tool_calls": [
+    {
+     "name": "connect",
+     "arguments": {
+      "from": "s1",
+      "to": "sm1"
+     }
+    }
+   ]
+  },
+  {
+   "content": "",
+   "tool_calls": [
+    {
+     "name": "cook",
+     "arguments": {
+      "node": "sm1"
+     }
+    }
+   ]
+  },
+  {
+   "content": "Cooked sm1: 2 nodes upstream."
+  }
+ ],
+ "expect": {
+  "nodes": {
+   "s1": "geo.sphere",
+   "sm1": "clean.smooth"
+  },
+  "edges": [
+   [
+    "s1",
+    "sm1"
+   ]
+  ],
+  "last_cook": {
+   "node": "sm1",
+   "metrics": {
+    "upstream_nodes": 2
+   }
+  },
+  "calls": 4
+ }
+}

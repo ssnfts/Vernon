@@ -1,0 +1,37 @@
+{
+ "name": "10_tool_filter",
+ "goal": "Cook geometry only.",
+ "replies": [
+  {
+   "content": "",
+   "tool_calls": [
+    {
+     "name": "add_node",
+     "arguments": {
+      "type": "geo.box",
+      "name": "b"
+     }
+    },
+    {
+     "name": "cook",
+     "arguments": {
+      "node": "b"
+     }
+    }
+   ]
+  },
+  {
+   "content": "cooked"
+  }
+ ],
+ "expect": {
+  "nodes": {},
+  "tool_errors": 2,
+  "calls": 2
+ },
+ "config": {
+  "tool_filter": [
+   "list_node_types"
+  ]
+ }
+}

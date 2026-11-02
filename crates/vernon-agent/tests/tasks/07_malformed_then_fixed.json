@@ -1,0 +1,37 @@
+{
+ "name": "07_malformed_then_fixed",
+ "goal": "Add a box.",
+ "replies": [
+  {
+   "content": "",
+   "tool_calls": [
+    {
+     "name": "add_node",
+     "arguments": "{\"type\": \"geo.box\", "
+    }
+   ]
+  },
+  {
+   "content": "",
+   "tool_calls": [
+    {
+     "name": "add_node",
+     "arguments": {
+      "type": "geo.box",
+      "name": "box1"
+     }
+    }
+   ]
+  },
+  {
+   "content": "fixed"
+  }
+ ],
+ "expect": {
+  "nodes": {
+   "box1": "geo.box"
+  },
+  "tool_errors": 1,
+  "calls": 2
+ }
+}

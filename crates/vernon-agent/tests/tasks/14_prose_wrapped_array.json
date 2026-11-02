@@ -1,0 +1,19 @@
+{
+ "name": "14_prose_wrapped_array",
+ "goal": "Add two boxes.",
+ "replies": [
+  {
+   "content": "Calls: [{\"tool\": \"add_node\", \"parameters\": {\"type\": \"geo.box\", \"name\": \"x\"}}, {\"tool\": \"add_node\", \"parameters\": {\"type\": \"geo.box\", \"name\": \"y\"}}]"
+  },
+  {
+   "content": "both added"
+  }
+ ],
+ "expect": {
+  "nodes": {
+   "x": "geo.box",
+   "y": "geo.box"
+  },
+  "calls": 2
+ }
+}

@@ -1,0 +1,19 @@
+{
+ "name": "05_text_fallback",
+ "goal": "Add a sphere.",
+ "replies": [
+  {
+   "content": "I will add it.\n```json\n{\"name\": \"add_node\", \"arguments\": {\"type\": \"geo.sphere\", \"name\": \"ball\"}}\n```"
+  },
+  {
+   "content": "Sphere added."
+  }
+ ],
+ "expect": {
+  "nodes": {
+   "ball": "geo.sphere"
+  },
+  "calls": 1,
+  "final_contains": "Sphere"
+ }
+}

@@ -1,0 +1,38 @@
+{
+ "name": "02_box_param",
+ "goal": "Make a box 250 mm wide.",
+ "replies": [
+  {
+   "content": "",
+   "tool_calls": [
+    {
+     "name": "add_node",
+     "arguments": {
+      "type": "geo.box",
+      "name": "box1"
+     }
+    },
+    {
+     "name": "set_param",
+     "arguments": {
+      "node": "box1",
+      "name": "size_x",
+      "value": 250
+     }
+    }
+   ]
+  },
+  {
+   "content": "Done: 250 mm."
+  }
+ ],
+ "expect": {
+  "nodes": {
+   "box1": "geo.box"
+  },
+  "params": {
+   "box1.size_x": 250
+  },
+  "calls": 2
+ }
+}
