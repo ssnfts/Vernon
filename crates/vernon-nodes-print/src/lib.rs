@@ -26,6 +26,7 @@ mod gcode_check;
 mod snap;
 mod partition;
 mod profiles;
+pub mod dialects;
 
 use vernon_graph::Registry;
 
