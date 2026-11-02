@@ -3,6 +3,7 @@
 //! graph. Non-GUI logic lives in `state`, `listener`, `gate`, `timeline` and
 //! `viewport` and is unit-tested; `ui` draws it with egui.
 
+mod agent_host;
 mod gate;
 mod hotkeys;
 mod listener;

@@ -3175,6 +3175,7 @@ dependencies = [
  "pollster",
  "serde",
  "serde_json",
+ "vernon-agent",
  "vernon-core",
  "vernon-graph",
  "vernon-io",

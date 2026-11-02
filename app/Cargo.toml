@@ -9,6 +9,7 @@ license.workspace = true
 vernon-core.workspace = true
 vernon-graph.workspace = true
 vernon-io.workspace = true
+vernon-agent = { path = "../crates/vernon-agent" }
 vernon-render = { path = "../crates/vernon-render" }
 vernon-nodes-geo = { path = "../crates/vernon-nodes-geo" }
 vernon-nodes-capture = { path = "../crates/vernon-nodes-capture" }
