@@ -91,6 +91,36 @@ cargo run -p vernon
 The viewports render with `vernon-render` (wgpu, depth-tested, MSAA); set
 `VERNON_RENDERER=cpu` to use the CPU painter fallback.
 
+## Connect an MCP client
+
+`vernon-cli mcp` is a stdio [MCP](https://modelcontextprotocol.io) server. It gives any MCP client tools to list and describe nodes, add and wire them, set parameters (checked against each node's ranges, units and options), cook, read reports and gates, measure geometry, undo/redo and save/load graphs. It has no shell and no file access outside its work folder (`--work DIR`, default `./vernon-agent`); nodes that drive external programs stay switched off unless a call turns them on. Read [docs/AGENT_GUIDE.md](docs/AGENT_GUIDE.md) first (it is generated: `vernon-cli agent-guide`).
+
+Build once with `cargo build --release -p vernon-cli`, then point the client at the binary (use the absolute path to `target/release/vernon-cli`; add `.exe` on Windows).
+
+**Claude Code** (`claude mcp add` writes this into `.mcp.json` / your config):
+
+```bash
+claude mcp add vernon -- /path/to/vernon-cli mcp --work /path/to/vernon-work
+```
+
+```json
+{ "mcpServers": { "vernon": { "command": "/path/to/vernon-cli", "args": ["mcp", "--work", "/path/to/vernon-work"] } } }
+```
+
+**Cursor** (`~/.cursor/mcp.json`, or `.cursor/mcp.json` in a project):
+
+```json
+{ "mcpServers": { "vernon": { "command": "/path/to/vernon-cli", "args": ["mcp", "--work", "/path/to/vernon-work"] } } }
+```
+
+**Cline** (MCP Servers, Configure, `cline_mcp_settings.json`):
+
+```json
+{ "mcpServers": { "vernon": { "command": "/path/to/vernon-cli", "args": ["mcp", "--work", "/path/to/vernon-work"], "disabled": false } } }
+```
+
+On Windows write paths with forward slashes or doubled backslashes in JSON.
+
 ## Research notes
 [docs/research/k2/](docs/research/k2/) holds vetted external review notes
 (per stage, plus UI and general notes) that the specs in

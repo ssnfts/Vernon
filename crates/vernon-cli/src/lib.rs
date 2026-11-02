@@ -2,6 +2,9 @@
 //! the text/Markdown node catalogue. `main.rs` is a thin argument parser
 //! over these functions so the integration tests can call them directly.
 
+pub mod agent_guide;
+pub mod mcp;
+
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
