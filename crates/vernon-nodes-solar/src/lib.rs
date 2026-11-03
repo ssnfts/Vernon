@@ -10,6 +10,7 @@
 
 pub mod bvh;
 pub mod flatten;
+pub mod flatten_constraints;
 pub mod lscm;
 pub mod radiation;
 pub mod sky;
