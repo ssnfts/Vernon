@@ -20,6 +20,8 @@ pub mod orient;
 pub mod package;
 pub mod poly;
 pub mod profile_schema;
+pub mod script_bridge;
+pub mod script_template;
 pub mod slicer;
 pub mod upload;
 mod curtain;
