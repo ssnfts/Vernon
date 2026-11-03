@@ -9,7 +9,12 @@ use anyhow::{bail, Context, Result};
 const USAGE: &str = "usage:
   vernon-cli list [--markdown] [--docs]
   vernon-cli info <node.type> [...]
+  vernon-cli agent-guide
+  vernon-cli mcp [--work DIR]
   vernon-cli cook <file.vrn> [--node NAME] [--out mesh.obj] [--work DIR] [--ignore-gates]
+
+agent-guide prints docs/AGENT_GUIDE.md; mcp serves the agent tools over stdio
+(MCP, JSON-RPC lines) with files kept under --work (default ./vernon-agent).
 
 list prints the public tool behaviours each node re-implements only with
 --docs (they are documentation, not part of the user interface).
@@ -56,6 +61,27 @@ fn run(args: Vec<String>) -> Result<ExitCode> {
                     .with_context(|| format!("unknown node type '{id}'"))?;
                 print!("{}", vernon_cli::format_info(info));
             }
+            Ok(ExitCode::SUCCESS)
+        }
+        Some("agent-guide") => {
+            print!("{}", vernon_cli::agent_guide::generate(&reg)?);
+            Ok(ExitCode::SUCCESS)
+        }
+        Some("mcp") => {
+            let mut work = None::<PathBuf>;
+            let mut it = args.iter().skip(1);
+            while let Some(a) = it.next() {
+                match a.as_str() {
+                    "--work" => work = Some(it.next().cloned().context("--work needs a folder")?.into()),
+                    other => bail!("unknown option '{other}'
+{USAGE}"),
+                }
+            }
+            let work = work.unwrap_or_else(|| PathBuf::from("vernon-agent"));
+            eprintln!("vernon mcp: work folder {}", work.display());
+            let host = vernon_agent_tools::GraphToolHost::new(reg, work);
+            let stdin = std::io::stdin();
+            vernon_cli::mcp::serve(host, stdin.lock(), std::io::stdout().lock())?;
             Ok(ExitCode::SUCCESS)
         }
         Some("cook") => {

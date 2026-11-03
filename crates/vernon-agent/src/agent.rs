@@ -162,7 +162,7 @@ pub fn run_agent(
     let grouped = all.iter().any(|t| t.name == BEGIN) && all.iter().any(|t| t.name == END);
     let specs: Vec<ToolSpec> = all.into_iter().filter(|t| t.name != BEGIN && t.name != END && allowed(&cfg.tool_filter, &t.name)).collect();
     if grouped {
-        let _ = host.call(BEGIN, json!({"label": clip(goal, 60)}));
+        let _ = host.call(BEGIN, json!({}));
     }
     let outcome = drive(model, host, goal, cfg, cancel, on_event, &specs);
     if grouped {

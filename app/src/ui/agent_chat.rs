@@ -12,7 +12,7 @@ use vernon_agent::{AgentConfig, AgentEvent, AgentOutcome, ClientConfig, OpenAiCl
 use vernon_graph::Graph;
 
 use super::VernonApp;
-use crate::agent_host::GraphHost;
+use vernon_agent_tools::GraphToolHost;
 use crate::registry::build_registry;
 use crate::theme;
 
@@ -87,13 +87,14 @@ impl AgentChat {
         std::thread::spawn(move || {
             let mut graph = Graph::from_json(&graph_json).unwrap_or_default();
             graph.work_root = work_root;
-            let mut host = GraphHost::new(graph, build_registry());
+            let work_dir = std::env::temp_dir().join("vernon-agent");
+            let mut host = GraphToolHost::with_graph(build_registry(), graph, work_dir);
             let mut model = OpenAiClient::new(client);
             let cfg = AgentConfig { system_prompt: vernon_agent::load_system_prompt(std::env::current_dir().ok().as_deref()), ..Default::default() };
             let outcome = vernon_agent::run_agent(&mut model, &mut host, &goal, &cfg, &cancel, &mut |e| {
                 let _ = tx.send(Msg::Event(e));
             });
-            let _ = tx.send(Msg::Done { outcome, graph_json: host.graph.to_json() });
+            let _ = tx.send(Msg::Done { outcome, graph_json: host.graph().to_json() });
         });
     }
 

@@ -8,3 +8,7 @@ license.workspace = true
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true
+vernon-agent-tools = { path = "../vernon-agent-tools" }
+
+[dev-dependencies]
+vernon-cli = { path = "../vernon-cli" }
