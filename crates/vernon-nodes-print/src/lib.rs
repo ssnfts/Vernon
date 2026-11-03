@@ -19,6 +19,7 @@ pub mod nodes_split;
 pub mod orient;
 pub mod package;
 pub mod poly;
+pub mod profile_schema;
 pub mod slicer;
 pub mod upload;
 mod curtain;
