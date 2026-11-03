@@ -8,6 +8,7 @@
 use vernon_graph::Registry;
 
 pub mod accuracy;
+pub mod ball_pivot;
 pub mod colmap;
 pub mod colmap_model;
 mod photo_inputs;
