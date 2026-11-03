@@ -23,6 +23,7 @@ pub mod profile_schema;
 pub mod script_bridge;
 pub mod script_template;
 pub mod slicer;
+pub mod snap_geometry;
 pub mod upload;
 mod curtain;
 mod gcode_check;
