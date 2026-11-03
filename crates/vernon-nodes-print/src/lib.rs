@@ -23,7 +23,7 @@ pub mod slicer;
 pub mod upload;
 mod curtain;
 mod gcode_check;
-mod snap;
+pub mod snap;
 mod partition;
 mod profiles;
 

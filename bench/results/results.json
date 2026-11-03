@@ -1,0 +1,1692 @@
+{
+  "cases": [
+    {
+      "comparisons": [
+        {
+          "measured": 9.966080335702927,
+          "name": "tip deflection (coarse, 2 elem/side)",
+          "ok": true,
+          "reference": 10.0,
+          "tolerance": "±3.000%",
+          "unit": "mm"
+        },
+        {
+          "measured": 9.996669406824411,
+          "name": "tip deflection (fine, 4 elem/side) vs beam+shear 1.008x",
+          "ok": true,
+          "reference": 10.08,
+          "tolerance": "±1.000%",
+          "unit": "mm"
+        },
+        {
+          "measured": 99.99999999774413,
+          "name": "root reaction Fz equals applied load",
+          "ok": true,
+          "reference": 100.0,
+          "tolerance": "±0.100%",
+          "unit": "N"
+        }
+      ],
+      "detail": "",
+      "id": "A.fea.beam_deflection",
+      "notes": [],
+      "reference": "Euler-Bernoulli cantilever tip deflection P L^3/(3 E I) (Roark, Formulas for Stress and Strain, Table 8.1 case 1a); Timoshenko shear adds ~0.8% at this L/h",
+      "status": "PASS",
+      "tier": "A",
+      "title": "Cantilever tip deflection vs beam theory (C3D10, 200x20x20 mm, E=2 GPa, 100 N)",
+      "wall_ms": 4515.0985
+    },
+    {
+      "comparisons": [
+        {
+          "measured": 7.588857576556649,
+          "name": "mid-span outer-fibre von Mises",
+          "ok": true,
+          "reference": 7.5,
+          "tolerance": "±10.000%",
+          "unit": "MPa"
+        }
+      ],
+      "detail": "",
+      "id": "A.fea.beam_stress",
+      "notes": [],
+      "reference": "Flexure formula sigma = M y / I with M = P (L/2) at mid-span (any strength-of-materials text)",
+      "status": "PASS",
+      "tier": "A",
+      "title": "Cantilever bending stress at mid-span vs sigma = M c / I",
+      "wall_ms": 577.4795
+    },
+    {
+      "comparisons": [
+        {
+          "measured": 1999.9999999998379,
+          "name": "reaction = p A = 5 MPa x 400 mm2",
+          "ok": true,
+          "reference": 2000.0,
+          "tolerance": "±0.000%",
+          "unit": "N"
+        },
+        {
+          "measured": 4.986375243452712,
+          "name": "mean sigma_x away from support",
+          "ok": true,
+          "reference": 5.0,
+          "tolerance": "±2.000%",
+          "unit": "MPa"
+        }
+      ],
+      "detail": "",
+      "id": "A.fea.patch_uniaxial",
+      "notes": [],
+      "reference": "Zienkiewicz & Taylor, patch test: a constant stress state must be reproduced by consistent elements",
+      "status": "PASS",
+      "tier": "A",
+      "title": "Uniform end pressure: reaction and stress are exact (patch test)",
+      "wall_ms": 22.0443
+    },
+    {
+      "comparisons": [
+        {
+          "measured": 0.008011583359924641,
+          "name": "16x32: area error shrinks with refinement",
+          "ok": true,
+          "reference": 1.7976931348623157e+308,
+          "tolerance": "≤ bound",
+          "unit": ""
+        },
+        {
+          "measured": 0.0020067030568277373,
+          "name": "32x64: area error shrinks with refinement",
+          "ok": true,
+          "reference": 0.008011583359924641,
+          "tolerance": "≤ bound",
+          "unit": ""
+        },
+        {
+          "measured": 0.0005019144232908045,
+          "name": "64x128: area error shrinks with refinement",
+          "ok": true,
+          "reference": 0.0020067030568277373,
+          "tolerance": "≤ bound",
+          "unit": ""
+        },
+        {
+          "measured": 31400.15842924852,
+          "name": "area at 64x128",
+          "ok": true,
+          "reference": 31415.926535897932,
+          "tolerance": "±0.200%",
+          "unit": "mm2"
+        },
+        {
+          "measured": 523073.3039583923,
+          "name": "volume at 64x128",
+          "ok": true,
+          "reference": 523598.7755982988,
+          "tolerance": "±0.300%",
+          "unit": "mm3"
+        }
+      ],
+      "detail": "",
+      "id": "A.geo.sphere_area_volume",
+      "notes": [
+        "16x32: area error 0.8012%, volume error 1.5959%",
+        "32x64: area error 0.2007%, volume error 0.4009%",
+        "64x128: area error 0.0502%, volume error 0.1004%"
+      ],
+      "reference": "Closed-form sphere; inscribed UV polyhedron error shrinks with refinement",
+      "status": "PASS",
+      "tier": "A",
+      "title": "UV sphere area and volume vs 4 pi r^2, 4/3 pi r^3, with convergence",
+      "wall_ms": 30.800500000000003
+    },
+    {
+      "comparisons": [
+        {
+          "measured": 36000.0,
+          "name": "plane area 300x120",
+          "ok": true,
+          "reference": 36000.0,
+          "tolerance": "±0.000%",
+          "unit": "mm2"
+        },
+        {
+          "measured": 19631.80020085728,
+          "name": "cylinder area vs exact 128-gon prism",
+          "ok": true,
+          "reference": 19631.800200857302,
+          "tolerance": "±0.000%",
+          "unit": "mm2"
+        },
+        {
+          "measured": 196270.69730967173,
+          "name": "cylinder volume vs exact 128-gon prism",
+          "ok": true,
+          "reference": 196270.69730967205,
+          "tolerance": "±0.000%",
+          "unit": "mm3"
+        },
+        {
+          "measured": 19631.80020085728,
+          "name": "cylinder area vs true cylinder",
+          "ok": true,
+          "reference": 19634.95408493621,
+          "tolerance": "±0.050%",
+          "unit": "mm2"
+        }
+      ],
+      "detail": "",
+      "id": "A.geo.plane_cylinder",
+      "notes": [],
+      "reference": "Plane A = a b; regular n-gon: area 1/2 n r^2 sin(2 pi/n), edge 2 r sin(pi/n); exact for the tessellation",
+      "status": "PASS",
+      "tier": "A",
+      "title": "Plane area; cylinder area and volume vs the exact n-gon prism",
+      "wall_ms": 7.269
+    },
+    {
+      "comparisons": [
+        {
+          "measured": 8.046720021259634e-14,
+          "name": "point_to_plane: worst vertex error after alignment",
+          "ok": true,
+          "reference": 0.01,
+          "tolerance": "≤ bound",
+          "unit": "mm"
+        },
+        {
+          "measured": 0.03730868259861501,
+          "name": "point_to_point: worst vertex error after alignment",
+          "ok": true,
+          "reference": 0.05,
+          "tolerance": "≤ bound",
+          "unit": "mm"
+        }
+      ],
+      "detail": "",
+      "id": "A.clean.icp_known_transform",
+      "notes": [],
+      "reference": "Besl & McKay 1992 / Chen & Medioni 1992; ground truth is the applied transform",
+      "status": "PASS",
+      "tier": "A",
+      "title": "ICP recovers a known rigid transform",
+      "wall_ms": 1300.973
+    },
+    {
+      "comparisons": [
+        {
+          "measured": 0.25,
+          "name": "triangle count ratio",
+          "ok": true,
+          "reference": 0.25,
+          "tolerance": "±5.000%",
+          "unit": ""
+        },
+        {
+          "measured": 0.0801179866252042,
+          "name": "vertex distance from the analytic sphere (2% of r)",
+          "ok": true,
+          "reference": 1.0,
+          "tolerance": "≤ bound",
+          "unit": "mm"
+        },
+        {
+          "measured": 521950.6255052948,
+          "name": "volume vs original sphere",
+          "ok": true,
+          "reference": 522664.90136068995,
+          "tolerance": "±5.000%",
+          "unit": "mm3"
+        },
+        {
+          "measured": 0.10693912173856164,
+          "name": "max_error mode: measured vertex-to-input distance",
+          "ok": true,
+          "reference": 0.4,
+          "tolerance": "≤ bound",
+          "unit": "mm"
+        }
+      ],
+      "detail": "",
+      "id": "A.clean.qem_bounds",
+      "notes": [],
+      "reference": "Garland & Heckbert 1997; independent check against the analytic sphere and the input mesh",
+      "status": "PASS",
+      "tier": "A",
+      "title": "Quadric decimation stays within its error bound on a sphere",
+      "wall_ms": 110.6867
+    },
+    {
+      "comparisons": [
+        {
+          "measured": 200.0000002647597,
+          "name": "pattern long side = strip width",
+          "ok": true,
+          "reference": 200.0,
+          "tolerance": "±1.000%",
+          "unit": "mm"
+        },
+        {
+          "measured": 157.07514724830492,
+          "name": "pattern short side = arc length r*theta",
+          "ok": true,
+          "reference": 157.07963267948966,
+          "tolerance": "±1.000%",
+          "unit": "mm"
+        },
+        {
+          "measured": 1.5713905954228835e-6,
+          "name": "worst length change",
+          "ok": true,
+          "reference": 0.5,
+          "tolerance": "≤ bound",
+          "unit": "%"
+        }
+      ],
+      "detail": "",
+      "id": "A.flatten.developable_cylinder",
+      "notes": [],
+      "reference": "A cylinder is developable (Gaussian curvature 0): the flat pattern is arc length x width with zero strain (do Carmo, Differential Geometry of Curves and Surfaces)",
+      "status": "PASS",
+      "tier": "A",
+      "title": "Developable cylinder strip flattens isometrically",
+      "wall_ms": 158.8043
+    },
+    {
+      "comparisons": [
+        {
+          "measured": 29.89288593314643,
+          "name": "worst length change is reported (> 1%)",
+          "ok": true,
+          "reference": 1.0,
+          "tolerance": "≥ bound",
+          "unit": "%"
+        }
+      ],
+      "detail": "",
+      "id": "A.flatten.sphere_cap_distorts",
+      "notes": [],
+      "reference": "Gauss's Theorema Egregium: K != 0 means no isometric flat map exists",
+      "status": "PASS",
+      "tier": "A",
+      "title": "Negative control: a sphere cap cannot flatten without distortion",
+      "wall_ms": 27.8523
+    },
+    {
+      "comparisons": [
+        {
+          "measured": 1.6875,
+          "name": "strain t=1.2 y=0.6 L=8",
+          "ok": true,
+          "reference": 1.6875,
+          "tolerance": "±0.000%",
+          "unit": "%"
+        },
+        {
+          "measured": 0.6666666666666666,
+          "name": "strain t=2 y=0.5 L=15",
+          "ok": true,
+          "reference": 0.6666666666666666,
+          "tolerance": "±0.000%",
+          "unit": "%"
+        },
+        {
+          "measured": 1.5625,
+          "name": "strain t=1.5 y=1 L=12",
+          "ok": true,
+          "reference": 1.5625,
+          "tolerance": "±0.000%",
+          "unit": "%"
+        },
+        {
+          "measured": 0.25,
+          "name": "2x length -> 1/4 strain",
+          "ok": true,
+          "reference": 0.25,
+          "tolerance": "±0.000%",
+          "unit": ""
+        },
+        {
+          "measured": 2.0,
+          "name": "2x undercut -> 2x strain",
+          "ok": true,
+          "reference": 2.0,
+          "tolerance": "±0.000%",
+          "unit": ""
+        }
+      ],
+      "detail": "",
+      "id": "A.print.snap_fit_beam",
+      "notes": [],
+      "reference": "Rectangular constant-section cantilever: curvature at root gives eps = c kappa with y = kappa L^2 / 3, so eps = 1.5 t y / L^2 (standard snap-fit design relation)",
+      "status": "PASS",
+      "tier": "A",
+      "title": "Snap-fit cantilever strain eps = 1.5 t y / L^2",
+      "wall_ms": 0.0415
+    },
+    {
+      "comparisons": [
+        {
+          "measured": 10.0,
+          "name": "cm->mm bbox x scale",
+          "ok": true,
+          "reference": 10.0,
+          "tolerance": "±0.000%",
+          "unit": ""
+        },
+        {
+          "measured": 2.220446049250313e-16,
+          "name": "cm round trip worst vertex error",
+          "ok": true,
+          "reference": 1e-11,
+          "tolerance": "≤ bound",
+          "unit": "mm"
+        },
+        {
+          "measured": 1000.0,
+          "name": "m->mm bbox x scale",
+          "ok": true,
+          "reference": 1000.0,
+          "tolerance": "±0.000%",
+          "unit": ""
+        },
+        {
+          "measured": 2.220446049250313e-16,
+          "name": "m round trip worst vertex error",
+          "ok": true,
+          "reference": 1e-9,
+          "tolerance": "≤ bound",
+          "unit": "mm"
+        },
+        {
+          "measured": 25.4,
+          "name": "in->mm bbox x scale",
+          "ok": true,
+          "reference": 25.4,
+          "tolerance": "±0.000%",
+          "unit": ""
+        },
+        {
+          "measured": 2.7194799110210365e-16,
+          "name": "in round trip worst vertex error",
+          "ok": true,
+          "reference": 2.5399999999999998e-11,
+          "tolerance": "≤ bound",
+          "unit": "mm"
+        },
+        {
+          "measured": 1.0,
+          "name": "mm->mm bbox x scale",
+          "ok": true,
+          "reference": 1.0,
+          "tolerance": "±0.000%",
+          "unit": ""
+        },
+        {
+          "measured": 0.0,
+          "name": "mm round trip worst vertex error",
+          "ok": true,
+          "reference": 1e-12,
+          "tolerance": "≤ bound",
+          "unit": "mm"
+        }
+      ],
+      "detail": "",
+      "id": "A.units.set_units",
+      "notes": [],
+      "reference": "Exact definitions: 1 cm = 10 mm, 1 m = 1000 mm, 1 in = 25.4 mm (NIST SP 811)",
+      "status": "PASS",
+      "tier": "A",
+      "title": "Unit conversion scales exactly and round-trips",
+      "wall_ms": 6.9030000000000005
+    },
+    {
+      "comparisons": [
+        {
+          "measured": 2048.0,
+          "name": "obj: triangle count",
+          "ok": true,
+          "reference": 2048.0,
+          "tolerance": "±0e0",
+          "unit": ""
+        },
+        {
+          "measured": 0.0,
+          "name": "obj: bounding-box size error",
+          "ok": true,
+          "reference": 1e-6,
+          "tolerance": "≤ bound",
+          "unit": "mm"
+        },
+        {
+          "measured": 2048.0,
+          "name": "ply: triangle count",
+          "ok": true,
+          "reference": 2048.0,
+          "tolerance": "±0e0",
+          "unit": ""
+        },
+        {
+          "measured": 0.0,
+          "name": "ply: bounding-box size error",
+          "ok": true,
+          "reference": 1e-6,
+          "tolerance": "≤ bound",
+          "unit": "mm"
+        },
+        {
+          "measured": 2048.0,
+          "name": "stl: triangle count",
+          "ok": true,
+          "reference": 2048.0,
+          "tolerance": "±0e0",
+          "unit": ""
+        },
+        {
+          "measured": 2.2788896814063264e-7,
+          "name": "stl: bounding-box size error",
+          "ok": true,
+          "reference": 0.005,
+          "tolerance": "≤ bound",
+          "unit": "mm"
+        }
+      ],
+      "detail": "",
+      "id": "A.io.file_round_trip",
+      "notes": [],
+      "reference": "Format definitions: ASCII OBJ/PLY keep double-precision text, binary STL stores 32-bit floats",
+      "status": "PASS",
+      "tier": "A",
+      "title": "Mesh file write/read round trips in millimetres",
+      "wall_ms": 47.5048
+    },
+    {
+      "comparisons": [
+        {
+          "measured": 0.3686738750559004,
+          "name": "Cd at 25 deg, finest mesh, vs published ±15%",
+          "ok": false,
+          "reference": 0.299,
+          "tolerance": "±15.000%",
+          "unit": ""
+        },
+        {
+          "measured": 0.0,
+          "name": "a25-g3: solver reported convergence (1 = yes)",
+          "ok": false,
+          "reference": 1.0,
+          "tolerance": "±0e0",
+          "unit": "bool"
+        },
+        {
+          "measured": 0.31442836493622894,
+          "name": "Cd at 35 deg, finest mesh, vs published ±15%",
+          "ok": true,
+          "reference": 0.279,
+          "tolerance": "±15.000%",
+          "unit": ""
+        },
+        {
+          "measured": 0.0,
+          "name": "a35-g3: solver reported convergence (1 = yes)",
+          "ok": false,
+          "reference": 1.0,
+          "tolerance": "±0e0",
+          "unit": "bool"
+        }
+      ],
+      "detail": "Cd at 25 deg, finest mesh, vs published ±15% = 0.368674 vs 0.299000 (±15.000%); a25-g3: solver reported convergence (1 = yes) = 0.000000 vs 1.000000 (±0e0); a35-g3: solver reported convergence (1 = yes) = 0.000000 vs 1.000000 (±0e0)",
+      "id": "A.cfd.ahmed_drag_window",
+      "notes": [
+        "a25-g3: 2032733.0 cells, 3000.0 iterations, converged=false",
+        "a35-g3: 2029456.0 cells, 3000.0 iterations, converged=false"
+      ],
+      "reference": "Ahmed, Ramm & Faltin 1984, SAE 840300; ERCOFTAC case AC 1-05 https://kbwiki.ercoftac.org/w/index.php/AC_1-05 ; reference values 0.299 (25 deg) and 0.279 (35 deg) from a secondary table https://skill-lync.com/student-projects/project-1-flow-over-ahmed-body-7 (NOT the primary paper; confirm before quoting)",
+      "status": "FAIL",
+      "tier": "A",
+      "title": "Ahmed body drag within published window (existing OpenFOAM runs, read-only)",
+      "wall_ms": 15.1216
+    },
+    {
+      "comparisons": [
+        {
+          "measured": 3.514490460265751e-6,
+          "name": "worst per-point difference (CloudCompare writes 32-bit floats)",
+          "ok": true,
+          "reference": 0.0001,
+          "tolerance": "≤ bound",
+          "unit": "mm"
+        },
+        {
+          "measured": 0.06801069472776468,
+          "name": "mean signed distance",
+          "ok": true,
+          "reference": 0.068010742375,
+          "tolerance": "±1e-5",
+          "unit": "mm"
+        },
+        {
+          "measured": 0.35018361385191416,
+          "name": "RMS distance",
+          "ok": true,
+          "reference": 0.3501836359484046,
+          "tolerance": "±0.010%",
+          "unit": "mm"
+        }
+      ],
+      "detail": "",
+      "id": "B.cloudcompare.c2m",
+      "notes": [],
+      "reference": "CloudCompare CLI (GPL-2.0+, separate process) C2M_DIST; command as in tests/golden/README.md",
+      "status": "PASS",
+      "tier": "B",
+      "title": "Cloud-to-mesh deviation vs CloudCompare (live run)",
+      "wall_ms": 6733.954
+    },
+    {
+      "comparisons": [
+        {
+          "measured": 9.966080335702927,
+          "name": "tip deflection, Vernon vs CalculiX",
+          "ok": true,
+          "reference": 9.9660812,
+          "tolerance": "±2.000%",
+          "unit": "mm"
+        },
+        {
+          "measured": 7.588857576556649,
+          "name": "mid-span von Mises, Vernon vs CalculiX",
+          "ok": true,
+          "reference": 7.588823828488716,
+          "tolerance": "±2.000%",
+          "unit": "MPa"
+        },
+        {
+          "measured": 9.9660812,
+          "name": "CalculiX tip deflection vs beam theory",
+          "ok": true,
+          "reference": 10.0,
+          "tolerance": "±3.000%",
+          "unit": "mm"
+        }
+      ],
+      "detail": "",
+      "id": "B.calculix.cantilever",
+      "notes": [],
+      "reference": "CalculiX 2.x (GPL-2.0, separate process, native or inside WSL) on the deck written by Vernon (fea.deck_write)",
+      "status": "PASS",
+      "tier": "B",
+      "title": "Cantilever tip deflection and stress: Vernon solver vs CalculiX (C3D10)",
+      "wall_ms": 1387.9755
+    },
+    {
+      "comparisons": [
+        {
+          "measured": 0.36867387511400035,
+          "name": "Cd: mean of last window in coefficient.dat vs value Vernon reported",
+          "ok": true,
+          "reference": 0.3686738750559004,
+          "tolerance": "±1.000%",
+          "unit": ""
+        }
+      ],
+      "detail": "",
+      "id": "B.openfoam.force_reduction",
+      "notes": [
+        "this checks Vernon's reduction of OpenFOAM output, not the physics of the run (the run did not converge, see A.cfd.ahmed_drag_window)"
+      ],
+      "reference": "OpenFOAM v2606 (GPL-3.0) forceCoeffs output of an existing run; no CFD job is started by the bench",
+      "status": "PASS",
+      "tier": "B",
+      "title": "Vernon's reported Cd vs an independent average of OpenFOAM's forceCoeffs history (existing run, read-only)",
+      "wall_ms": 4.4007
+    },
+    {
+      "comparisons": [
+        {
+          "measured": 2703.0,
+          "name": "point count read by Vernon vs data lines in file",
+          "ok": true,
+          "reference": 2703.0,
+          "tolerance": "±0e0",
+          "unit": ""
+        },
+        {
+          "measured": 0.6952701825744361,
+          "name": "mean reprojection error reported by COLMAP",
+          "ok": true,
+          "reference": 1.0,
+          "tolerance": "≤ bound",
+          "unit": "px"
+        },
+        {
+          "measured": 0.0,
+          "name": "points with a track shorter than 2 views",
+          "ok": true,
+          "reference": 0.0,
+          "tolerance": "±0e0",
+          "unit": ""
+        },
+        {
+          "measured": 2703.0,
+          "name": "sparse points reconstructed",
+          "ok": true,
+          "reference": 1000.0,
+          "tolerance": "≥ bound",
+          "unit": "points"
+        }
+      ],
+      "detail": "",
+      "id": "B.colmap.sample_model",
+      "notes": [],
+      "reference": "COLMAP 4.2.1 (BSD-3-Clause) sparse model recorded from the WP8 public sample run (south-building)",
+      "status": "PASS",
+      "tier": "B",
+      "title": "Vernon reads the recorded COLMAP sparse model faithfully and it is of usable quality",
+      "wall_ms": 15.5804
+    },
+    {
+      "comparisons": [],
+      "detail": "the slicer produced no G-code (exit Code(-51)); command-line slicing needs a full exported printer/process/filament profile set, see tests/golden/README.md",
+      "id": "B.slicer.flavour_check",
+      "notes": [],
+      "reference": "OrcaSlicer (AGPL-3.0) / PrusaSlicer, separate process; G-code accepted by print.flavour_check",
+      "status": "SKIPPED",
+      "tier": "B",
+      "title": "G-code from a real slicer run is accepted by print.flavour_check",
+      "wall_ms": 835.7941
+    },
+    {
+      "comparisons": [],
+      "detail": "no golden",
+      "id": "C.rhino",
+      "notes": [],
+      "reference": "owner-recorded output of a licensed copy",
+      "status": "SKIPPED",
+      "tier": "C",
+      "title": "Golden slot: Rhino (mesh tools, QuadRemesh, SubD)",
+      "wall_ms": 0.0
+    },
+    {
+      "comparisons": [],
+      "detail": "no golden",
+      "id": "C.fusion",
+      "notes": [],
+      "reference": "owner-recorded output of a licensed copy",
+      "status": "SKIPPED",
+      "tier": "C",
+      "title": "Golden slot: Fusion (mesh to solid)",
+      "wall_ms": 0.0
+    },
+    {
+      "comparisons": [],
+      "detail": "no golden",
+      "id": "C.quicksurface",
+      "notes": [],
+      "reference": "owner-recorded output of a licensed copy",
+      "status": "SKIPPED",
+      "tier": "C",
+      "title": "Golden slot: reverse-engineering surfacing",
+      "wall_ms": 0.0
+    },
+    {
+      "comparisons": [],
+      "detail": "no golden",
+      "id": "C.geomagic-designx",
+      "notes": [],
+      "reference": "owner-recorded output of a licensed copy",
+      "status": "SKIPPED",
+      "tier": "C",
+      "title": "Golden slot: reverse-engineering surfacing",
+      "wall_ms": 0.0
+    },
+    {
+      "comparisons": [],
+      "detail": "no golden",
+      "id": "C.zeiss-inspect",
+      "notes": [],
+      "reference": "owner-recorded output of a licensed copy",
+      "status": "SKIPPED",
+      "tier": "C",
+      "title": "Golden slot: scan deviation and inspection",
+      "wall_ms": 0.0
+    },
+    {
+      "comparisons": [],
+      "detail": "no golden",
+      "id": "C.airshaper",
+      "notes": [],
+      "reference": "owner-recorded output of a licensed copy",
+      "status": "SKIPPED",
+      "tier": "C",
+      "title": "Golden slot: road-vehicle CFD service",
+      "wall_ms": 0.0
+    },
+    {
+      "comparisons": [],
+      "detail": "no golden",
+      "id": "C.simscale",
+      "notes": [],
+      "reference": "owner-recorded output of a licensed copy",
+      "status": "SKIPPED",
+      "tier": "C",
+      "title": "Golden slot: CFD / FEA service",
+      "wall_ms": 0.0
+    },
+    {
+      "comparisons": [],
+      "detail": "no golden",
+      "id": "C.ansys",
+      "notes": [],
+      "reference": "owner-recorded output of a licensed copy",
+      "status": "SKIPPED",
+      "tier": "C",
+      "title": "Golden slot: FEA / CFD solver",
+      "wall_ms": 0.0
+    },
+    {
+      "comparisons": [],
+      "detail": "no golden",
+      "id": "C.optimumlap",
+      "notes": [],
+      "reference": "owner-recorded output of a licensed copy",
+      "status": "SKIPPED",
+      "tier": "C",
+      "title": "Golden slot: point-mass lap simulation",
+      "wall_ms": 0.0
+    },
+    {
+      "comparisons": [],
+      "detail": "no golden",
+      "id": "C.ladybug-tools",
+      "notes": [],
+      "reference": "owner-recorded output of a licensed copy",
+      "status": "SKIPPED",
+      "tier": "C",
+      "title": "Golden slot: solar and radiation analysis",
+      "wall_ms": 0.0
+    },
+    {
+      "comparisons": [
+        {
+          "measured": 38.0,
+          "name": "nodes cooked",
+          "ok": true,
+          "reference": 38.0,
+          "tolerance": "±0e0",
+          "unit": "nodes"
+        },
+        {
+          "measured": 0.0,
+          "name": "nodes failed",
+          "ok": true,
+          "reference": 0.0,
+          "tolerance": "±0e0",
+          "unit": "nodes"
+        },
+        {
+          "measured": 0.0,
+          "name": "unexpected failing gates",
+          "ok": true,
+          "reference": 0.0,
+          "tolerance": "±0e0",
+          "unit": "gates"
+        },
+        {
+          "measured": 2.0,
+          "name": "expected (documented) gate failures",
+          "ok": true,
+          "reference": 2.0,
+          "tolerance": "±0e0",
+          "unit": "gates"
+        }
+      ],
+      "detail": "",
+      "id": "E.pipeline.cook",
+      "notes": [],
+      "reference": "AGENTS.md definition of done: 38 nodes, 0 failing gates, 2 expected (the brief for this suite quoted 40 nodes / 5 expected; the shipped file has 38 / 2)",
+      "status": "PASS",
+      "tier": "E",
+      "title": "Cook examples/bodykit_pipeline.vrn in-process",
+      "wall_ms": 1709.0635
+    },
+    {
+      "comparisons": [
+        {
+          "measured": 0.0,
+          "name": "stage geo (cook --node scan_pose) exit code",
+          "ok": true,
+          "reference": 0.0,
+          "tolerance": "±0e0",
+          "unit": ""
+        },
+        {
+          "measured": 0.0,
+          "name": "stage capture (cook --node scan_quality) exit code",
+          "ok": true,
+          "reference": 0.0,
+          "tolerance": "±0e0",
+          "unit": ""
+        },
+        {
+          "measured": 0.0,
+          "name": "stage clean (cook --node scan_gate) exit code",
+          "ok": true,
+          "reference": 0.0,
+          "tolerance": "±0e0",
+          "unit": ""
+        },
+        {
+          "measured": 0.0,
+          "name": "stage surface (cook --node thicken) exit code",
+          "ok": true,
+          "reference": 0.0,
+          "tolerance": "±0e0",
+          "unit": ""
+        },
+        {
+          "measured": 0.0,
+          "name": "stage print (cook --node package_3mf) exit code",
+          "ok": true,
+          "reference": 0.0,
+          "tolerance": "±0e0",
+          "unit": ""
+        },
+        {
+          "measured": 0.0,
+          "name": "stage cfd (cook --node cfd_case) exit code",
+          "ok": true,
+          "reference": 0.0,
+          "tolerance": "±0e0",
+          "unit": ""
+        },
+        {
+          "measured": 0.0,
+          "name": "stage fea (cook --node temp_map) exit code",
+          "ok": true,
+          "reference": 0.0,
+          "tolerance": "±0e0",
+          "unit": ""
+        },
+        {
+          "measured": 0.0,
+          "name": "stage solar (cook --node hdt_check) exit code",
+          "ok": true,
+          "reference": 0.0,
+          "tolerance": "±0e0",
+          "unit": ""
+        },
+        {
+          "measured": 0.0,
+          "name": "stage flatten (cook --node flatten_strain) exit code",
+          "ok": true,
+          "reference": 0.0,
+          "tolerance": "±0e0",
+          "unit": ""
+        },
+        {
+          "measured": 0.0,
+          "name": "stage perf (cook --node top_speed) exit code",
+          "ok": true,
+          "reference": 0.0,
+          "tolerance": "±0e0",
+          "unit": ""
+        }
+      ],
+      "detail": "",
+      "id": "E.pipeline.stage_smoke",
+      "notes": [],
+      "reference": "scripted `vernon-cli cook --node <last node of each stage>`; exit code 0 required",
+      "status": "PASS",
+      "tier": "E",
+      "title": "Stage-by-stage CLI smoke through the vernon-cli binary",
+      "wall_ms": 3791.5861
+    },
+    {
+      "comparisons": [
+        {
+          "measured": 1.0,
+          "name": "app still running after 6 s (1 = yes)",
+          "ok": true,
+          "reference": 1.0,
+          "tolerance": "±0e0",
+          "unit": "bool"
+        }
+      ],
+      "detail": "",
+      "id": "E.app.start_probe",
+      "notes": [],
+      "reference": "launch the desktop binary, require it to stay alive for 6 s (window opened), then stop it",
+      "status": "PASS",
+      "tier": "E",
+      "title": "Desktop app starts and stays up",
+      "wall_ms": 9774.8834
+    },
+    {
+      "comparisons": [
+        {
+          "measured": 0.0827586,
+          "name": "wall time",
+          "ok": true,
+          "reference": 2.0,
+          "tolerance": "≤ bound",
+          "unit": "s"
+        },
+        {
+          "measured": 20.421875,
+          "name": "peak memory",
+          "ok": true,
+          "reference": 500.0,
+          "tolerance": "≤ bound",
+          "unit": "MB"
+        },
+        {
+          "measured": 0.0827586,
+          "name": "wall time vs baseline (1.5x + 0.25 s)",
+          "ok": true,
+          "reference": 0.3672316,
+          "tolerance": "≤ bound",
+          "unit": "s"
+        },
+        {
+          "measured": 20.421875,
+          "name": "peak memory vs baseline (1.3x + 20 MB)",
+          "ok": true,
+          "reference": 45.837500000000006,
+          "tolerance": "≤ bound",
+          "unit": "MB"
+        }
+      ],
+      "detail": "",
+      "id": "P.icp.10k",
+      "notes": [
+        "actual input size 10082 ; wall 0.08 s ; peak 20 MB"
+      ],
+      "reference": "target 2 s and 500 MB, stated before measuring; baseline in bench/baseline.json",
+      "status": "PASS",
+      "tier": "P",
+      "title": "icp at 10000 triangles (tetrahedra for fea_solve)",
+      "wall_ms": 179.27499999999998
+    },
+    {
+      "comparisons": [
+        {
+          "measured": 0.3007183,
+          "name": "wall time",
+          "ok": true,
+          "reference": 20.0,
+          "tolerance": "≤ bound",
+          "unit": "s"
+        },
+        {
+          "measured": 81.77734375,
+          "name": "peak memory",
+          "ok": true,
+          "reference": 2000.0,
+          "tolerance": "≤ bound",
+          "unit": "MB"
+        },
+        {
+          "measured": 0.3007183,
+          "name": "wall time vs baseline (1.5x + 0.25 s)",
+          "ok": true,
+          "reference": 1.16707225,
+          "tolerance": "≤ bound",
+          "unit": "s"
+        },
+        {
+          "measured": 81.77734375,
+          "name": "peak memory vs baseline (1.3x + 20 MB)",
+          "ok": true,
+          "reference": 126.26992187500001,
+          "tolerance": "≤ bound",
+          "unit": "MB"
+        }
+      ],
+      "detail": "",
+      "id": "P.icp.100k",
+      "notes": [
+        "actual input size 100352 ; wall 0.30 s ; peak 82 MB"
+      ],
+      "reference": "target 20 s and 2000 MB, stated before measuring; baseline in bench/baseline.json",
+      "status": "PASS",
+      "tier": "P",
+      "title": "icp at 100000 triangles (tetrahedra for fea_solve)",
+      "wall_ms": 386.8226
+    },
+    {
+      "comparisons": [
+        {
+          "measured": 2.9143339,
+          "name": "wall time",
+          "ok": true,
+          "reference": 200.0,
+          "tolerance": "≤ bound",
+          "unit": "s"
+        },
+        {
+          "measured": 759.54296875,
+          "name": "peak memory",
+          "ok": true,
+          "reference": 8000.0,
+          "tolerance": "≤ bound",
+          "unit": "MB"
+        }
+      ],
+      "detail": "",
+      "id": "P.icp.1000k",
+      "notes": [
+        "actual input size 999698 ; wall 2.91 s ; peak 760 MB",
+        "no baseline stored for this case yet"
+      ],
+      "reference": "target 200 s and 8000 MB, stated before measuring; baseline in bench/baseline.json",
+      "status": "PASS",
+      "tier": "P",
+      "title": "icp at 1000000 triangles (tetrahedra for fea_solve)",
+      "wall_ms": 3383.8801
+    },
+    {
+      "comparisons": [
+        {
+          "measured": 0.0230846,
+          "name": "wall time",
+          "ok": true,
+          "reference": 1.0,
+          "tolerance": "≤ bound",
+          "unit": "s"
+        },
+        {
+          "measured": 19.91796875,
+          "name": "peak memory",
+          "ok": true,
+          "reference": 500.0,
+          "tolerance": "≤ bound",
+          "unit": "MB"
+        },
+        {
+          "measured": 0.0230846,
+          "name": "wall time vs baseline (1.5x + 0.25 s)",
+          "ok": true,
+          "reference": 0.39365724999999996,
+          "tolerance": "≤ bound",
+          "unit": "s"
+        },
+        {
+          "measured": 19.91796875,
+          "name": "peak memory vs baseline (1.3x + 20 MB)",
+          "ok": true,
+          "reference": 45.735937500000006,
+          "tolerance": "≤ bound",
+          "unit": "MB"
+        }
+      ],
+      "detail": "",
+      "id": "P.deviation.10k",
+      "notes": [
+        "actual input size 10082 ; wall 0.02 s ; peak 20 MB"
+      ],
+      "reference": "target 1 s and 500 MB, stated before measuring; baseline in bench/baseline.json",
+      "status": "PASS",
+      "tier": "P",
+      "title": "deviation at 10000 triangles (tetrahedra for fea_solve)",
+      "wall_ms": 74.12599999999999
+    },
+    {
+      "comparisons": [
+        {
+          "measured": 0.1741178,
+          "name": "wall time",
+          "ok": true,
+          "reference": 10.0,
+          "tolerance": "≤ bound",
+          "unit": "s"
+        },
+        {
+          "measured": 81.74609375,
+          "name": "peak memory",
+          "ok": true,
+          "reference": 2000.0,
+          "tolerance": "≤ bound",
+          "unit": "MB"
+        },
+        {
+          "measured": 0.1741178,
+          "name": "wall time vs baseline (1.5x + 0.25 s)",
+          "ok": true,
+          "reference": 0.7595212,
+          "tolerance": "≤ bound",
+          "unit": "s"
+        },
+        {
+          "measured": 81.74609375,
+          "name": "peak memory vs baseline (1.3x + 20 MB)",
+          "ok": true,
+          "reference": 126.290234375,
+          "tolerance": "≤ bound",
+          "unit": "MB"
+        }
+      ],
+      "detail": "",
+      "id": "P.deviation.100k",
+      "notes": [
+        "actual input size 100352 ; wall 0.17 s ; peak 82 MB"
+      ],
+      "reference": "target 10 s and 2000 MB, stated before measuring; baseline in bench/baseline.json",
+      "status": "PASS",
+      "tier": "P",
+      "title": "deviation at 100000 triangles (tetrahedra for fea_solve)",
+      "wall_ms": 281.5663
+    },
+    {
+      "comparisons": [
+        {
+          "measured": 2.4097966,
+          "name": "wall time",
+          "ok": true,
+          "reference": 120.0,
+          "tolerance": "≤ bound",
+          "unit": "s"
+        },
+        {
+          "measured": 759.46875,
+          "name": "peak memory",
+          "ok": true,
+          "reference": 8000.0,
+          "tolerance": "≤ bound",
+          "unit": "MB"
+        }
+      ],
+      "detail": "",
+      "id": "P.deviation.1000k",
+      "notes": [
+        "actual input size 999698 ; wall 2.41 s ; peak 759 MB",
+        "no baseline stored for this case yet"
+      ],
+      "reference": "target 120 s and 8000 MB, stated before measuring; baseline in bench/baseline.json",
+      "status": "PASS",
+      "tier": "P",
+      "title": "deviation at 1000000 triangles (tetrahedra for fea_solve)",
+      "wall_ms": 2924.1559
+    },
+    {
+      "comparisons": [
+        {
+          "measured": 0.0253702,
+          "name": "wall time",
+          "ok": true,
+          "reference": 1.0,
+          "tolerance": "≤ bound",
+          "unit": "s"
+        },
+        {
+          "measured": 18.6953125,
+          "name": "peak memory",
+          "ok": true,
+          "reference": 500.0,
+          "tolerance": "≤ bound",
+          "unit": "MB"
+        },
+        {
+          "measured": 0.0253702,
+          "name": "wall time vs baseline (1.5x + 0.25 s)",
+          "ok": true,
+          "reference": 0.30279535,
+          "tolerance": "≤ bound",
+          "unit": "s"
+        },
+        {
+          "measured": 18.6953125,
+          "name": "peak memory vs baseline (1.3x + 20 MB)",
+          "ok": true,
+          "reference": 43.034375,
+          "tolerance": "≤ bound",
+          "unit": "MB"
+        }
+      ],
+      "detail": "",
+      "id": "P.decimate.10k",
+      "notes": [
+        "actual input size 9800 ; wall 0.03 s ; peak 19 MB"
+      ],
+      "reference": "target 1 s and 500 MB, stated before measuring; baseline in bench/baseline.json",
+      "status": "PASS",
+      "tier": "P",
+      "title": "decimate at 10000 triangles (tetrahedra for fea_solve)",
+      "wall_ms": 76.7288
+    },
+    {
+      "comparisons": [
+        {
+          "measured": 0.2170811,
+          "name": "wall time",
+          "ok": true,
+          "reference": 10.0,
+          "tolerance": "≤ bound",
+          "unit": "s"
+        },
+        {
+          "measured": 60.07421875,
+          "name": "peak memory",
+          "ok": true,
+          "reference": 2000.0,
+          "tolerance": "≤ bound",
+          "unit": "MB"
+        },
+        {
+          "measured": 0.2170811,
+          "name": "wall time vs baseline (1.5x + 0.25 s)",
+          "ok": true,
+          "reference": 0.7154119,
+          "tolerance": "≤ bound",
+          "unit": "s"
+        },
+        {
+          "measured": 60.07421875,
+          "name": "peak memory vs baseline (1.3x + 20 MB)",
+          "ok": true,
+          "reference": 97.26875,
+          "tolerance": "≤ bound",
+          "unit": "MB"
+        }
+      ],
+      "detail": "",
+      "id": "P.decimate.100k",
+      "notes": [
+        "actual input size 99224 ; wall 0.22 s ; peak 60 MB"
+      ],
+      "reference": "target 10 s and 2000 MB, stated before measuring; baseline in bench/baseline.json",
+      "status": "PASS",
+      "tier": "P",
+      "title": "decimate at 100000 triangles (tetrahedra for fea_solve)",
+      "wall_ms": 328.531
+    },
+    {
+      "comparisons": [
+        {
+          "measured": 2.6248458,
+          "name": "wall time",
+          "ok": true,
+          "reference": 120.0,
+          "tolerance": "≤ bound",
+          "unit": "s"
+        },
+        {
+          "measured": 446.046875,
+          "name": "peak memory",
+          "ok": true,
+          "reference": 8000.0,
+          "tolerance": "≤ bound",
+          "unit": "MB"
+        }
+      ],
+      "detail": "",
+      "id": "P.decimate.1000k",
+      "notes": [
+        "actual input size 998000 ; wall 2.62 s ; peak 446 MB",
+        "no baseline stored for this case yet"
+      ],
+      "reference": "target 120 s and 8000 MB, stated before measuring; baseline in bench/baseline.json",
+      "status": "PASS",
+      "tier": "P",
+      "title": "decimate at 1000000 triangles (tetrahedra for fea_solve)",
+      "wall_ms": 3000.4746999999998
+    },
+    {
+      "comparisons": [
+        {
+          "measured": 0.4972438,
+          "name": "wall time",
+          "ok": true,
+          "reference": 2.0,
+          "tolerance": "≤ bound",
+          "unit": "s"
+        },
+        {
+          "measured": 32.02734375,
+          "name": "peak memory",
+          "ok": true,
+          "reference": 500.0,
+          "tolerance": "≤ bound",
+          "unit": "MB"
+        },
+        {
+          "measured": 0.4972438,
+          "name": "wall time vs baseline (1.5x + 0.25 s)",
+          "ok": true,
+          "reference": 0.89115955,
+          "tolerance": "≤ bound",
+          "unit": "s"
+        },
+        {
+          "measured": 32.02734375,
+          "name": "peak memory vs baseline (1.3x + 20 MB)",
+          "ok": true,
+          "reference": 61.666015625,
+          "tolerance": "≤ bound",
+          "unit": "MB"
+        }
+      ],
+      "detail": "",
+      "id": "P.flatten.10k",
+      "notes": [
+        "actual input size 10082 ; wall 0.50 s ; peak 32 MB"
+      ],
+      "reference": "target 2 s and 500 MB, stated before measuring; baseline in bench/baseline.json",
+      "status": "PASS",
+      "tier": "P",
+      "title": "flatten at 10000 triangles (tetrahedra for fea_solve)",
+      "wall_ms": 564.3067000000001
+    },
+    {
+      "comparisons": [
+        {
+          "measured": 42.323356,
+          "name": "wall time",
+          "ok": false,
+          "reference": 30.0,
+          "tolerance": "≤ bound",
+          "unit": "s"
+        },
+        {
+          "measured": 206.6171875,
+          "name": "peak memory",
+          "ok": true,
+          "reference": 2000.0,
+          "tolerance": "≤ bound",
+          "unit": "MB"
+        },
+        {
+          "measured": 42.323356,
+          "name": "wall time vs baseline (1.5x + 0.25 s)",
+          "ok": true,
+          "reference": 69.58011415,
+          "tolerance": "≤ bound",
+          "unit": "s"
+        },
+        {
+          "measured": 206.6171875,
+          "name": "peak memory vs baseline (1.3x + 20 MB)",
+          "ok": true,
+          "reference": 288.47031250000003,
+          "tolerance": "≤ bound",
+          "unit": "MB"
+        }
+      ],
+      "detail": "wall time = 42.323356 vs 30.000000 (≤ bound)",
+      "id": "P.flatten.100k",
+      "notes": [
+        "actual input size 100352 ; wall 42.32 s ; peak 207 MB"
+      ],
+      "reference": "target 30 s and 2000 MB, stated before measuring; baseline in bench/baseline.json",
+      "status": "FAIL",
+      "tier": "P",
+      "title": "flatten at 100000 triangles (tetrahedra for fea_solve)",
+      "wall_ms": 42414.0238
+    },
+    {
+      "comparisons": [],
+      "detail": "timed out after 600 s (target 300 s)",
+      "id": "P.flatten.1000k",
+      "notes": [],
+      "reference": "target 300 s and 8000 MB, stated before measuring; baseline in bench/baseline.json",
+      "status": "FAIL",
+      "tier": "P",
+      "title": "flatten at 1000000 triangles (tetrahedra for fea_solve)",
+      "wall_ms": 602308.7228000001
+    },
+    {
+      "comparisons": [
+        {
+          "measured": 0.9572038,
+          "name": "wall time",
+          "ok": true,
+          "reference": 5.0,
+          "tolerance": "≤ bound",
+          "unit": "s"
+        },
+        {
+          "measured": 61.69921875,
+          "name": "peak memory",
+          "ok": true,
+          "reference": 500.0,
+          "tolerance": "≤ bound",
+          "unit": "MB"
+        },
+        {
+          "measured": 0.9572038,
+          "name": "wall time vs baseline (1.5x + 0.25 s)",
+          "ok": true,
+          "reference": 2.59958335,
+          "tolerance": "≤ bound",
+          "unit": "s"
+        },
+        {
+          "measured": 61.69921875,
+          "name": "peak memory vs baseline (1.3x + 20 MB)",
+          "ok": true,
+          "reference": 100.18359375,
+          "tolerance": "≤ bound",
+          "unit": "MB"
+        }
+      ],
+      "detail": "",
+      "id": "P.quad_remesh.10k",
+      "notes": [
+        "actual input size 9800 ; wall 0.96 s ; peak 62 MB"
+      ],
+      "reference": "target 5 s and 500 MB, stated before measuring; baseline in bench/baseline.json",
+      "status": "PASS",
+      "tier": "P",
+      "title": "quad_remesh at 10000 triangles (tetrahedra for fea_solve)",
+      "wall_ms": 1036.3781000000001
+    },
+    {
+      "comparisons": [
+        {
+          "measured": 2.6975467,
+          "name": "wall time",
+          "ok": true,
+          "reference": 60.0,
+          "tolerance": "≤ bound",
+          "unit": "s"
+        },
+        {
+          "measured": 148.14453125,
+          "name": "peak memory",
+          "ok": true,
+          "reference": 2000.0,
+          "tolerance": "≤ bound",
+          "unit": "MB"
+        },
+        {
+          "measured": 2.6975467,
+          "name": "wall time vs baseline (1.5x + 0.25 s)",
+          "ok": true,
+          "reference": 11.625557050000001,
+          "tolerance": "≤ bound",
+          "unit": "s"
+        },
+        {
+          "measured": 148.14453125,
+          "name": "peak memory vs baseline (1.3x + 20 MB)",
+          "ok": true,
+          "reference": 212.89765625,
+          "tolerance": "≤ bound",
+          "unit": "MB"
+        }
+      ],
+      "detail": "",
+      "id": "P.quad_remesh.100k",
+      "notes": [
+        "actual input size 99224 ; wall 2.70 s ; peak 148 MB"
+      ],
+      "reference": "target 60 s and 2000 MB, stated before measuring; baseline in bench/baseline.json",
+      "status": "PASS",
+      "tier": "P",
+      "title": "quad_remesh at 100000 triangles (tetrahedra for fea_solve)",
+      "wall_ms": 2795.6343
+    },
+    {
+      "comparisons": [
+        {
+          "measured": 32.5859174,
+          "name": "wall time",
+          "ok": true,
+          "reference": 300.0,
+          "tolerance": "≤ bound",
+          "unit": "s"
+        },
+        {
+          "measured": 1322.8203125,
+          "name": "peak memory",
+          "ok": true,
+          "reference": 8000.0,
+          "tolerance": "≤ bound",
+          "unit": "MB"
+        }
+      ],
+      "detail": "",
+      "id": "P.quad_remesh.1000k",
+      "notes": [
+        "actual input size 998000 ; wall 32.59 s ; peak 1323 MB",
+        "no baseline stored for this case yet"
+      ],
+      "reference": "target 300 s and 8000 MB, stated before measuring; baseline in bench/baseline.json",
+      "status": "PASS",
+      "tier": "P",
+      "title": "quad_remesh at 1000000 triangles (tetrahedra for fea_solve)",
+      "wall_ms": 32878.793000000005
+    },
+    {
+      "comparisons": [
+        {
+          "measured": 0.7854469,
+          "name": "wall time",
+          "ok": true,
+          "reference": 2.0,
+          "tolerance": "≤ bound",
+          "unit": "s"
+        },
+        {
+          "measured": 36.7109375,
+          "name": "peak memory",
+          "ok": true,
+          "reference": 500.0,
+          "tolerance": "≤ bound",
+          "unit": "MB"
+        },
+        {
+          "measured": 0.7854469,
+          "name": "wall time vs baseline (1.5x + 0.25 s)",
+          "ok": true,
+          "reference": 4.3499116,
+          "tolerance": "≤ bound",
+          "unit": "s"
+        },
+        {
+          "measured": 36.7109375,
+          "name": "peak memory vs baseline (1.3x + 20 MB)",
+          "ok": true,
+          "reference": 67.983203125,
+          "tolerance": "≤ bound",
+          "unit": "MB"
+        }
+      ],
+      "detail": "",
+      "id": "P.fea_solve.10k",
+      "notes": [
+        "actual input size 12960 ; wall 0.79 s ; peak 37 MB"
+      ],
+      "reference": "target 2 s and 500 MB, stated before measuring; baseline in bench/baseline.json",
+      "status": "PASS",
+      "tier": "P",
+      "title": "fea_solve at 10000 triangles (tetrahedra for fea_solve)",
+      "wall_ms": 832.3516
+    },
+    {
+      "comparisons": [
+        {
+          "measured": 6.6088158,
+          "name": "wall time",
+          "ok": true,
+          "reference": 30.0,
+          "tolerance": "≤ bound",
+          "unit": "s"
+        },
+        {
+          "measured": 190.28125,
+          "name": "peak memory",
+          "ok": true,
+          "reference": 2000.0,
+          "tolerance": "≤ bound",
+          "unit": "MB"
+        },
+        {
+          "measured": 6.6088158,
+          "name": "wall time vs baseline (1.5x + 0.25 s)",
+          "ok": true,
+          "reference": 42.69071905,
+          "tolerance": "≤ bound",
+          "unit": "s"
+        },
+        {
+          "measured": 190.28125,
+          "name": "peak memory vs baseline (1.3x + 20 MB)",
+          "ok": true,
+          "reference": 267.32500000000005,
+          "tolerance": "≤ bound",
+          "unit": "MB"
+        }
+      ],
+      "detail": "",
+      "id": "P.fea_solve.100k",
+      "notes": [
+        "actual input size 103680 ; wall 6.61 s ; peak 190 MB"
+      ],
+      "reference": "target 30 s and 2000 MB, stated before measuring; baseline in bench/baseline.json",
+      "status": "PASS",
+      "tier": "P",
+      "title": "fea_solve at 100000 triangles (tetrahedra for fea_solve)",
+      "wall_ms": 6689.8057
+    },
+    {
+      "comparisons": [
+        {
+          "measured": 133.2563857,
+          "name": "wall time",
+          "ok": true,
+          "reference": 300.0,
+          "tolerance": "≤ bound",
+          "unit": "s"
+        },
+        {
+          "measured": 1741.30859375,
+          "name": "peak memory",
+          "ok": true,
+          "reference": 8000.0,
+          "tolerance": "≤ bound",
+          "unit": "MB"
+        }
+      ],
+      "detail": "",
+      "id": "P.fea_solve.1000k",
+      "notes": [
+        "actual input size 1054560 ; wall 133.26 s ; peak 1741 MB",
+        "no baseline stored for this case yet"
+      ],
+      "reference": "target 300 s and 8000 MB, stated before measuring; baseline in bench/baseline.json",
+      "status": "PASS",
+      "tier": "P",
+      "title": "fea_solve at 1000000 triangles (tetrahedra for fea_solve)",
+      "wall_ms": 133576.7041
+    }
+  ],
+  "host": "windows x86_64, 32 logical CPUs",
+  "summary": {
+    "fail": 3,
+    "pass": 35,
+    "skipped": 11,
+    "total": 49
+  },
+  "vernon_version": "0.1.0"
+}
