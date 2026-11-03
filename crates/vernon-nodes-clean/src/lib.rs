@@ -16,6 +16,7 @@ pub mod kdtree;
 pub mod linalg;
 pub mod meshedit;
 pub mod meshfix;
+pub mod qem_simplify;
 pub mod remesh;
 pub mod stats;
 pub mod symmetry;
