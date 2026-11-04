@@ -45,6 +45,11 @@ Memory fits (flat ~21 GiB of 25.4 GiB) but leaves only ~4 GiB in WSL and a few G
 on the host: close large apps for the run. Disk ~15 GB. No automatic resume.
 
 Next: Stage 2 (`wp9-solve`) only after the user approves. Command in the runbook.
+**2026-11-04: the user deferred Stage 2 until Sunday 2026-11-08.** Not approved yet:
+ask again before launching. Open choice from the gate: start as is, or add
+automatic resume support first. Before launch: close large apps, keep the machine
+plugged in with the lid open, request keep-awake, and use a fresh run id
+(e.g. `wp9-solve-fastback-20261108-a`).
 
 ## WP9 Stage 0 built (solve profiles, pilot mode, sampler, stop), 2026-11-04
 
