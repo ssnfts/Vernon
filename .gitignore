@@ -2,6 +2,7 @@
 /target
 *.pdb
 /out
+dist/
 
 # Local runs, logs, downloaded datasets (never commit: may be licensed to one user)
 /scratch
