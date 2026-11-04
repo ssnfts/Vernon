@@ -49,35 +49,46 @@ metrics that later stages check (gate on).
    executable exists. Tests must never require the program; tests that do
    are `#[ignore = "needs <tool>"]`.
 
-## Build and check (Windows, this machine)
-Rust is the **GNU** toolchain plus WinLibs MinGW. In every new PowerShell:
+## Build and check (Windows)
+Rust is the **GNU** toolchain plus WinLibs MinGW. A new machine is set up with
+`docs/SETUP.md` (`scripts/setup/setup-dev.ps1` checks it). In every new
+PowerShell, from the checkout root:
 ```powershell
-Set-Location C:\Users\mabdu\REA\vernon
 . .\scripts\dev-env.ps1          # puts cargo and MinGW (gcc, dlltool) on PATH
 ```
-`~/.cargo/config.toml` already points the GNU target's `linker` and
-`-Cdlltool` at WinLibs. Don't change it. On Linux or macOS, plain `cargo`
+`~/.cargo/config.toml` points the GNU target's `linker` and `-Cdlltool` at
+WinLibs. Don't change it once it works. On Linux or macOS, plain `cargo`
 works (the app needs Vulkan, Metal or GL to open a window).
+
+Never hard-code a machine path (user folders, drive letters) in code or
+scripts. Derive it from the checkout (`$PSScriptRoot`) or take it as an
+explicit parameter or environment variable. Keep the checkout in an ordinary
+folder: the CFD input checks refuse junctions and links.
 
 Definition of done for **every** change:
 ```powershell
 cargo build --workspace
-cargo test --workspace                                   # currently 982 passing, 0 failing
+cargo test --workspace                                   # currently 1543 passing, 0 failing, 35 ignored
 cargo clippy --workspace --all-targets -- -D warnings    # must be clean
-cargo run -p vernon-cli -- cook examples/bodykit_pipeline.vrn   # 38 nodes, 0 failing gates, 2 expected
+cargo run -p vernon-cli -- cook examples/bodykit_pipeline.vrn   # 40 nodes, 0 failing gates, 5 expected
 cargo run -p vernon-cli -- list --markdown > docs/NODES.md      # regenerate after adding or changing nodes
 ```
 Then update the per-stage counts in `README.md` and launch the app once
 (`cargo run -p vernon`) to check it opens.
 
 ## Save tokens with K2
-Hand routine work to the K2 model so long logs and first drafts don't use up
-Claude or Codex tokens. The owner approved this on 2026-10-31. It is the
-separate authorization `docs/CONTINUATION.md` asks for, for the content listed
-here only. Tool: `C:\Users\mabdu\Desktop\k2\k2.py` (details in the `README.md`
+K2 is a local tool on the original development machine only; skip this section
+elsewhere. Hand routine work to the K2 model so long logs and first drafts don't use up
+Claude or Codex tokens when external transmission is separately authorized.
+The owner recorded approval in another Vernon session on 2026-10-31, but
+automatic approval review rejected the wrapper in the current Codex chat:
+failure logs could leave the machine without authorization here. Until the
+user approves that transmission in this chat, run checks directly through
+the bounded local verification scripts. Do not invoke K2 indirectly or use
+it to bypass a quota limit. Tool: `C:\Users\mabdu\Desktop\k2\k2.py` (details in the `README.md`
 beside it).
 
-**Run long checks through it.** The command's exit code decides pass or fail.
+**When separately authorized, run long checks through it.** The command's exit code decides pass or fail.
 A pass makes no K2 call and prints one line. A failure prints a K2 summary and
 the path of the full log:
 ```powershell
@@ -125,6 +136,10 @@ Rules:
 | `docs/specs/` | Clean-room specs: the source of truth for node behaviour |
 | `docs/research/k2/` | Vetted third-party review notes (suggestions only) |
 | `examples/bodykit_pipeline.vrn` | End-to-end demo scene |
+| `scripts/setup/` | New-PC setup: toolchain check, WSL, Ubuntu, OpenFOAM, DrivAer data |
+| `scripts/verification/` | Bounded background check runner (`start-verification.ps1`, `verification-status.ps1`) |
+| `scripts/cfd/` | Fixed WSL environment, memory policy and Linux cleanup for real CFD runs |
+| `docs/SETUP.md`, `docs/CFD-RUNBOOK.md` | New machine setup; the next CFD validation stages |
 
 ## Commits
 One commit per work package in `docs/HANDOFF.md`, with a message saying what

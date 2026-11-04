@@ -7,14 +7,19 @@ tool session ends; confirm persistence in an independent shell on your host.
 #>
 [CmdletBinding()]
 param(
-    [ValidateSet('full', 'clean-focused', 'wp6-benchmark', 'wp6', 'wp8-real', 'wp8', 'smoke', 'smoke-failure', 'smoke-slow', 'smoke-orphan')][string]$Profile = 'full',
+    [ValidateSet('full', 'clean-focused', 'wp6-benchmark', 'wp6', 'wp8-real', 'wp8', 'wp9-focused', 'wp9-perf', 'wp9-wsl-runner', 'wp9-native', 'wp9-geometry', 'wp9-sizing', 'wp9-sizing-serial', 'smoke', 'smoke-failure', 'smoke-slow', 'smoke-orphan')][string]$Profile = 'full',
     [ValidatePattern('^[A-Za-z0-9][A-Za-z0-9_-]{0,95}$')][string]$RunId = ('run-' + [DateTime]::UtcNow.ToString('yyyyMMdd-HHmmss') + '-' + [guid]::NewGuid().ToString('N').Substring(0, 8)),
     [ValidatePattern('^$|^[A-Za-z0-9][A-Za-z0-9_-]{0,95}$')][string]$ResumeRunId = '',
     [ValidateRange(1, 86400)][int]$JobTimeoutSeconds = 7200
 )
 $ErrorActionPreference = 'Stop'
+if ($Profile -in @('wp9-sizing', 'wp9-sizing-serial') -and -not $PSBoundParameters.ContainsKey('JobTimeoutSeconds')) { $JobTimeoutSeconds = 21600 }
 $worker = Join-Path $PSScriptRoot 'verification.ps1'
 . $worker -Library -Profile $Profile -RunId $RunId -ResumeRunId $ResumeRunId -JobTimeoutSeconds $JobTimeoutSeconds
+Assert-VerificationWp8Input $Profile
+Assert-VerificationWp9Input $Profile
+Assert-VerificationResumeInput $Profile $ResumeRunId
+Assert-VerificationJobTimeout $Profile $JobTimeoutSeconds
 $directory = Get-VerificationPath $RunId
 Assert-VerificationOutputPath $directory
 if (Test-Path -LiteralPath $directory) { throw "Run id already exists: $RunId" }
@@ -29,7 +34,7 @@ if ($ResumeRunId) { $arguments += @('-ResumeRunId', $ResumeRunId) }
 # by the worker itself, and early worker errors have a separate launch log.
 $process = Start-Process -FilePath $shell -ArgumentList $arguments -WorkingDirectory $script:VerificationRepo -WindowStyle Hidden -PassThru
 $statusPath = Join-Path $directory 'status.json'
-$deadline = [DateTime]::UtcNow.AddSeconds(8)
+$deadline = [DateTime]::UtcNow.AddSeconds(30)
 do {
     if (Test-Path -LiteralPath $statusPath) {
         $initial = Get-Content -Raw -LiteralPath $statusPath | ConvertFrom-Json

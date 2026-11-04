@@ -1,0 +1,309 @@
+[CmdletBinding()]
+param([switch]$LibraryChecksOnly, [switch]$OrphanOnly, [switch]$TimeoutOnly, [string]$HoldJsonPath = '')
+$ErrorActionPreference = 'Stop'
+$repo = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
+$shell = (Get-Process -Id $PID).Path
+$worker = Join-Path $PSScriptRoot 'verification.ps1'
+$launcher = Join-Path $PSScriptRoot 'start-verification.ps1'
+$statusScript = Join-Path $PSScriptRoot 'verification-status.ps1'
+function Assert-True($Condition, [string]$Message) {
+    if (-not $Condition) { throw "ASSERTION FAILED: $Message" }
+}
+function Read-State([string]$Id) {
+    Get-Content -Raw -LiteralPath (Join-Path $repo "scratch/continuation/runs/$Id/status.json") | ConvertFrom-Json
+}
+function Wait-State([string]$Id, [string]$Step = '', [int]$Seconds = 20) {
+    $deadline = [DateTime]::UtcNow.AddSeconds($Seconds)
+    do {
+        $path = Join-Path $repo "scratch/continuation/runs/$Id/status.json"
+        if (Test-Path -LiteralPath $path) {
+            $state = Read-State $Id
+            if ($Step -and $state.activeStep -eq $Step -and $state.childPid) { return $state }
+            if (-not $Step -and $state.status -notin @('starting', 'running')) { return $state }
+        }
+        Start-Sleep -Milliseconds 100
+    } while ([DateTime]::UtcNow -lt $deadline)
+    throw "Timed out waiting for $Id ($Step)"
+}
+function Run-Worker([string]$Profile, [string]$Id, [string]$Resume = '', [int]$Timeout = 30) {
+    $arguments = @('-NoProfile', '-NonInteractive', '-File', $worker, '-Profile', $Profile, '-RunId', $Id, '-JobTimeoutSeconds', "$Timeout")
+    if ($Resume) { $arguments += @('-ResumeRunId', $Resume) }
+    & $shell @arguments | Out-Host
+    return $LASTEXITCODE
+}
+function Assert-TimeoutScenario([string]$Id, [int]$Timeout = 3) {
+    Assert-True ((Run-Worker 'smoke-slow' $Id '' $Timeout) -eq 124) 'job timeout is bounded'
+    $timeoutState = Read-State $Id
+    Assert-True ($timeoutState.status -eq 'timed-out') 'timeout is explicit'
+    $timedOutStep = $timeoutState.steps[-1]
+    Assert-True ($timedOutStep.name -eq 'wait' -and $timedOutStep.exitCode -eq 124 -and $timedOutStep.processId) 'timeout occurs during an active native wait step'
+    Assert-True (-not (Test-VerificationProcess $timedOutStep.processId $timedOutStep.processStartedUtc)) 'timeout kills the native step process'
+}
+foreach ($path in @($worker, $launcher, $statusScript)) {
+    Assert-True (Test-Path -LiteralPath $path) "Required durable verification script exists: $path"
+}
+foreach ($path in @($worker, $launcher, $statusScript, $PSCommandPath)) {
+    $tokens = $null; $parseErrors = $null
+    [void][System.Management.Automation.Language.Parser]::ParseFile($path, [ref]$tokens, [ref]$parseErrors)
+    Assert-True ($parseErrors.Count -eq 0) "PowerShell parser accepts $path : $parseErrors"
+}
+. $worker -Library
+if ($HoldJsonPath) {
+    Assert-VerificationOutputPath $HoldJsonPath
+    Assert-VerificationOutputPath ($HoldJsonPath + '.held')
+    $heldFile = [IO.File]::Open($HoldJsonPath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite)
+    try { [IO.File]::WriteAllText(($HoldJsonPath + '.held'), 'held'); Start-Sleep -Milliseconds 300 }
+    finally { $heldFile.Dispose() }
+    exit 0
+}
+Assert-True (Test-VerificationBenchmarkOutput "running 1 test`ntest conservative::tests::wp6_release_million_triangles ... ok`ntest result: ok. 1 passed; 0 failed;") 'benchmark accepts an executed passing filtered test'
+Assert-True (-not (Test-VerificationBenchmarkOutput "running 0 tests`ntest result: ok. 0 passed; 0 failed;")) 'zero matching benchmark tests cannot count as verification'
+$wp8Passed = "running 1 test`ntest result: ok. 1 passed; 0 failed;"
+Assert-True (Test-VerificationWp8Output $wp8Passed 'WP8_REAL_COMPLETE registered_images=20') 'real acceptance needs a completed full pipeline'
+Assert-True (-not (Test-VerificationWp8Output $wp8Passed '')) 'passing skipped test cannot certify real execution'
+Assert-True (-not (Test-VerificationWp8Output $wp8Passed "WP8_REAL_COMPLETE`nSKIPPED external acceptance")) 'skip overrides completion marker'
+Assert-True (-not (Test-VerificationWp8Output 'test result: ok. 0 passed; 0 failed;' 'WP8_REAL_COMPLETE')) 'zero tests cannot certify external acceptance'
+Assert-True (-not (Test-VerificationWp8Output $wp8Passed 'incidental WP8_REAL_COMPLETE')) 'incidental marker mention is not evidence'
+$wp9RunnerSteps = @(Get-VerificationSteps 'wp9-wsl-runner')
+Assert-True (($wp9RunnerSteps.name -join ',') -eq 'wp9-extproc,wp9-wsl') 'WP9 runner profile executes default and real WSL tests'
+$geometrySteps = @(Get-VerificationSteps 'wp9-geometry')
+Assert-True ($geometrySteps.Count -eq 1 -and ($geometrySteps[0].arguments -join ' ') -match '--release.*tests::replication_geometry_preparation.*--exact --ignored') 'geometry profile runs its explicit release data check'
+$geometryPassed = "running 1 test`ntest tests::replication_geometry_preparation ... ok`ntest result: ok. 1 passed; 0 failed; 0 ignored;"
+Assert-True (Test-VerificationWp9GeometryOutput $geometryPassed 'WP9_REPLICATION_GEOMETRY_COMPLETE cases=3 external_programs=0') 'all geometry outputs must reach final assertions'
+Assert-True (-not (Test-VerificationWp9GeometryOutput $geometryPassed '')) 'an ignored test that skipped data cannot pass'
+Assert-True (-not (Test-VerificationWp9GeometryOutput $geometryPassed 'WP9_REPLICATION_GEOMETRY_COMPLETE cases=2 external_programs=0')) 'partial case inventory cannot pass'
+Assert-True (-not (Test-VerificationWp9GeometryOutput $geometryPassed "WP9_REPLICATION_GEOMETRY_COMPLETE cases=3 external_programs=0`nSKIPPED data")) 'skip overrides geometry completion'
+Assert-True (-not (Test-VerificationWp9GeometryOutput 'running 0 tests' 'WP9_REPLICATION_GEOMETRY_COMPLETE cases=3 external_programs=0')) 'zero geometry tests cannot pass'
+$sizingSteps = @(Get-VerificationSteps 'wp9-sizing')
+$sizingArguments = @('test', '--release', '-p', 'vernon-nodes-cfd', 'tests::real_openfoam_road_car_run', '--', '--exact', '--ignored', '--nocapture', '--test-threads=1')
+Assert-True ($sizingSteps.Count -eq 1 -and $sizingSteps[0].name -eq 'wp9-sizing' -and $sizingSteps[0].executable -eq 'cargo' -and ($sizingSteps[0].arguments -join "`0") -ceq ($sizingArguments -join "`0")) 'sizing runs only its exact ignored release road-car test'
+foreach ($scriptPath in @($worker, $launcher)) {
+    $profileAttribute = (Get-Command $scriptPath).Parameters['Profile'].Attributes | Where-Object { $_ -is [System.Management.Automation.ValidateSetAttribute] }
+    Assert-True ('wp9-sizing' -in $profileAttribute.ValidValues) 'worker and launcher explicitly accept the fixed sizing profile'
+}
+$sizingDistribution = 'Vernon-Ubuntu-24.04'
+$sizingUser = 'vernon'
+$sizingEnvironment = Get-VerificationWp9SizingEnvironmentFile
+Assert-True ($sizingEnvironment -cmatch '^/mnt/[a-z]/.+/scripts/cfd/wp9-replication-sizing-env\.sh$') 'the sizing environment is this checkout''s script as seen from WSL'
+Assert-VerificationWp9Input 'wp9-sizing' $sizingDistribution $sizingUser $sizingEnvironment 'C:\approved-cars'
+foreach ($inputCase in @(
+    @('', $sizingUser, $sizingEnvironment, 'C:\approved-cars'),
+    @('Ubuntu', $sizingUser, $sizingEnvironment, 'C:\approved-cars'),
+    @($sizingDistribution, 'root', $sizingEnvironment, 'C:\approved-cars'),
+    @($sizingDistribution, $sizingUser, '/tmp/environment.sh', 'C:\approved-cars'),
+    @($sizingDistribution, $sizingUser, $sizingEnvironment, ' ')
+)) {
+    $rejected = $false
+    try { Assert-VerificationWp9Input 'wp9-sizing' $inputCase[0] $inputCase[1] $inputCase[2] $inputCase[3] } catch { $rejected = $true }
+    Assert-True $rejected 'sizing refuses unapproved WSL inputs and absent component data'
+}
+Assert-VerificationJobTimeout 'wp9-sizing' 21600
+Assert-VerificationJobTimeout 'wp9-sizing' 3
+$rejected = $false
+try { Assert-VerificationJobTimeout 'wp9-sizing' 21601 } catch { $rejected = $true }
+Assert-True $rejected 'sizing cannot exceed its six-hour outer deadline'
+foreach ($externalProfile in @('wp9-wsl-runner', 'wp9-native', 'wp9-geometry', 'wp9-sizing')) {
+    $rejected = $false
+    try { Assert-VerificationResumeInput $externalProfile 'previous-run' } catch { $rejected = $true }
+    Assert-True $rejected 'external and sizing profiles always execute afresh'
+}
+$sizingDirectory = Join-Path $repo ('scratch/continuation/library-checks/sizing-' + [guid]::NewGuid().ToString('N'))
+Assert-VerificationOutputPath $sizingDirectory
+[void][IO.Directory]::CreateDirectory($sizingDirectory)
+$sizingPath = Join-Path $sizingDirectory 'replication-sizing.json'
+$fixedSizingEnvironment = [ordered]@{
+    VERNON_WSL_DISTRO = $sizingDistribution; VERNON_WSL_USER = $sizingUser; VERNON_WSL_ENV_FILE = $sizingEnvironment
+    VERNON_CAR_REAR = 'Fastback'; VERNON_CAR_DX0 = '0.32'; VERNON_CAR_NP = '2'; VERNON_CAR_ITER = '7000'; VERNON_CAR_MESH_ONLY = '1'; VERNON_CAR_OUT = $sizingPath
+}
+$previousSizingEnvironment = @{}
+try {
+    foreach ($key in $fixedSizingEnvironment.Keys) {
+        $previousSizingEnvironment[$key] = [Environment]::GetEnvironmentVariable($key, 'Process')
+        [Environment]::SetEnvironmentVariable($key, 'inherited-conflict', 'Process')
+    }
+    Set-VerificationWp9SizingEnvironment $sizingDirectory
+    foreach ($key in $fixedSizingEnvironment.Keys) {
+        Assert-True ([Environment]::GetEnvironmentVariable($key, 'Process') -ceq $fixedSizingEnvironment[$key]) "fixed sizing overrides inherited $key"
+    }
+} finally {
+    foreach ($key in $previousSizingEnvironment.Keys) { [Environment]::SetEnvironmentVariable($key, $previousSizingEnvironment[$key], 'Process') }
+}
+$sizingPassed = "running 1 test`ntest tests::real_openfoam_road_car_run ... ok`ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 362 filtered out;"
+$sizingMarker = 'WP9_REPLICATION_MESH_ONLY_COMPLETE rear=Fastback cells=12500000.0 solver_runs=0'
+$validSizingRow = [ordered]@{
+    rear = 'Fastback'; dx0_m = 0.32; cells = 12500000.0; profile = 'road_car_detailed_gs_16ms_v1'; scope = 'published_replication'
+    original_experiment_authenticated = $false; physical_validation = $false; mesh_only = $true; solver_ran = $false
+    np = 2; n_iter = 7000; window = 1000; write_interval = 1000; max_global_cells_m = 14.0; ram_gb = 15.52
+}
+Write-VerificationJson $sizingPath $validSizingRow
+Assert-True (Test-VerificationWp9SizingOutput $sizingPassed $sizingMarker $sizingPath) 'sizing accepts an executed mesh-only test with its reloaded fixed-profile row'
+foreach ($badOutput in @(
+    'running 0 tests',
+    $sizingPassed.Replace('1 passed; 0 failed; 0 ignored;', '0 passed; 0 failed; 1 ignored;'),
+    $sizingPassed.Replace('1 passed; 0 failed; 0 ignored;', '2 passed; 0 failed; 0 ignored;'),
+    $sizingPassed.Replace('tests::real_openfoam_road_car_run', 'tests::some_other_test')
+)) {
+    Assert-True (-not (Test-VerificationWp9SizingOutput $badOutput $sizingMarker $sizingPath)) 'zero, ignored, extra or unrelated tests cannot qualify sizing'
+}
+foreach ($badMarker in @('', ('incidental ' + $sizingMarker), $sizingMarker.Replace('Fastback', 'Estate'), $sizingMarker.Replace('12500000.0', '0'), $sizingMarker.Replace('12500000.0', '-1'), $sizingMarker.Replace('solver_runs=0', 'solver_runs=1'), ($sizingMarker + "`nSKIPPED runtime"))) {
+    Assert-True (-not (Test-VerificationWp9SizingOutput $sizingPassed $badMarker $sizingPath)) 'only positive-cell Fastback mesh completion without skips qualifies'
+}
+foreach ($badField in @(
+    @('profile', 'unknown'), @('scope', 'original_experiment'), @('rear', 'Estate'), @('dx0_m', 0.64), @('np', 1), @('n_iter', 2000),
+    @('window', 500), @('write_interval', 500), @('max_global_cells_m', 15.0), @('ram_gb', 32.0),
+    @('original_experiment_authenticated', $true), @('physical_validation', $true), @('mesh_only', $false), @('solver_ran', $true),
+    @('mesh_only', 'true'), @('solver_ran', 'false'), @('physical_validation', 'false'), @('cells', '12500000'), @('cells', 0), @('cells', 12499999)
+)) {
+    $badRow = [ordered]@{}
+    foreach ($key in $validSizingRow.Keys) { $badRow[$key] = $validSizingRow[$key] }
+    $badRow[$badField[0]] = $badField[1]
+    Write-VerificationJson $sizingPath $badRow
+    Assert-True (-not (Test-VerificationWp9SizingOutput $sizingPassed $sizingMarker $sizingPath)) "sizing reload rejects changed or mistyped $($badField[0])"
+}
+$rowWithSolverResult = [ordered]@{}
+foreach ($key in $validSizingRow.Keys) { $rowWithSolverResult[$key] = $validSizingRow[$key] }
+$rowWithSolverResult['result'] = @{ cd = 0.275 }
+Write-VerificationJson $sizingPath $rowWithSolverResult
+Assert-True (-not (Test-VerificationWp9SizingOutput $sizingPassed $sizingMarker $sizingPath)) 'a solver result cannot be presented as mesh-only sizing'
+[IO.File]::WriteAllText($sizingPath, '{malformed')
+Assert-True (-not (Test-VerificationWp9SizingOutput $sizingPassed $sizingMarker $sizingPath)) 'malformed saved sizing evidence fails closed'
+Remove-Item -LiteralPath $sizingPath
+Assert-True (-not (Test-VerificationWp9SizingOutput $sizingPassed $sizingMarker $sizingPath)) 'missing saved sizing evidence fails closed'
+$serialSteps = @(Get-VerificationSteps 'wp9-sizing-serial')
+Assert-True ($serialSteps.Count -eq 1 -and $serialSteps[0].name -eq 'wp9-sizing' -and ($serialSteps[0].arguments -join "`0") -ceq ($sizingArguments -join "`0")) 'serial sizing uses the same exact mesh-only test with separate fixed admission'
+Assert-VerificationWp9Input 'wp9-sizing-serial' $sizingDistribution $sizingUser $sizingEnvironment 'C:\approved-cars'
+foreach ($guard in @('resume', 'timeout', 'identity')) {
+    $rejected = $false
+    try {
+        switch ($guard) {
+            'resume' { Assert-VerificationResumeInput 'wp9-sizing-serial' 'old-run' }
+            'timeout' { Assert-VerificationJobTimeout 'wp9-sizing-serial' 21601 }
+            'identity' { Assert-VerificationWp9Input 'wp9-sizing-serial' 'other' $sizingUser $sizingEnvironment 'C:\approved-cars' }
+        }
+    } catch { $rejected = $true }
+    Assert-True $rejected "serial sizing preserves $guard guard"
+}
+$validSizingRow.np = 1
+Write-VerificationJson $sizingPath $validSizingRow
+Assert-True (Test-VerificationWp9SizingOutput $sizingPassed $sizingMarker $sizingPath 1) 'serial completion requires an explicitly serial row'
+Assert-True (-not (Test-VerificationWp9SizingOutput $sizingPassed $sizingMarker $sizingPath)) 'serial row never passes the parallel profile'
+$serialSavedEnv = @{}
+foreach ($key in @('VERNON_WSL_DISTRO','VERNON_WSL_USER','VERNON_WSL_ENV_FILE','VERNON_CAR_REAR','VERNON_CAR_DX0','VERNON_CAR_NP','VERNON_CAR_ITER','VERNON_CAR_MESH_ONLY','VERNON_CAR_OUT')) { $serialSavedEnv[$key] = [Environment]::GetEnvironmentVariable($key,'Process') }
+try {
+    Set-VerificationWp9SizingEnvironment $sizingDirectory 1
+    Assert-True ($env:VERNON_CAR_NP -ceq '1' -and $env:VERNON_CAR_MESH_ONLY -ceq '1') 'serial profile fixes one process while keeping the solver disabled'
+} finally { foreach ($key in $serialSavedEnv.Keys) { [Environment]::SetEnvironmentVariable($key,$serialSavedEnv[$key],'Process') } }
+Remove-Item -LiteralPath $sizingPath
+$wp9NativeSteps = @(Get-VerificationSteps 'wp9-native')
+Assert-True ($wp9NativeSteps.Count -eq 1 -and ($wp9NativeSteps[0].arguments -join ' ') -match '--exact --ignored --nocapture') 'native capability executes only its explicit ignored test'
+$wp9NativePassed = "running 1 test`ntest tests::real_openfoam_chain_on_a_small_car ... ok`ntest result: ok. 1 passed; 0 failed; 0 ignored;"
+Assert-True (Test-VerificationWp9NativeOutput $wp9NativePassed 'WP9_NATIVE_CHAIN_COMPLETE cells=30000') 'actual native chain needs completion after provenance assertions'
+Assert-True (-not (Test-VerificationWp9NativeOutput $wp9NativePassed '')) 'a passing native test without its final marker cannot qualify'
+Assert-True (-not (Test-VerificationWp9NativeOutput $wp9NativePassed "WP9_NATIVE_CHAIN_COMPLETE`nSKIPPED runtime")) 'skipped native chain cannot qualify'
+Assert-True (-not (Test-VerificationWp9NativeOutput 'running 0 tests' 'WP9_NATIVE_CHAIN_COMPLETE')) 'zero native tests cannot qualify'
+Assert-True (-not (Test-VerificationWp9NativeOutput $wp9NativePassed.Replace('tests::real_openfoam_chain_on_a_small_car', 'tests::some_other_test') 'WP9_NATIVE_CHAIN_COMPLETE')) 'an unrelated test cannot qualify native execution'
+$wp9Names = @(
+    'wsl_regression_success_does_not_leave_a_background_group',
+    'wsl_regression_cancelled_start_remains_blocked_after_case_replacement',
+    'wsl_environment_with_installed_runtime_supports_simplefoam_help',
+    'wsl_environment_may_change_directory_and_positional_parameters',
+    'wsl_cancellation_before_record_publication_prevents_tool_start',
+    'wsl_timeout_stops_an_active_linux_grandchild',
+    'wsl_cook_cancellation_stops_children_and_does_not_cancel_cleanup'
+)
+$wp9Passed = (($wp9Names | ForEach-Object { "test extproc::tests::$_ ... ok" }) -join "`n") + "`ntest result: ok. 7 passed; 0 failed; 0 ignored;"
+Assert-True (Test-VerificationWp9RunnerOutput $wp9Passed '') 'all seven actual WSL regressions must execute and pass'
+Assert-True (-not (Test-VerificationWp9RunnerOutput 'test result: ok. 0 passed; 0 failed; 0 ignored;' '')) 'zero WSL tests cannot pass'
+Assert-True (-not (Test-VerificationWp9RunnerOutput ($wp9Passed.Replace("test extproc::tests::$($wp9Names[0]) ... ok", '')) '')) 'an absent containment regression cannot pass'
+Assert-True (-not (Test-VerificationWp9RunnerOutput $wp9Passed 'SKIPPED external WSL')) 'skipped WSL cannot pass'
+$wp9InputRejected = $false
+try { Assert-VerificationWp9Input 'wp9-wsl-runner' '' '' '' } catch { $wp9InputRejected = $true }
+Assert-True $wp9InputRejected 'WP9 real runner needs explicit distribution user and environment file'
+foreach ($profileName in @('wp8-real','wp8')) {
+    $rejected = $false
+    try { Assert-VerificationWp8Input $profileName ' ' } catch { $rejected = $true }
+    Assert-True $rejected 'real profiles require explicit data input'
+}
+$jsonCheckDirectory = Join-Path $repo ('scratch/continuation/library-checks/' + [guid]::NewGuid().ToString('N'))
+Assert-VerificationOutputPath $jsonCheckDirectory
+[void][IO.Directory]::CreateDirectory($jsonCheckDirectory)
+$jsonCheckPath = Join-Path $jsonCheckDirectory 'reader-overlap.json'
+Write-VerificationJson $jsonCheckPath @{ before = $true }
+$readerInfo = [Diagnostics.ProcessStartInfo]::new($shell)
+$readerInfo.UseShellExecute = $false; $readerInfo.CreateNoWindow = $true
+foreach ($argument in @('-NoProfile', '-NonInteractive', '-File', $PSCommandPath, '-HoldJsonPath', $jsonCheckPath)) { $readerInfo.ArgumentList.Add($argument) }
+$readerProcess = [Diagnostics.Process]::Start($readerInfo)
+$readerDeadline = [DateTime]::UtcNow.AddSeconds(3)
+while (-not (Test-Path -LiteralPath ($jsonCheckPath + '.held'))) {
+    if ([DateTime]::UtcNow -ge $readerDeadline) { throw 'JSON reader did not start.' }
+    Start-Sleep -Milliseconds 10
+}
+Write-VerificationJson $jsonCheckPath @{ after = $true }
+Assert-True ($readerProcess.WaitForExit(3000)) 'overlapping JSON reader exits'
+Assert-True ((Get-Content -Raw -LiteralPath $jsonCheckPath | ConvertFrom-Json).after) 'transient reader overlap does not lose a status write'
+if ($LibraryChecksOnly) { Write-Output 'PASS: parser and library checks'; exit 0 }
+$prefix = 'selftest-' + [DateTime]::UtcNow.ToString('yyyyMMdd-HHmmss') + '-' + [guid]::NewGuid().ToString('N').Substring(0, 6)
+$passed = 0
+if ($TimeoutOnly) { Assert-TimeoutScenario "$prefix-timeout"; Write-Output 'PASS: active native timeout'; exit 0 }
+Assert-True ((Run-Worker 'smoke-orphan' "$prefix-orphan") -eq 125) 'unexpected native descendants are contained and fail the step'
+$orphanState = Read-State "$prefix-orphan"
+Assert-True ($orphanState.status -eq 'failed') 'orphan descendant prevents completion'
+$orphanLog = Get-Content -Raw -LiteralPath $orphanState.steps[-1].stdout
+Assert-True ($orphanLog -match 'orphan-process:(\d+)\|([^\r\n]+)') 'orphan identity is available to the cleanup regression'
+Assert-True (-not (Test-VerificationProcess ([int]$Matches[1]) $Matches[2])) 'job cleanup kills a grandchild even after its direct parent exits'
+$passed++
+if ($OrphanOnly) { Write-Output 'PASS: orphan process containment'; exit 0 }
+Assert-True ((Run-Worker 'smoke' "$prefix-pass") -eq 0) 'smoke exits zero'
+$state = Read-State "$prefix-pass"
+Assert-True ($state.status -eq 'completed' -and $state.steps.Count -eq 2 -and $null -ne $state.finishedUtc) 'completion is explicit with two step results'
+Assert-True ($state.sourceBefore -eq $state.sourceAfter) 'successful run has identical source fingerprints'
+$passed++
+Assert-True ((Run-Worker 'smoke-failure' "$prefix-failure") -eq 7) 'failure exit code propagates'
+$state = Read-State "$prefix-failure"
+Assert-True ($state.status -eq 'failed' -and $state.steps.Count -eq 2) 'first failing step stops later work'
+Assert-True ((Run-Worker 'smoke-failure' "$prefix-refuse-failure" "$prefix-failure") -ne 0) 'failed run is not blindly retried through resume'
+$passed++
+Assert-TimeoutScenario "$prefix-timeout"
+$passed++
+# This launcher exits before the independent worker/status checks below.
+& $shell -NoProfile -NonInteractive -File $launcher -Profile smoke-slow -RunId "$prefix-interrupt" -JobTimeoutSeconds 30 | Out-Host
+Assert-True ($LASTEXITCODE -eq 0) 'launcher exits successfully'
+$state = Wait-State "$prefix-interrupt" 'wait'
+Assert-True ($state.workerPid -ne $PID) 'background worker has its own PID'
+Assert-True ((Run-Worker 'smoke' "$prefix-concurrent") -ne 0) 'single worker lock rejects concurrent work'
+$workerProcess = Get-Process -Id $state.workerPid
+$workerProcess.Kill()
+Assert-True ($workerProcess.WaitForExit(5000)) 'test kills only the worker process'
+Start-Sleep -Milliseconds 500
+Assert-True (-not (Test-VerificationProcess $state.childPid $state.childStartedUtc)) 'worker death closes its job and kills native descendants'
+$observed = & $shell -NoProfile -NonInteractive -File $statusScript -RunId "$prefix-interrupt" -Json | ConvertFrom-Json
+Assert-True ($observed.status -eq 'interrupted' -and -not $observed.workerAlive) 'dead worker is interrupted, never completed'
+Assert-True ((Run-Worker 'smoke-slow' "$prefix-resume" "$prefix-interrupt") -eq 0) 'matching interrupted run resumes'
+$state = Read-State "$prefix-resume"
+Assert-True ($state.status -eq 'completed' -and $state.steps[0].reused -and -not $state.steps[1].reused) 'resume reuses only successful checkpoint steps'
+Assert-True ((Run-Worker 'smoke' "$prefix-profile-refused" "$prefix-resume") -ne 0) 'profile mismatch rejects reuse'
+$passed++
+& $shell -NoProfile -NonInteractive -File $launcher -Profile smoke-slow -RunId "$prefix-visibility" -JobTimeoutSeconds 30 | Out-Host
+$liveState = Wait-State "$prefix-visibility" 'wait'
+$liveState.workerPid = [int]::MaxValue
+$livePath = Join-Path $repo "scratch/continuation/runs/$prefix-visibility/status.json"
+Write-VerificationJson $livePath $liveState
+$visibility = & $shell -NoProfile -NonInteractive -File $statusScript -RunId "$prefix-visibility" -Json | ConvertFrom-Json
+Assert-True ($visibility.status -eq 'running-visibility-unknown' -and $visibility.lockState -eq 'held' -and $null -eq $visibility.workerAlive) 'held lock prevents a false interrupted claim when PID is invisible'
+[void](Wait-State "$prefix-visibility")
+$passed++
+$fixture = Join-Path $PSScriptRoot ".verification-fixture-$prefix.txt"
+try {
+    [IO.File]::WriteAllText($fixture, 'before')
+    & $shell -NoProfile -NonInteractive -File $launcher -Profile smoke-slow -RunId "$prefix-change" -JobTimeoutSeconds 30 | Out-Host
+    Assert-True ($LASTEXITCODE -eq 0) 'source-change worker launches'
+    [void](Wait-State "$prefix-change" 'wait')
+    [IO.File]::WriteAllText($fixture, 'after')
+    $state = Wait-State "$prefix-change"
+    Assert-True ($state.status -eq 'source-changed' -and $state.sourceBefore -ne $state.sourceAfter) 'source mutation prevents a verified result'
+    Assert-True ((Run-Worker 'smoke-slow' "$prefix-source-refused" "$prefix-change") -ne 0) 'changed-source run cannot resume'
+    $passed++
+} finally {
+    if (Test-Path -LiteralPath $fixture) { Remove-Item -LiteralPath $fixture }
+}
+Write-Output "PASS: $passed durable-runner scenarios; run prefix $prefix"

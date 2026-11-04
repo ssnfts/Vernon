@@ -7,7 +7,7 @@ before copying to docs/NODES.md. GUI inspection remains a separate manual check.
 #>
 [CmdletBinding()]
 param(
-    [ValidateSet('full', 'clean-focused', 'wp6-benchmark', 'wp6', 'wp8-real', 'wp8', 'smoke', 'smoke-failure', 'smoke-slow', 'smoke-orphan')]
+    [ValidateSet('full', 'clean-focused', 'wp6-benchmark', 'wp6', 'wp8-real', 'wp8', 'wp9-focused', 'wp9-perf', 'wp9-wsl-runner', 'wp9-native', 'wp9-geometry', 'wp9-sizing', 'wp9-sizing-serial', 'smoke', 'smoke-failure', 'smoke-slow', 'smoke-orphan')]
     [string]$Profile = 'full',
     [ValidatePattern('^[A-Za-z0-9][A-Za-z0-9_-]{0,95}$')][string]$RunId = ('run-' + [DateTime]::UtcNow.ToString('yyyyMMdd-HHmmss') + '-' + [guid]::NewGuid().ToString('N').Substring(0, 8)),
     [ValidatePattern('^$|^[A-Za-z0-9][A-Za-z0-9_-]{0,95}$')][string]$ResumeRunId = '',
@@ -15,10 +15,18 @@ param(
     [switch]$Library,
     [ValidateSet('none', 'pass', 'fail', 'wait', 'orphan')][string]$SmokeChild = 'none',
     [switch]$StepChild,
-    [ValidateSet('build', 'tests', 'clippy', 'demo', 'catalogue', 'clean-tests', 'wp6-release', 'wp8-real', 'first', 'failure', 'must-not-run', 'second', 'wait', 'orphan')][string]$StepName = 'first'
+    [ValidateSet('build', 'tests', 'clippy', 'demo', 'catalogue', 'clean-tests', 'wp6-release', 'wp8-real', 'wp9-tests', 'wp9-perf-tests', 'wp9-extproc', 'wp9-wsl', 'wp9-native', 'wp9-geometry', 'wp9-sizing', 'first', 'failure', 'must-not-run', 'second', 'wait', 'orphan')][string]$StepName = 'first'
 )
 $ErrorActionPreference = 'Stop'
-$script:VerificationRepo = [IO.Path]::GetFullPath((Split-Path $PSScriptRoot -Parent))
+if ($Profile -in @('wp9-sizing', 'wp9-sizing-serial') -and -not $PSBoundParameters.ContainsKey('JobTimeoutSeconds')) { $JobTimeoutSeconds = 21600 }
+$script:VerificationScripts = Split-Path $PSScriptRoot -Parent
+$script:VerificationRepo = [IO.Path]::GetFullPath((Split-Path $script:VerificationScripts -Parent))
+# The fixed sizing environment is this checkout's own script, seen from WSL (C:\x -> /mnt/c/x).
+function Get-VerificationWp9SizingEnvironmentFile {
+    $path = [IO.Path]::GetFullPath((Join-Path $script:VerificationScripts 'cfd/wp9-replication-sizing-env.sh'))
+    if ($path -notmatch '^([A-Za-z]):\\(.+)$') { throw "The checkout must be on a local drive letter: $path" }
+    '/mnt/' + $Matches[1].ToLowerInvariant() + '/' + $Matches[2].Replace('\', '/')
+}
 $script:VerificationRoot = Join-Path $script:VerificationRepo 'scratch/continuation'
 function Get-VerificationPath([string]$Id) {
     if ($Id -notmatch '^[A-Za-z0-9][A-Za-z0-9_-]{0,95}$') { throw 'Invalid run id.' }
@@ -122,7 +130,7 @@ public sealed class VernonVerificationProcessJob : IDisposable {
 }
 function Get-VerificationFingerprint {
     $paths = [Collections.Generic.List[string]]::new()
-    foreach ($name in @('Cargo.toml', 'Cargo.lock', 'AGENTS.md', 'CLEAN_ROOM.md')) {
+    foreach ($name in @('Cargo.toml', 'Cargo.lock', 'AGENTS.md', 'CLEAN_ROOM.md', 'docs/research/wp9-replication-baseline-v1.json')) {
         $path = Join-Path $script:VerificationRepo $name
         if (Test-Path -LiteralPath $path) { $paths.Add($path) }
     }
@@ -154,6 +162,100 @@ function Assert-VerificationWp8Input([string]$Name, [string]$Data = $env:VERNON_
         throw 'WP8 real acceptance requires a nonblank VERNON_COLMAP_DATA photo-directory or explicit download opt-in.'
     }
 }
+function Assert-VerificationWp9Input([string]$Name, [string]$Distribution = $env:VERNON_WSL_DISTRO, [string]$User = $env:VERNON_WSL_USER, [string]$EnvironmentFile = $env:VERNON_WSL_ENV_FILE, [string]$CarDirectory = $env:VERNON_CAR_DIR) {
+    if ($Name -in @('wp9-geometry', 'wp9-sizing', 'wp9-sizing-serial') -and [string]::IsNullOrWhiteSpace($CarDirectory)) { throw 'Replication checks require explicit VERNON_CAR_DIR.' }
+    if ($Name -in @('wp9-sizing', 'wp9-sizing-serial') -and
+        ($Distribution -cne 'Vernon-Ubuntu-24.04' -or $User -cne 'vernon' -or
+         $EnvironmentFile -cne (Get-VerificationWp9SizingEnvironmentFile))) {
+        throw 'Sizing requires the approved Vernon-Ubuntu-24.04 distribution, vernon user and fixed wp9-replication-sizing-env.sh environment.'
+    }
+    if ($Name -in @('wp9-wsl-runner', 'wp9-native') -and
+        ([string]::IsNullOrWhiteSpace($Distribution) -or [string]::IsNullOrWhiteSpace($User) -or
+         [string]::IsNullOrWhiteSpace($EnvironmentFile) -or -not $EnvironmentFile.StartsWith('/'))) {
+        throw 'WP9 real runner checks require explicit VERNON_WSL_DISTRO, VERNON_WSL_USER and an absolute Linux VERNON_WSL_ENV_FILE.'
+    }
+}
+function Assert-VerificationResumeInput([string]$Name, [string]$PreviousRun) {
+    if ($Name -in @('wp9-wsl-runner', 'wp9-native', 'wp9-geometry', 'wp9-sizing', 'wp9-sizing-serial') -and $PreviousRun) {
+        throw 'External/data checks must execute afresh; prior results cannot be reused.'
+    }
+}
+function Assert-VerificationJobTimeout([string]$Name, [int]$Seconds) {
+    if ($Seconds -lt 1 -or ($Name -in @('wp9-sizing', 'wp9-sizing-serial') -and $Seconds -gt 21600)) { throw 'Sizing permits a positive outer deadline of at most 21600 seconds (six hours).' }
+}
+function Set-VerificationWp9SizingEnvironment([string]$OutputDirectory, [ValidateSet(1,2)][int]$Processes = 2) {
+    $outputPath = Join-Path $OutputDirectory 'replication-sizing.json'
+    Assert-VerificationOutputPath $outputPath
+    $fixed = @{
+        VERNON_WSL_DISTRO = 'Vernon-Ubuntu-24.04'; VERNON_WSL_USER = 'vernon'
+        VERNON_WSL_ENV_FILE = Get-VerificationWp9SizingEnvironmentFile
+        VERNON_CAR_REAR = 'Fastback'; VERNON_CAR_DX0 = '0.32'; VERNON_CAR_NP = [string]$Processes
+        VERNON_CAR_ITER = '7000'; VERNON_CAR_MESH_ONLY = '1'; VERNON_CAR_OUT = $outputPath
+    }
+    foreach ($key in $fixed.Keys) { [Environment]::SetEnvironmentVariable($key, $fixed[$key], 'Process') }
+}
+function Test-VerificationWp9RunnerOutput([string]$Output, [string]$ErrorOutput = '') {
+    $combined = $Output + "`n" + $ErrorOutput
+    if ($combined -match '(?im)^\s*SKIPPED\b' -or
+        $Output -notmatch '(?m)^test result: ok\. ([1-9][0-9]*) passed; 0 failed; 0 ignored;' -or [int]$Matches[1] -lt 7) { return $false }
+    foreach ($name in @(
+        'wsl_regression_success_does_not_leave_a_background_group',
+        'wsl_regression_cancelled_start_remains_blocked_after_case_replacement',
+        'wsl_environment_with_installed_runtime_supports_simplefoam_help',
+        'wsl_environment_may_change_directory_and_positional_parameters',
+        'wsl_cancellation_before_record_publication_prevents_tool_start',
+        'wsl_timeout_stops_an_active_linux_grandchild',
+        'wsl_cook_cancellation_stops_children_and_does_not_cancel_cleanup'
+    )) {
+        if ($Output -notmatch ('(?m)^test extproc::tests::' + [regex]::Escape($name) + ' \.\.\. ok\s*$')) { return $false }
+    }
+    return $true
+}
+function Test-VerificationWp9NativeOutput([string]$Output, [string]$ErrorOutput = '') {
+    $combined = $Output + "`n" + $ErrorOutput
+    return (Test-VerificationBenchmarkOutput $Output) -and
+        $combined -cmatch '(?m)^WP9_NATIVE_CHAIN_COMPLETE(?:\s|$)' -and
+        $Output -match '(?m)^test tests::real_openfoam_chain_on_a_small_car \.\.\.' -and
+        $combined -notmatch '(?im)^\s*SKIPPED\b'
+}
+function Test-VerificationWp9GeometryOutput([string]$Output, [string]$ErrorOutput = '') {
+    $combined = $Output + "`n" + $ErrorOutput
+    return (Test-VerificationBenchmarkOutput $Output) -and
+        $combined -cmatch '(?m)^WP9_REPLICATION_GEOMETRY_COMPLETE cases=3 external_programs=0\s*$' -and
+        $Output -match '(?m)^test tests::replication_geometry_preparation \.\.\.' -and
+        $combined -notmatch '(?im)^\s*SKIPPED\b'
+}
+function Test-VerificationWp9SizingOutput([string]$Output, [string]$ErrorOutput = '', [string]$RowPath = '', [int]$ExpectedProcesses = 2) {
+    if ($ExpectedProcesses -notin @(1,2)) { return $false }
+    $combined = $Output + "`n" + $ErrorOutput
+    if ($combined -match '(?im)^\s*SKIPPED\b' -or
+        $Output -notmatch '(?m)^running 1 test\s*$' -or
+        $Output -notmatch '(?m)^test tests::real_openfoam_road_car_run \.\.\.' -or
+        $Output -notmatch '(?m)^test result: ok\. 1 passed; 0 failed; 0 ignored;' -or
+        $Output -match '(?m)^test result: (?:FAILED|ok\. (?:[2-9]|[1-9][0-9]+) passed;)') { return $false }
+    $markers = [regex]::Matches($combined, '(?m)^WP9_REPLICATION_MESH_ONLY_COMPLETE rear=Fastback cells=([0-9]+(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?) solver_runs=0\s*$')
+    if ($markers.Count -ne 1) { return $false }
+    $markerCells = 0.0
+    if (-not [double]::TryParse($markers[0].Groups[1].Value, [Globalization.NumberStyles]::Float, [Globalization.CultureInfo]::InvariantCulture, [ref]$markerCells) -or
+        -not [double]::IsFinite($markerCells) -or $markerCells -le 0) { return $false }
+    try {
+        Assert-VerificationOutputPath $RowPath
+        $row = [IO.File]::ReadAllText($RowPath) | ConvertFrom-Json -ErrorAction Stop
+        if ($row -isnot [pscustomobject] -or $row.profile -cne 'road_car_detailed_gs_16ms_v1' -or
+            $row.scope -cne 'published_replication' -or $row.rear -cne 'Fastback' -or
+            'result' -in $row.PSObject.Properties.Name) { return $false }
+        foreach ($key in @('original_experiment_authenticated', 'physical_validation', 'solver_ran')) {
+            if ($row.$key -isnot [bool] -or $row.$key) { return $false }
+        }
+        if ($row.mesh_only -isnot [bool] -or -not $row.mesh_only) { return $false }
+        $numbers = @{ dx0_m = 0.32; cells = $markerCells; np = $ExpectedProcesses; n_iter = 7000; window = 1000; write_interval = 1000; max_global_cells_m = 14.0; ram_gb = 15.52 }
+        foreach ($key in $numbers.Keys) {
+            $value = $row.$key
+            if ($value -isnot [ValueType] -or $value -is [bool] -or -not [double]::IsFinite([double]$value) -or [double]$value -ne $numbers[$key]) { return $false }
+        }
+        return $true
+    } catch { return $false }
+}
 function Get-VerificationSteps([string]$Name, [string]$OutputDirectory = $script:VerificationRoot) {
     $shell = (Get-Process -Id $PID).Path
     $worker = Join-Path $PSScriptRoot 'verification.ps1'
@@ -172,6 +274,16 @@ function Get-VerificationSteps([string]$Name, [string]$OutputDirectory = $script
         'wp8' {
             Get-VerificationSteps 'wp8-real' $OutputDirectory
             Get-VerificationSteps 'full' $OutputDirectory
+        }
+        'wp9-focused' { @{name='wp9-tests';executable='cargo';arguments=@('test','-p','vernon-nodes-cfd')} }
+        'wp9-perf' { @{name='wp9-perf-tests';executable='cargo';arguments=@('test','-p','vernon-nodes-perf')} }
+        'wp9-native' { @{name='wp9-native';executable='cargo';arguments=@('test','-p','vernon-nodes-cfd','tests::real_openfoam_chain_on_a_small_car','--','--exact','--ignored','--nocapture','--test-threads=1')} }
+        'wp9-geometry' { @{name='wp9-geometry';executable='cargo';arguments=@('test','--release','-p','vernon-nodes-cfd','tests::replication_geometry_preparation','--','--exact','--ignored','--nocapture','--test-threads=1')} }
+        'wp9-sizing-serial' { Get-VerificationSteps 'wp9-sizing' $OutputDirectory }
+        'wp9-sizing' { @{name='wp9-sizing';executable='cargo';arguments=@('test','--release','-p','vernon-nodes-cfd','tests::real_openfoam_road_car_run','--','--exact','--ignored','--nocapture','--test-threads=1')} }
+        'wp9-wsl-runner' {
+            @{name='wp9-extproc';executable='cargo';arguments=@('test','-p','vernon-nodes-cfd','extproc::tests','--','--nocapture','--test-threads=1')}
+            @{name='wp9-wsl';executable='cargo';arguments=@('test','-p','vernon-nodes-cfd','extproc::tests::wsl_','--','--ignored','--nocapture','--test-threads=1')}
         }
         'wp6-benchmark' { @{ name = 'wp6-release'; executable = 'cargo'; arguments = @('test', '--release', '-p', 'vernon-nodes-clean', 'wp6_release', '--', '--ignored', '--nocapture') } }
         'wp6' {
@@ -218,8 +330,27 @@ if ($StepChild) {
     $selected = @(Get-VerificationSteps $Profile $stepDirectory | Where-Object { $_.name -eq $StepName })
     if ($selected.Count -ne 1) { throw 'Unknown fixed-profile step.' }
     $nativeArguments = $selected[0].arguments
-    & $selected[0].executable @nativeArguments
-    exit $LASTEXITCODE
+    $inputLease = $null
+    try {
+        if ($StepName -in @('wp9-geometry', 'wp9-sizing', 'wp9-sizing-serial')) {
+            Assert-VerificationWp9Input $Profile
+            . (Join-Path $PSScriptRoot 'replication-inputs.ps1')
+            $contract = Get-Content -Raw -LiteralPath (Join-Path $script:VerificationRepo 'docs/research/wp9-replication-baseline-v1.json') | ConvertFrom-Json
+            if (@($contract.geometry.components).Count -ne 8) { throw 'Replication checks need the eight recorded original components.' }
+            $inputLease = Open-ReplicationInputLease $env:VERNON_CAR_DIR $contract.geometry.components
+            Write-VerificationJson (Join-Path $stepDirectory 'verified-components.json') $inputLease.receipts
+            if ($StepName -eq 'wp9-sizing') {
+                $ranks = if ($Profile -eq 'wp9-sizing-serial') { 1 } else { 2 }
+                Set-VerificationWp9SizingEnvironment $stepDirectory $ranks
+            }
+            else { $env:VERNON_REPLICATION_GEOMETRY_OUT = Join-Path $stepDirectory 'replication-geometry.json' }
+        }
+        & $selected[0].executable @nativeArguments
+        $nativeExit = $LASTEXITCODE
+    } finally {
+        if ($inputLease) { Close-ReplicationInputLease $inputLease }
+    }
+    exit $nativeExit
 }
 $runDirectory = Get-VerificationPath $RunId
 $statePath = Join-Path $runDirectory 'status.json'
@@ -231,6 +362,9 @@ $processJob = $null
 $resultCode = 1
 try {
     Assert-VerificationWp8Input $Profile
+    Assert-VerificationWp9Input $Profile
+    Assert-VerificationResumeInput $Profile $ResumeRunId
+    Assert-VerificationJobTimeout $Profile $JobTimeoutSeconds
     Assert-VerificationOutputPath $runDirectory
     [void][IO.Directory]::CreateDirectory($script:VerificationRoot)
     Assert-VerificationOutputPath $lockPath
@@ -256,13 +390,13 @@ try {
     $started = (Get-Process -Id $PID).StartTime.ToUniversalTime().ToString('o')
     $lockBytes = [Text.Encoding]::UTF8.GetBytes((@{ runId = $RunId; workerPid = $PID; workerStartedUtc = $started; jobBound = $true } | ConvertTo-Json))
     $lock.Position = 0; $lock.SetLength(0); $lock.Write($lockBytes); $lock.Flush($true)
-    . (Join-Path $PSScriptRoot 'dev-env.ps1')
+    . (Join-Path $script:VerificationScripts 'dev-env.ps1')
     $env:TEMP = Join-Path $runDirectory 'temp'
     $env:TMP = $env:TEMP
     $env:CARGO_INCREMENTAL = '0'
     $env:CARGO_TARGET_DIR = Join-Path $script:VerificationRepo 'target'
     Assert-VerificationOutputPath $env:CARGO_TARGET_DIR
-    if ($Profile -in @('full', 'clean-focused', 'wp6-benchmark', 'wp6', 'wp8-real', 'wp8') -and (Test-Path -LiteralPath $env:CARGO_TARGET_DIR)) {
+    if ($Profile -in @('full', 'clean-focused', 'wp6-benchmark', 'wp6', 'wp8-real', 'wp8', 'wp9-focused', 'wp9-perf', 'wp9-wsl-runner', 'wp9-native', 'wp9-geometry', 'wp9-sizing', 'wp9-sizing-serial') -and (Test-Path -LiteralPath $env:CARGO_TARGET_DIR)) {
         foreach ($item in Get-ChildItem -LiteralPath $env:CARGO_TARGET_DIR -Recurse -Force) {
             if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw "Cargo target tree contains a reparse point: $($item.FullName)" }
         }
@@ -355,6 +489,30 @@ try {
             $record.exitCode = 4
             $state.message = 'WP8 external acceptance needs an executed passing test and WP8_REAL_COMPLETE marker without any SKIPPED diagnostic.'
         }
+        if ($step.name -in @('wp9-tests', 'wp9-perf-tests', 'wp9-extproc') -and $record.exitCode -eq 0 -and -not (Test-VerificationBenchmarkOutput ([IO.File]::ReadAllText($stdoutPath)))) {
+            $record.exitCode = 4
+            $state.message = 'The WP9 filter must execute passing tests; a zero-test run is not verification.'
+        }
+        if ($step.name -eq 'wp9-wsl' -and $record.exitCode -eq 0 -and
+            -not (Test-VerificationWp9RunnerOutput ([IO.File]::ReadAllText($stdoutPath)) ([IO.File]::ReadAllText($stderrPath)))) {
+            $record.exitCode = 4
+            $state.message = 'All seven actual WSL runner regressions must pass without skips; help alone is not CFD acceptance.'
+        }
+        if ($step.name -eq 'wp9-native' -and $record.exitCode -eq 0 -and
+            -not (Test-VerificationWp9NativeOutput ([IO.File]::ReadAllText($stdoutPath)) ([IO.File]::ReadAllText($stderrPath)))) {
+            $record.exitCode = 4
+            $state.message = 'The actual native node-chain test and its final evidence assertions must execute without skips; this is capability, not automotive validation.'
+        }
+        if ($step.name -eq 'wp9-geometry' -and $record.exitCode -eq 0 -and
+            -not (Test-VerificationWp9GeometryOutput ([IO.File]::ReadAllText($stdoutPath)) ([IO.File]::ReadAllText($stderrPath)))) {
+            $record.exitCode = 4
+            $state.message = 'All three geometry preparations must execute and reach their final marker without skips; this is not meshing or CFD acceptance.'
+        }
+        if ($step.name -eq 'wp9-sizing' -and $record.exitCode -eq 0 -and
+            -not (Test-VerificationWp9SizingOutput ([IO.File]::ReadAllText($stdoutPath)) ([IO.File]::ReadAllText($stderrPath)) (Join-Path $runDirectory 'replication-sizing.json') $(if ($Profile -eq 'wp9-sizing-serial') { 1 } else { 2 }))) {
+            $record.exitCode = 4
+            $state.message = 'Sizing requires one executed passing test, positive-cell Fastback mesh-only completion and a matching saved fixed-profile row; physical validation remains false.'
+        }
         if ($step.name -eq 'wp6-release' -and $record.exitCode -eq 0 -and -not (Test-VerificationBenchmarkOutput ([IO.File]::ReadAllText($stdoutPath)))) {
             $record.exitCode = 4
             $state.message = 'The WP6 benchmark filter did not execute a passing test. A zero-test run cannot verify the benchmark.'
@@ -388,6 +546,19 @@ try {
     if ($processJob) { $processJob.Dispose() }
     if ($child -and -not $child.HasExited) { $child.Kill($true); [void]$child.WaitForExit(5000) }
     if ($state) {
+        if ($Profile -in @('wp9-sizing', 'wp9-sizing-serial')) {
+            $state['statusBeforeCleanup'] = $state.status
+            try {
+                . (Join-Path $script:VerificationScripts 'cfd/wp9-sizing-cleanup.ps1')
+                $cleanup = Stop-Wp9SizingLinuxGroups -RunDirectory $runDirectory -Distribution 'Vernon-Ubuntu-24.04' -User 'vernon'
+                if ($cleanup.success -isnot [bool] -or -not $cleanup.success) { throw 'Sizing Linux cleanup did not confirm success.' }
+                $state['linuxCleanup'] = $cleanup
+            } catch {
+                $state['linuxCleanup'] = [ordered]@{ success = $false; message = $_.Exception.Message }
+                $state.message = ($state.message + ' Sizing Linux cleanup unconfirmed: ' + $_.Exception.Message).Trim()
+                $state.status = 'cleanup-failed'; $resultCode = 126
+            }
+        }
         $state.exitCode = $resultCode
         $state.finishedUtc = [DateTime]::UtcNow.ToString('o')
         $state.activeStep = $null; $state.childPid = $null; $state.childStartedUtc = $null

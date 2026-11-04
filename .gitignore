@@ -1,4 +1,16 @@
+# Build output
 /target
 *.pdb
 /out
+
+# Local runs, logs, downloaded datasets (never commit: may be licensed to one user)
 /scratch
+
+# Editor and agent state
+.claude/
+.vscode/
+.idea/
+*.swp
+
+# Runner self-test fixtures
+scripts/verification/.verification-fixture-*.txt
