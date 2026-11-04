@@ -306,6 +306,12 @@ impl AppState {
         true
     }
 
+    /// Replace the scene with `json` as one undo step (an agent run's result).
+    pub fn apply_graph_json(&mut self, json: &str) {
+        self.checkpoint();
+        self.restore(json);
+    }
+
     fn restore(&mut self, json: &str) {
         match Graph::from_json(json) {
             Ok(mut g) => {

@@ -1,0 +1,33 @@
+{
+ "name": "11_prefix_filter",
+ "goal": "Add a box.",
+ "replies": [
+  {
+   "content": "",
+   "tool_calls": [
+    {
+     "name": "add_node",
+     "arguments": {
+      "type": "geo.box",
+      "name": "b"
+     }
+    }
+   ]
+  },
+  {
+   "content": "ok"
+  }
+ ],
+ "expect": {
+  "nodes": {
+   "b": "geo.box"
+  },
+  "calls": 1
+ },
+ "config": {
+  "tool_filter": [
+   "add_*",
+   "connect"
+  ]
+ }
+}

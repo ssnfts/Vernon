@@ -1,0 +1,14 @@
+[package]
+name = "vernon-agent"
+description = "Vernon built-in AI agent: OpenAI-compatible chat client and tool loop"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+vernon-agent-tools = { path = "../vernon-agent-tools" }
+
+[dev-dependencies]
+vernon-cli = { path = "../vernon-cli" }

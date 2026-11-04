@@ -1,0 +1,28 @@
+{
+ "name": "01_single_box",
+ "goal": "Add a box.",
+ "replies": [
+  {
+   "content": "",
+   "tool_calls": [
+    {
+     "name": "add_node",
+     "arguments": {
+      "type": "geo.box",
+      "name": "box1"
+     }
+    }
+   ]
+  },
+  {
+   "content": "Added box1."
+  }
+ ],
+ "expect": {
+  "nodes": {
+   "box1": "geo.box"
+  },
+  "final_contains": "box1",
+  "calls": 1
+ }
+}

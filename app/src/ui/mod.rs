@@ -1,6 +1,7 @@
 //! The egui shell. `VernonApp` owns the document state and the UI state and
 //! lays out the regions top to bottom, left to right each frame.
 
+mod agent_chat;
 mod bottom;
 mod explorer;
 pub mod icons;
@@ -110,6 +111,7 @@ pub struct Windows {
     pub about: bool,
     pub clean_room: bool,
     pub shortcuts: bool,
+    pub agent: bool,
 }
 
 pub struct VernonApp {
@@ -162,6 +164,7 @@ pub struct VernonApp {
     pub tool_paths: std::collections::BTreeMap<String, String>,
     /// X: the explorer's find box takes the keyboard on its next draw.
     pub focus_explorer_filter: bool,
+    pub agent: agent_chat::AgentChat,
     /// A paste was requested from the system; its text arrives next frame.
     paste_requested: bool,
 }
@@ -243,6 +246,7 @@ impl VernonApp {
             explorer_sort: ExplorerSort::Scene,
             tool_paths: Default::default(),
             focus_explorer_filter: false,
+            agent: agent_chat::AgentChat::new(),
             paste_requested: false,
         }
     }
@@ -521,6 +525,7 @@ impl VernonApp {
             Action::ViewPerspective => self.vp.set_view(active, ViewKind::Perspective),
             Action::ViewUser => self.vp.set_view(active, ViewKind::User),
             Action::NodeEditor => self.show.node_editor ^= true,
+            Action::AgentChat => self.show.agent ^= true,
             Action::Play => self.play.toggle(now),
             Action::PrevFrame => self.play.set_frame(&self.time, self.play.frame - 1, now),
             Action::NextFrame => self.play.set_frame(&self.time, self.play.frame + 1, now),
@@ -734,6 +739,7 @@ impl eframe::App for VernonApp {
         bottom::track_bar(self, ctx);
         bottom::time_slider(self, ctx);
         explorer::show(self, ctx);
+        agent_chat::show(self, ctx);
         panel::show(self, ctx);
         viewports::show(self, ctx);
         node_editor::show(self, ctx);

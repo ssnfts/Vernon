@@ -89,6 +89,9 @@ pub fn menu_bar(app: &mut VernonApp, ctx: &egui::Context) {
                     ui.separator();
                     ui.checkbox(&mut app.show.gates, "Gate Dashboard");
                     ui.checkbox(&mut app.show.report, "Report Viewer");
+                    if ui.add(Button::new("Agent Chat").shortcut_text(shortcut_for(Action::AgentChat))).clicked() {
+                        app.show.agent ^= true;
+                    }
                     if ui.add(Button::new("Node Editor").shortcut_text(shortcut_for(Action::NodeEditor))).clicked() {
                         app.show.node_editor ^= true;
                     }

@@ -1,4 +1,4 @@
-﻿[package]
+[package]
 name = "vernon-cli"
 description = "Headless Vernon: cook .vrn graphs, list node types"
 version.workspace = true
@@ -17,6 +17,7 @@ path = "src/main.rs"
 vernon-core.workspace = true
 vernon-graph.workspace = true
 vernon-io.workspace = true
+vernon-agent-tools = { path = "../vernon-agent-tools" }
 vernon-nodes-geo = { path = "../vernon-nodes-geo" }
 vernon-nodes-capture = { path = "../vernon-nodes-capture" }
 vernon-nodes-clean = { path = "../vernon-nodes-clean" }

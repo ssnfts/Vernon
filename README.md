@@ -187,6 +187,36 @@ solver has run on it yet. The next steps (Stages 0–3) are in
 [docs/CFD-RUNBOOK.md](docs/CFD-RUNBOOK.md). Their plan and estimates are in
 [docs/superpowers/plans/2026-11-04-wp9-solver-run.md](docs/superpowers/plans/2026-11-04-wp9-solver-run.md).
 
+## Connect an MCP client
+
+`vernon-cli mcp` is a stdio [MCP](https://modelcontextprotocol.io) server. It gives any MCP client tools to list and describe nodes, add and wire them, set parameters (checked against each node's ranges, units and options), cook, read reports and gates, measure geometry, undo/redo and save/load graphs. It has no shell and no file access outside its work folder (`--work DIR`, default `./vernon-agent`); nodes that drive external programs stay switched off unless a call turns them on. Read [docs/AGENT_GUIDE.md](docs/AGENT_GUIDE.md) first (it is generated: `vernon-cli agent-guide`).
+
+Build once with `cargo build --release -p vernon-cli`, then point the client at the binary (use the absolute path to `target/release/vernon-cli`; add `.exe` on Windows).
+
+**Claude Code** (`claude mcp add` writes this into `.mcp.json` / your config):
+
+```bash
+claude mcp add vernon -- /path/to/vernon-cli mcp --work /path/to/vernon-work
+```
+
+```json
+{ "mcpServers": { "vernon": { "command": "/path/to/vernon-cli", "args": ["mcp", "--work", "/path/to/vernon-work"] } } }
+```
+
+**Cursor** (`~/.cursor/mcp.json`, or `.cursor/mcp.json` in a project):
+
+```json
+{ "mcpServers": { "vernon": { "command": "/path/to/vernon-cli", "args": ["mcp", "--work", "/path/to/vernon-work"] } } }
+```
+
+**Cline** (MCP Servers, Configure, `cline_mcp_settings.json`):
+
+```json
+{ "mcpServers": { "vernon": { "command": "/path/to/vernon-cli", "args": ["mcp", "--work", "/path/to/vernon-work"], "disabled": false } } }
+```
+
+On Windows write paths with forward slashes or doubled backslashes in JSON.
+
 ## Clean room
 Vernon is a clean-room project. Read [CLEAN_ROOM.md](CLEAN_ROOM.md) before
 contributing, and [AGENTS.md](AGENTS.md) if you are a coding agent.
