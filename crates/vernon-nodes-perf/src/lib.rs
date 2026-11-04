@@ -24,6 +24,7 @@ pub mod nodes_valid;
 pub mod physics;
 pub mod track;
 pub mod tuft;
+pub mod tuft_detect;
 pub mod util;
 
 use vernon_graph::Registry;

@@ -16,6 +16,7 @@ use vernon_graph::Registry;
 mod air;
 mod case;
 mod coeffs;
+pub mod convergence;
 mod extproc;
 mod foam;
 mod loads;
