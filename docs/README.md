@@ -6,6 +6,7 @@
 | [../README.md](../README.md) | What Vernon does, step by step, and how to build it |
 | [SETUP.md](SETUP.md) | A new Windows PC: toolchain, build, WSL/OpenFOAM, DrivAer data |
 | [CFD-RUNBOOK.md](CFD-RUNBOOK.md) | The next CFD validation stages (0–3) and their run commands |
+| [AI and machine plan](superpowers/plans/2026-11-04-ai-assistant-and-machine-split.md) | Which PC runs the CFD stages, and the plan for AI models, terminal and chat assistant |
 | [NODES.md](NODES.md) | Generated catalogue of every node (`vernon-cli list --markdown`) |
 | [ROADMAP.md](ROADMAP.md) | White-box nodes and external-program routes still open |
 
