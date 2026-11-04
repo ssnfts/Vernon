@@ -68,7 +68,7 @@ folder: the CFD input checks refuse junctions and links.
 Definition of done for **every** change:
 ```powershell
 cargo build --workspace
-cargo test --workspace                                   # currently 1763 passing, 0 failing, 38 ignored
+cargo test --workspace                                   # currently 1765 passing, 0 failing, 38 ignored
 cargo clippy --workspace --all-targets -- -D warnings    # must be clean
 cargo run -p vernon-cli -- cook examples/bodykit_pipeline.vrn   # 40 nodes, 0 failing gates, 5 expected
 cargo run -p vernon-cli -- list --markdown > docs/NODES.md      # regenerate after adding or changing nodes

@@ -7,23 +7,39 @@ before copying to docs/NODES.md. GUI inspection remains a separate manual check.
 #>
 [CmdletBinding()]
 param(
-    [ValidateSet('full', 'clean-focused', 'wp6-benchmark', 'wp6', 'wp8-real', 'wp8', 'wp9-focused', 'wp9-perf', 'wp9-wsl-runner', 'wp9-native', 'wp9-geometry', 'wp9-sizing', 'wp9-sizing-serial', 'smoke', 'smoke-failure', 'smoke-slow', 'smoke-orphan')]
+    [ValidateSet('full', 'clean-focused', 'wp6-benchmark', 'wp6', 'wp8-real', 'wp8', 'wp9-focused', 'wp9-perf', 'wp9-wsl-runner', 'wp9-native', 'wp9-geometry', 'wp9-sizing', 'wp9-sizing-serial', 'wp9-solve-pilot', 'wp9-solve', 'smoke', 'smoke-failure', 'smoke-slow', 'smoke-orphan', 'smoke-cancel')]
     [string]$Profile = 'full',
     [ValidatePattern('^[A-Za-z0-9][A-Za-z0-9_-]{0,95}$')][string]$RunId = ('run-' + [DateTime]::UtcNow.ToString('yyyyMMdd-HHmmss') + '-' + [guid]::NewGuid().ToString('N').Substring(0, 8)),
     [ValidatePattern('^$|^[A-Za-z0-9][A-Za-z0-9_-]{0,95}$')][string]$ResumeRunId = '',
-    [ValidateRange(1, 86400)][int]$JobTimeoutSeconds = 7200,
+    [ValidateRange(1, 172800)][int]$JobTimeoutSeconds = 7200,
     [switch]$Library,
-    [ValidateSet('none', 'pass', 'fail', 'wait', 'orphan')][string]$SmokeChild = 'none',
+    [ValidateSet('none', 'pass', 'fail', 'wait', 'orphan', 'hold')][string]$SmokeChild = 'none',
     [switch]$StepChild,
-    [ValidateSet('build', 'tests', 'clippy', 'demo', 'catalogue', 'clean-tests', 'wp6-release', 'wp8-real', 'wp9-tests', 'wp9-perf-tests', 'wp9-extproc', 'wp9-wsl', 'wp9-native', 'wp9-geometry', 'wp9-sizing', 'first', 'failure', 'must-not-run', 'second', 'wait', 'orphan')][string]$StepName = 'first'
+    [ValidateSet('build', 'tests', 'clippy', 'demo', 'catalogue', 'clean-tests', 'wp6-release', 'wp8-real', 'wp9-tests', 'wp9-perf-tests', 'wp9-extproc', 'wp9-wsl', 'wp9-native', 'wp9-geometry', 'wp9-sizing', 'wp9-solve', 'first', 'failure', 'must-not-run', 'second', 'wait', 'orphan', 'hold')][string]$StepName = 'first'
 )
 $ErrorActionPreference = 'Stop'
-if ($Profile -in @('wp9-sizing', 'wp9-sizing-serial') -and -not $PSBoundParameters.ContainsKey('JobTimeoutSeconds')) { $JobTimeoutSeconds = 21600 }
+# Outer bounds: sizing and the solver pilot six hours, the protocol solve 48 hours.
+function Get-VerificationDefaultJobTimeout([string]$Name) {
+    switch ($Name) {
+        { $_ -in @('wp9-sizing', 'wp9-sizing-serial', 'wp9-solve-pilot') } { return 21600 }
+        'wp9-solve' { return 172800 }
+        default { return 7200 }
+    }
+}
+if (-not $PSBoundParameters.ContainsKey('JobTimeoutSeconds')) { $JobTimeoutSeconds = Get-VerificationDefaultJobTimeout $Profile }
+$script:Wp9SolveProfiles = @('wp9-solve-pilot', 'wp9-solve')
+$script:Wp9LinuxProfiles = @('wp9-sizing', 'wp9-sizing-serial', 'wp9-solve-pilot', 'wp9-solve')
 $script:VerificationScripts = Split-Path $PSScriptRoot -Parent
 $script:VerificationRepo = [IO.Path]::GetFullPath((Split-Path $script:VerificationScripts -Parent))
 # The fixed sizing environment is this checkout's own script, seen from WSL (C:\x -> /mnt/c/x).
 function Get-VerificationWp9SizingEnvironmentFile {
     $path = [IO.Path]::GetFullPath((Join-Path $script:VerificationScripts 'cfd/wp9-replication-sizing-env.sh'))
+    if ($path -notmatch '^([A-Za-z]):\\(.+)$') { throw "The checkout must be on a local drive letter: $path" }
+    '/mnt/' + $Matches[1].ToLowerInvariant() + '/' + $Matches[2].Replace('\', '/')
+}
+# The fixed solve environment, also this checkout's own script seen from WSL.
+function Get-VerificationWp9SolveEnvironmentFile {
+    $path = [IO.Path]::GetFullPath((Join-Path $script:VerificationScripts 'cfd/wp9-replication-solve-env.sh'))
     if ($path -notmatch '^([A-Za-z]):\\(.+)$') { throw "The checkout must be on a local drive letter: $path" }
     '/mnt/' + $Matches[1].ToLowerInvariant() + '/' + $Matches[2].Replace('\', '/')
 }
@@ -59,7 +75,9 @@ function Write-VerificationJson([string]$Path, $Value) {
         }
     }
 }
-function Test-VerificationProcess($ProcessId, [string]$StartedUtc) {
+function Test-VerificationProcess($ProcessId, $StartedUtc) {
+    # ConvertFrom-Json (PowerShell 7) reads ISO stamps back as DateTime; compare the same 'o' text.
+    if ($StartedUtc -is [DateTime]) { $StartedUtc = $StartedUtc.ToUniversalTime().ToString('o') }
     if (-not $ProcessId -or -not $StartedUtc) { return $false }
     try {
         $process = Get-Process -Id ([int]$ProcessId) -ErrorAction Stop
@@ -163,7 +181,12 @@ function Assert-VerificationWp8Input([string]$Name, [string]$Data = $env:VERNON_
     }
 }
 function Assert-VerificationWp9Input([string]$Name, [string]$Distribution = $env:VERNON_WSL_DISTRO, [string]$User = $env:VERNON_WSL_USER, [string]$EnvironmentFile = $env:VERNON_WSL_ENV_FILE, [string]$CarDirectory = $env:VERNON_CAR_DIR) {
-    if ($Name -in @('wp9-geometry', 'wp9-sizing', 'wp9-sizing-serial') -and [string]::IsNullOrWhiteSpace($CarDirectory)) { throw 'Replication checks require explicit VERNON_CAR_DIR.' }
+    if ($Name -in @('wp9-geometry', 'wp9-sizing', 'wp9-sizing-serial', 'wp9-solve-pilot', 'wp9-solve') -and [string]::IsNullOrWhiteSpace($CarDirectory)) { throw 'Replication checks require explicit VERNON_CAR_DIR.' }
+    if ($Name -in $script:Wp9SolveProfiles -and
+        ($Distribution -cne 'Vernon-Ubuntu-24.04' -or $User -cne 'vernon' -or
+         $EnvironmentFile -cne (Get-VerificationWp9SolveEnvironmentFile))) {
+        throw 'Solve profiles require the approved Vernon-Ubuntu-24.04 distribution, vernon user and fixed wp9-replication-solve-env.sh environment.'
+    }
     if ($Name -in @('wp9-sizing', 'wp9-sizing-serial') -and
         ($Distribution -cne 'Vernon-Ubuntu-24.04' -or $User -cne 'vernon' -or
          $EnvironmentFile -cne (Get-VerificationWp9SizingEnvironmentFile))) {
@@ -176,12 +199,16 @@ function Assert-VerificationWp9Input([string]$Name, [string]$Distribution = $env
     }
 }
 function Assert-VerificationResumeInput([string]$Name, [string]$PreviousRun) {
-    if ($Name -in @('wp9-wsl-runner', 'wp9-native', 'wp9-geometry', 'wp9-sizing', 'wp9-sizing-serial') -and $PreviousRun) {
+    if ($Name -in @('wp9-wsl-runner', 'wp9-native', 'wp9-geometry', 'wp9-sizing', 'wp9-sizing-serial', 'wp9-solve-pilot', 'wp9-solve') -and $PreviousRun) {
         throw 'External/data checks must execute afresh; prior results cannot be reused.'
     }
 }
 function Assert-VerificationJobTimeout([string]$Name, [int]$Seconds) {
-    if ($Seconds -lt 1 -or ($Name -in @('wp9-sizing', 'wp9-sizing-serial') -and $Seconds -gt 21600)) { throw 'Sizing permits a positive outer deadline of at most 21600 seconds (six hours).' }
+    if ($Seconds -lt 1) { throw 'The outer deadline must be positive.' }
+    if ($Name -in @('wp9-sizing', 'wp9-sizing-serial') -and $Seconds -gt 21600) { throw 'Sizing permits a positive outer deadline of at most 21600 seconds (six hours).' }
+    if ($Name -eq 'wp9-solve-pilot' -and $Seconds -gt 21600) { throw 'The solver pilot permits an outer deadline of at most 21600 seconds (six hours).' }
+    if ($Name -eq 'wp9-solve' -and $Seconds -gt 172800) { throw 'The protocol solve permits an outer deadline of at most 172800 seconds (48 hours).' }
+    if ($Name -notin $script:Wp9SolveProfiles -and $Seconds -gt 86400) { throw 'Only the solve profiles may run longer than one day.' }
 }
 function Set-VerificationWp9SizingEnvironment([string]$OutputDirectory, [ValidateSet(1,2)][int]$Processes = 2) {
     $outputPath = Join-Path $OutputDirectory 'replication-sizing.json'
@@ -191,9 +218,40 @@ function Set-VerificationWp9SizingEnvironment([string]$OutputDirectory, [Validat
         VERNON_WSL_ENV_FILE = Get-VerificationWp9SizingEnvironmentFile
         VERNON_CAR_REAR = 'Fastback'; VERNON_CAR_DX0 = '0.32'; VERNON_CAR_NP = [string]$Processes
         VERNON_CAR_ITER = '7000'; VERNON_CAR_MESH_ONLY = '1'; VERNON_CAR_OUT = $outputPath
+        VERNON_CAR_MESH_NP = [string]$Processes; VERNON_CAR_PILOT = '0'
+        VERNON_CAR_MESH_TIMEOUT_MIN = '300'; VERNON_CAR_SOLVE_TIMEOUT_MIN = '2700'
     }
     foreach ($key in $fixed.Keys) { [Environment]::SetEnvironmentVariable($key, $fixed[$key], 'Process') }
 }
+# Fixed settings of the two solve profiles. Node limits leave at least an hour of
+# the outer bound (Get-VerificationDefaultJobTimeout) for Linux cleanup.
+function Get-VerificationWp9SolveSettings([ValidateSet('pilot', 'protocol')][string]$Mode) {
+    if ($Mode -eq 'pilot') {
+        return [ordered]@{ VERNON_CAR_ITER = 200; VERNON_CAR_PILOT = 1; VERNON_CAR_MESH_TIMEOUT_MIN = 100; VERNON_CAR_SOLVE_TIMEOUT_MIN = 180 }
+    }
+    return [ordered]@{ VERNON_CAR_ITER = 7000; VERNON_CAR_PILOT = 0; VERNON_CAR_MESH_TIMEOUT_MIN = 100; VERNON_CAR_SOLVE_TIMEOUT_MIN = 2700 }
+}
+function Get-VerificationWp9SolveMode([string]$Name) { if ($Name -eq 'wp9-solve-pilot') { 'pilot' } else { 'protocol' } }
+function Set-VerificationWp9SolveEnvironment([string]$OutputDirectory, [ValidateSet('pilot', 'protocol')][string]$Mode) {
+    $outputPath = Join-Path $OutputDirectory 'replication-solve.json'
+    Assert-VerificationOutputPath $outputPath
+    $fixed = [ordered]@{
+        VERNON_WSL_DISTRO = 'Vernon-Ubuntu-24.04'; VERNON_WSL_USER = 'vernon'
+        VERNON_WSL_ENV_FILE = Get-VerificationWp9SolveEnvironmentFile
+        VERNON_CAR_REAR = 'Fastback'; VERNON_CAR_DX0 = '0.32'; VERNON_CAR_NP = '16'; VERNON_CAR_MESH_NP = '1'
+        VERNON_CAR_MESH_ONLY = '0'; VERNON_CAR_OUT = $outputPath
+    }
+    $settings = Get-VerificationWp9SolveSettings $Mode
+    foreach ($key in $settings.Keys) { $fixed[$key] = [string]$settings[$key] }
+    foreach ($key in $fixed.Keys) { [Environment]::SetEnvironmentVariable($key, $fixed[$key], 'Process') }
+}
+# A stop request is a file in the run directory; the worker polls for it.
+function Request-VerificationCancel([string]$RunDirectory, [string]$Reason = '') {
+    $path = Join-Path $RunDirectory 'cancel.request'
+    Assert-VerificationOutputPath $path
+    Write-VerificationJson $path ([ordered]@{ requestedUtc = [DateTime]::UtcNow.ToString('o'); reason = $Reason; requestedBy = [Environment]::UserName })
+}
+function Test-VerificationCancelRequested([string]$RunDirectory) { Test-Path -LiteralPath (Join-Path $RunDirectory 'cancel.request') }
 function Test-VerificationWp9RunnerOutput([string]$Output, [string]$ErrorOutput = '') {
     $combined = $Output + "`n" + $ErrorOutput
     if ($combined -match '(?im)^\s*SKIPPED\b' -or
@@ -256,6 +314,70 @@ function Test-VerificationWp9SizingOutput([string]$Output, [string]$ErrorOutput 
         return $true
     } catch { return $false }
 }
+function Test-VerificationWp9SolveOutput([string]$Output, [string]$ErrorOutput = '', [string]$RowPath = '', [string]$Mode = 'protocol') {
+    if ($Mode -notin @('pilot', 'protocol')) { return $false }
+    $combined = $Output + "`n" + $ErrorOutput
+    if ($combined -match '(?im)^\s*SKIPPED\b' -or
+        $Output -notmatch '(?m)^running 1 test\s*$' -or
+        $Output -notmatch '(?m)^test tests::real_openfoam_road_car_run \.\.\.' -or
+        $Output -notmatch '(?m)^test result: ok\. 1 passed; 0 failed; 0 ignored;') { return $false }
+    $number = '([0-9]+(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?)'
+    $pilotPattern = '(?m)^WP9_SOLVE_PILOT_COMPLETE rear=Fastback cells=' + $number + ' iterations=([0-9]+) np=([0-9]+) mesh_np=([0-9]+) seconds_per_iteration=' + $number + ' coefficients_reported=0\s*$'
+    $protocolPattern = '(?m)^WP9_REPLICATION_SOLVE_COMPLETE rear=Fastback cells=' + $number + ' iterations=([0-9]+) np=([0-9]+) mesh_np=([0-9]+) converged=(true|false) benchmark_validated=(true|false) cd=(-?[0-9]+(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?)\s*$'
+    $pilotMarkers = [regex]::Matches($combined, $pilotPattern)
+    $protocolMarkers = [regex]::Matches($combined, $protocolPattern)
+    $markers = if ($Mode -eq 'pilot') { $pilotMarkers } else { $protocolMarkers }
+    if ($markers.Count -ne 1 -or ($pilotMarkers.Count + $protocolMarkers.Count) -ne 1) { return $false }
+    if ($combined -match '(?m)^WP9_(?:SOLVE_PILOT|REPLICATION_SOLVE|REPLICATION_MESH_ONLY)_COMPLETE' -and ([regex]::Matches($combined, '(?m)^WP9_[A-Z_]+_COMPLETE').Count -ne 1)) { return $false }
+    $marker = $markers[0]
+    $parse = {
+        param([string]$Text)
+        $value = 0.0
+        if (-not [double]::TryParse($Text, [Globalization.NumberStyles]::Float, [Globalization.CultureInfo]::InvariantCulture, [ref]$value) -or -not [double]::IsFinite($value)) { return $null }
+        return $value
+    }
+    $isNumber = { param($Value) $Value -is [ValueType] -and $Value -isnot [bool] -and [double]::IsFinite([double]$Value) }
+    try {
+        Assert-VerificationOutputPath $RowPath
+        $row = [IO.File]::ReadAllText($RowPath) | ConvertFrom-Json -ErrorAction Stop
+        if ($row -isnot [pscustomobject] -or $row.profile -cne 'road_car_detailed_gs_16ms_v1' -or $row.rear -cne 'Fastback') { return $false }
+        $names = $row.PSObject.Properties.Name
+        foreach ($key in @('physical_validation', 'original_experiment_authenticated', 'mesh_only')) {
+            if ($row.$key -isnot [bool] -or $row.$key) { return $false }
+        }
+        if ($row.solver_ran -isnot [bool] -or -not $row.solver_ran -or $row.pilot -isnot [bool]) { return $false }
+        $cells = & $parse $marker.Groups[1].Value
+        $settings = Get-VerificationWp9SolveSettings $Mode
+        $numbers = @{ dx0_m = 0.32; cells = $cells; np = 16; mesh_np = 1; n_iter = $settings.VERNON_CAR_ITER }
+        foreach ($key in $numbers.Keys) {
+            if (-not (& $isNumber $row.$key) -or [double]$row.$key -ne $numbers[$key]) { return $false }
+        }
+        if ($cells -le 0 -or [int]$marker.Groups[2].Value -ne $settings.VERNON_CAR_ITER -or [int]$marker.Groups[3].Value -ne 16 -or [int]$marker.Groups[4].Value -ne 1) { return $false }
+        if ($Mode -eq 'pilot') {
+            if (-not $row.pilot -or $row.scope -cne 'solver_pilot_diagnostic' -or $row.diagnostic_only -isnot [bool] -or -not $row.diagnostic_only -or
+                $row.coefficients_reported -isnot [bool] -or $row.coefficients_reported) { return $false }
+            foreach ($forbidden in @('result', 'cd', 'cl', 'converged', 'benchmark_validated', 'within_band', 'coefficient_band_ok', 'convergence')) {
+                if ($forbidden -in $names) { return $false }
+            }
+            if (-not (& $isNumber $row.iterations_read) -or [double]$row.iterations_read -ne $settings.VERNON_CAR_ITER) { return $false }
+            $solver = $row.solve_diagnostics.solver
+            if ($solver.ended -isnot [bool] -or -not $solver.ended -or [double]$solver.iterations -ne $settings.VERNON_CAR_ITER) { return $false }
+            $rate = & $parse $marker.Groups[5].Value
+            if ($null -eq $rate -or $rate -le 0 -or -not (& $isNumber $solver.seconds_per_iteration) -or [double]$solver.seconds_per_iteration -ne $rate) { return $false }
+            return $true
+        }
+        if ($row.pilot -or $row.scope -cne 'published_replication' -or $row.coefficients_reported -isnot [bool] -or -not $row.coefficients_reported) { return $false }
+        foreach ($key in @('window', 'write_interval')) {
+            if (-not (& $isNumber $row.$key) -or [double]$row.$key -ne 1000) { return $false }
+        }
+        if ($row.converged -isnot [bool] -or $row.benchmark_validated -isnot [bool] -or -not (& $isNumber $row.cd)) { return $false }
+        if ($marker.Groups[5].Value -cne $row.converged.ToString().ToLowerInvariant() -or
+            $marker.Groups[6].Value -cne $row.benchmark_validated.ToString().ToLowerInvariant()) { return $false }
+        $cd = & $parse $marker.Groups[7].Value
+        if ($null -eq $cd -or $cd -ne [double]$row.cd) { return $false }
+        return $true
+    } catch { return $false }
+}
 function Get-VerificationSteps([string]$Name, [string]$OutputDirectory = $script:VerificationRoot) {
     $shell = (Get-Process -Id $PID).Path
     $worker = Join-Path $PSScriptRoot 'verification.ps1'
@@ -281,6 +403,7 @@ function Get-VerificationSteps([string]$Name, [string]$OutputDirectory = $script
         'wp9-geometry' { @{name='wp9-geometry';executable='cargo';arguments=@('test','--release','-p','vernon-nodes-cfd','tests::replication_geometry_preparation','--','--exact','--ignored','--nocapture','--test-threads=1')} }
         'wp9-sizing-serial' { Get-VerificationSteps 'wp9-sizing' $OutputDirectory }
         'wp9-sizing' { @{name='wp9-sizing';executable='cargo';arguments=@('test','--release','-p','vernon-nodes-cfd','tests::real_openfoam_road_car_run','--','--exact','--ignored','--nocapture','--test-threads=1')} }
+        { $_ -in @('wp9-solve-pilot', 'wp9-solve') } { @{name='wp9-solve';executable='cargo';arguments=@('test','--release','-p','vernon-nodes-cfd','tests::real_openfoam_road_car_run','--','--exact','--ignored','--nocapture','--test-threads=1')} }
         'wp9-wsl-runner' {
             @{name='wp9-extproc';executable='cargo';arguments=@('test','-p','vernon-nodes-cfd','extproc::tests','--','--nocapture','--test-threads=1')}
             @{name='wp9-wsl';executable='cargo';arguments=@('test','-p','vernon-nodes-cfd','extproc::tests::wsl_','--','--ignored','--nocapture','--test-threads=1')}
@@ -296,7 +419,7 @@ function Get-VerificationSteps([string]$Name, [string]$OutputDirectory = $script
                 @{ name = 'failure'; executable = $shell; arguments = @('-NoProfile', '-NonInteractive', '-File', $worker, '-SmokeChild', 'fail') }
                 @{ name = 'must-not-run'; executable = $shell; arguments = @('-NoProfile', '-NonInteractive', '-File', $worker, '-SmokeChild', 'pass') }
             } else {
-                $kind = if ($Name -eq 'smoke-slow') { 'wait' } elseif ($Name -eq 'smoke-orphan') { 'orphan' } else { 'pass' }
+                $kind = if ($Name -eq 'smoke-slow') { 'wait' } elseif ($Name -eq 'smoke-orphan') { 'orphan' } elseif ($Name -eq 'smoke-cancel') { 'hold' } else { 'pass' }
                 @{ name = $(if ($kind -eq 'pass') { 'second' } else { $kind }); executable = $shell; arguments = @('-NoProfile', '-NonInteractive', '-File', $worker, '-SmokeChild', $kind) }
             }
         }
@@ -305,6 +428,7 @@ function Get-VerificationSteps([string]$Name, [string]$OutputDirectory = $script
 if ($Library) { return }
 if ($SmokeChild -ne 'none') {
     if ($SmokeChild -eq 'wait') { Start-Sleep -Seconds 6 }
+    if ($SmokeChild -eq 'hold') { Start-Sleep -Seconds 120 }
     if ($SmokeChild -eq 'fail') { Write-Output 'intentional smoke failure'; exit 7 }
     if ($SmokeChild -eq 'orphan') {
         $orphanInfo = [Diagnostics.ProcessStartInfo]::new((Get-Process -Id $PID).Path)
@@ -332,7 +456,7 @@ if ($StepChild) {
     $nativeArguments = $selected[0].arguments
     $inputLease = $null
     try {
-        if ($StepName -in @('wp9-geometry', 'wp9-sizing', 'wp9-sizing-serial')) {
+        if ($StepName -in @('wp9-geometry', 'wp9-sizing', 'wp9-sizing-serial', 'wp9-solve')) {
             Assert-VerificationWp9Input $Profile
             . (Join-Path $PSScriptRoot 'replication-inputs.ps1')
             $contract = Get-Content -Raw -LiteralPath (Join-Path $script:VerificationRepo 'docs/research/wp9-replication-baseline-v1.json') | ConvertFrom-Json
@@ -343,6 +467,7 @@ if ($StepChild) {
                 $ranks = if ($Profile -eq 'wp9-sizing-serial') { 1 } else { 2 }
                 Set-VerificationWp9SizingEnvironment $stepDirectory $ranks
             }
+            elseif ($StepName -eq 'wp9-solve') { Set-VerificationWp9SolveEnvironment $stepDirectory (Get-VerificationWp9SolveMode $Profile) }
             else { $env:VERNON_REPLICATION_GEOMETRY_OUT = Join-Path $stepDirectory 'replication-geometry.json' }
         }
         & $selected[0].executable @nativeArguments
@@ -359,6 +484,8 @@ $lock = $null
 $state = $null
 $child = $null
 $processJob = $null
+$sampler = $null
+$samplerJob = $null
 $resultCode = 1
 try {
     Assert-VerificationWp8Input $Profile
@@ -396,7 +523,7 @@ try {
     $env:CARGO_INCREMENTAL = '0'
     $env:CARGO_TARGET_DIR = Join-Path $script:VerificationRepo 'target'
     Assert-VerificationOutputPath $env:CARGO_TARGET_DIR
-    if ($Profile -in @('full', 'clean-focused', 'wp6-benchmark', 'wp6', 'wp8-real', 'wp8', 'wp9-focused', 'wp9-perf', 'wp9-wsl-runner', 'wp9-native', 'wp9-geometry', 'wp9-sizing', 'wp9-sizing-serial') -and (Test-Path -LiteralPath $env:CARGO_TARGET_DIR)) {
+    if ($Profile -in @('full', 'clean-focused', 'wp6-benchmark', 'wp6', 'wp8-real', 'wp8', 'wp9-focused', 'wp9-perf', 'wp9-wsl-runner', 'wp9-native', 'wp9-geometry', 'wp9-sizing', 'wp9-sizing-serial', 'wp9-solve-pilot', 'wp9-solve') -and (Test-Path -LiteralPath $env:CARGO_TARGET_DIR)) {
         foreach ($item in Get-ChildItem -LiteralPath $env:CARGO_TARGET_DIR -Recurse -Force) {
             if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw "Cargo target tree contains a reparse point: $($item.FullName)" }
         }
@@ -419,7 +546,7 @@ try {
         $previousPath = Join-Path (Get-VerificationPath $ResumeRunId) 'status.json'
         $previous = Get-Content -Raw -LiteralPath $previousPath | ConvertFrom-Json
         if ($previous.profile -ne $Profile -or $previous.runnerVersion -ne 2 -or $previous.sourceBefore -ne $source) { throw 'Resume requires the same profile, runner version and source fingerprint.' }
-        if ($previous.status -in @('failed', 'timed-out', 'source-changed')) { throw "Cannot resume a $($previous.status) run. Inspect logs and explicitly start a new run." }
+        if ($previous.status -in @('failed', 'timed-out', 'source-changed', 'cancelled', 'cleanup-failed')) { throw "Cannot resume a $($previous.status) run. Inspect logs and explicitly start a new run." }
         if ((Test-VerificationProcess $previous.workerPid $previous.workerStartedUtc) -or (Test-VerificationProcess $previous.childPid $previous.childStartedUtc)) { throw 'The previous worker or its active child is still alive. Do not start competing work.' }
         $reuse = @($previous.steps)
     }
@@ -449,6 +576,16 @@ try {
         $startInfo.RedirectStandardOutput = $true
         $startInfo.RedirectStandardError = $true
         foreach ($argument in @('-NoProfile', '-NonInteractive', '-File', $PSCommandPath, '-StepChild', '-Profile', $Profile, '-RunId', $RunId, '-StepName', $step.name)) { $startInfo.ArgumentList.Add($argument) }
+        if ($Profile -in $script:Wp9SolveProfiles -and -not $sampler) {
+            # Read-only memory and disk sampler, contained in its own kill-on-close job.
+            $samplerInfo = [Diagnostics.ProcessStartInfo]::new((Get-Process -Id $PID).Path)
+            $samplerInfo.UseShellExecute = $false; $samplerInfo.CreateNoWindow = $true
+            foreach ($argument in @('-NoProfile', '-NonInteractive', '-File', (Join-Path $script:VerificationScripts 'cfd/wp9-memory-sampler.ps1'), '-RunDirectory', $runDirectory, '-Distribution', 'Vernon-Ubuntu-24.04', '-User', 'vernon', '-ParentProcessId', "$PID")) { $samplerInfo.ArgumentList.Add($argument) }
+            $samplerJob = New-VerificationProcessJob
+            $sampler = [Diagnostics.Process]::Start($samplerInfo)
+            $samplerJob.Attach($sampler)
+            $state['memorySampler'] = [ordered]@{ processId = $sampler.Id; samples = (Join-Path $runDirectory 'memory-samples.jsonl'); summary = (Join-Path $runDirectory 'memory-summary.json') }
+        }
         $processJob = New-VerificationProcessJob
         $child = [Diagnostics.Process]::Start($startInfo)
         $processJob.Attach($child)
@@ -466,6 +603,13 @@ try {
         $errCopy = $child.StandardError.BaseStream.CopyToAsync($errStream)
         try {
             while (-not $child.WaitForExit(200)) {
+                if (Test-VerificationCancelRequested $runDirectory) {
+                    $processJob.Terminate()
+                    if (-not $child.WaitForExit(5000)) { throw 'Native process did not exit within the five-second cancellation window.' }
+                    $state.status = 'cancelled'; $resultCode = 130
+                    $state['cancelRequest'] = Get-Content -Raw -LiteralPath (Join-Path $runDirectory 'cancel.request') | ConvertFrom-Json
+                    break
+                }
                 if ([DateTime]::UtcNow -ge $deadline) {
                     $processJob.Terminate()
                     if (-not $child.WaitForExit(5000)) { throw 'Native process did not exit within the five-second timeout cleanup window.' }
@@ -479,7 +623,7 @@ try {
             $processJob.Dispose(); $processJob = $null
             if (-not [Threading.Tasks.Task]::WaitAll([Threading.Tasks.Task[]]@($outCopy, $errCopy), 5000)) { throw 'Native log streams did not close within five seconds. The run cannot be verified.' }
         } finally { $child.StandardOutput.Dispose(); $child.StandardError.Dispose(); $outStream.Dispose(); $errStream.Dispose() }
-        $record.exitCode = if ($state.status -eq 'timed-out') { 124 } else { $child.ExitCode }
+        $record.exitCode = if ($state.status -eq 'timed-out') { 124 } elseif ($state.status -eq 'cancelled') { 130 } else { $child.ExitCode }
         if ($leftoverDescendants -gt 0 -and $record.exitCode -eq 0) {
             $record.exitCode = 125
             $state.message = 'Unexpected native descendants remained after the step exited. The Job Object killed them; verification stopped.'
@@ -513,17 +657,22 @@ try {
             $record.exitCode = 4
             $state.message = 'Sizing requires one executed passing test, positive-cell Fastback mesh-only completion and a matching saved fixed-profile row; physical validation remains false.'
         }
+        if ($step.name -eq 'wp9-solve' -and $record.exitCode -eq 0 -and
+            -not (Test-VerificationWp9SolveOutput ([IO.File]::ReadAllText($stdoutPath)) ([IO.File]::ReadAllText($stderrPath)) (Join-Path $runDirectory 'replication-solve.json') (Get-VerificationWp9SolveMode $Profile))) {
+            $record.exitCode = 4
+            $state.message = 'A solve profile requires one executed passing test, exactly one final marker of its own kind and a matching saved fixed-profile row. A pilot never reports coefficients; physical validation remains false.'
+        }
         if ($step.name -eq 'wp6-release' -and $record.exitCode -eq 0 -and -not (Test-VerificationBenchmarkOutput ([IO.File]::ReadAllText($stdoutPath)))) {
             $record.exitCode = 4
             $state.message = 'The WP6 benchmark filter did not execute a passing test. A zero-test run cannot verify the benchmark.'
         }
-        $record.status = if ($record.exitCode -eq 0) { 'passed' } else { 'failed' }
+        $record.status = if ($state.status -eq 'cancelled') { 'cancelled' } elseif ($record.exitCode -eq 0) { 'passed' } else { 'failed' }
         $record.finishedUtc = [DateTime]::UtcNow.ToString('o')
         $state.childPid = $null; $state.childStartedUtc = $null; $state.activeStep = $null
         $currentSource = Get-VerificationFingerprint
         $state.sourceAfter = $currentSource
         if ($currentSource -ne $source) { $state.status = 'source-changed'; $resultCode = 3 }
-        elseif ($record.exitCode -ne 0 -and $state.status -ne 'timed-out') { $state.status = 'failed'; $resultCode = $record.exitCode }
+        elseif ($record.exitCode -ne 0 -and $state.status -notin @('timed-out', 'cancelled')) { $state.status = 'failed'; $resultCode = $record.exitCode }
         if ($step.name -eq 'catalogue' -and $record.exitCode -eq 0) { $state.cataloguePath = $stdoutPath }
         Write-VerificationJson $statePath $state
         if ($state.status -ne 'running') { break }
@@ -545,17 +694,26 @@ try {
 } finally {
     if ($processJob) { $processJob.Dispose() }
     if ($child -and -not $child.HasExited) { $child.Kill($true); [void]$child.WaitForExit(5000) }
+    if ($sampler) {
+        try {
+            [IO.File]::WriteAllText((Join-Path $runDirectory 'memory-sampler.stop'), 'stop')
+            if (-not $sampler.WaitForExit(90000)) { $sampler.Kill($true) }
+        } catch { }
+        if ($samplerJob) { $samplerJob.Dispose() }
+        $summaryPath = Join-Path $runDirectory 'memory-summary.json'
+        if ($state -and (Test-Path -LiteralPath $summaryPath)) { $state['memorySummary'] = Get-Content -Raw -LiteralPath $summaryPath | ConvertFrom-Json }
+    }
     if ($state) {
-        if ($Profile -in @('wp9-sizing', 'wp9-sizing-serial')) {
+        if ($Profile -in $script:Wp9LinuxProfiles) {
             $state['statusBeforeCleanup'] = $state.status
             try {
                 . (Join-Path $script:VerificationScripts 'cfd/wp9-sizing-cleanup.ps1')
                 $cleanup = Stop-Wp9SizingLinuxGroups -RunDirectory $runDirectory -Distribution 'Vernon-Ubuntu-24.04' -User 'vernon'
-                if ($cleanup.success -isnot [bool] -or -not $cleanup.success) { throw 'Sizing Linux cleanup did not confirm success.' }
+                if ($cleanup.success -isnot [bool] -or -not $cleanup.success) { throw 'Linux cleanup did not confirm success.' }
                 $state['linuxCleanup'] = $cleanup
             } catch {
                 $state['linuxCleanup'] = [ordered]@{ success = $false; message = $_.Exception.Message }
-                $state.message = ($state.message + ' Sizing Linux cleanup unconfirmed: ' + $_.Exception.Message).Trim()
+                $state.message = ($state.message + ' Linux cleanup unconfirmed: ' + $_.Exception.Message).Trim()
                 $state.status = 'cleanup-failed'; $resultCode = 126
             }
         }

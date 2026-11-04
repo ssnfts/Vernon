@@ -6,6 +6,46 @@ Sections are newest first. Older sections use the original machine's paths
 (C:\Users\mabdu\REA\...) and the old flat scripts/ layout, and are kept as
 evidence. For current commands use docs/SETUP.md and docs/CFD-RUNBOOK.md.
 
+## WP9 Stage 0 built (solve profiles, pilot mode, sampler, stop), 2026-11-04
+
+The user asked to execute CFD validation Stages 0–3 per docs/CFD-RUNBOOK.md, stopping
+for approval after the Stage 1 pilot. Branch `claude/wp9-solve-stages` (from
+`claude/ai-models` dd89e58), in E:\REA\vernon. Owner for this work: Claude session
+(the user's request overrides the "Codex owns WP9" note for these stages).
+
+Built (each RED then GREEN; logs in `scratch/wp9-stage0/`, not committed):
+- Harness `real_openfoam_road_car_run`: `RoadCarMode` separates mesh np
+  (`VERNON_CAR_MESH_NP`, default 1) from solve np, adds pilot mode and per-node
+  time limits; pilot row has no Cd/convergence/benchmark keys; protocol prints
+  `WP9_REPLICATION_SOLVE_COMPLETE` after readback; `solve_diagnostics` (log
+  timing, disk) and `residual_trend` in every solve row. New unit tests:
+  `tests::road_car_run_mode_keeps_the_pilot_apart_from_the_protocol`,
+  `tests::solver_log_timing_reads_iterations_clock_and_a_clean_end`.
+- `scripts/cfd/wp9-replication-solve-env.sh` + `test-wp9-solve-policy.sh` (40/0)
+  + `test-wp9-solve-environment.sh` (live in WSL: 17/0; the sizing env fails it 11/6).
+  Live 16-rank probe through the real env file (box case, 256k cells): 30
+  iterations, End, exit 0 under 4 GiB RLIMIT_AS; peak rank VmPeak 0.40 GB.
+- Runner: profiles `wp9-solve-pilot` (outer 6 h; mesh 100 min, solve 180 min,
+  200 iterations) and `wp9-solve` (outer 48 h; mesh 100, solve 2700 min, 7000
+  iterations); 16 ranks, serial mesh, Fastback, dx0 0.32; output/row acceptance;
+  Linux cleanup on exit; memory sampler (`scripts/cfd/wp9-memory-sampler.ps1`,
+  test 18/0); graceful stop `scripts/verification/stop-verification.ps1`
+  (status `cancelled`, exit 130, not resumable); `smoke-cancel` profile.
+- Fixed a pre-existing runner bug: `Test-VerificationProcess` never matched a live
+  worker after a JSON round-trip (PowerShell 7 parses the ISO stamp as DateTime),
+  so `verification-status.ps1` showed `running-visibility-unknown` for live runs.
+- Runner self-test: library checks PASS; 8 durable scenarios PASS (incl. cancel).
+  Sizing cleanup 55 PASS; replication-inputs PASS; sizing policy 27/0; clippy -p
+  vernon-nodes-cfd clean.
+- Not built: automatic resume from a checkpoint (see runbook "As built").
+
+Environment: i9-13900HX 24C/32T, 31.8 GB, WSL cap 26 GB (25.4 GiB visible), on AC,
+power plan "Legion Performance Mode"; WSL 3.0.3, kernel 6.18.54.1; Ubuntu 24.04.5;
+OpenFOAM v2606 (openfoam2606 2606.0~rc2-1, build _481094f-20260618); Open MPI
+4.1.6; rustc/cargo 1.99.1. E: 978 GB free at start. pwsh 7.6.9 is at
+E:\REA\tools\pwsh\7.6.9\pwsh.exe (not on PATH; Windows PowerShell 5.1 can't run the
+runner scripts).
+
 ## AI parts and aero preview added; OpenFOAM Stages 0–3 DEFERRED, 2026-11-04
 
 The user asked to use the installed open-weight models (E:\AI-3D: PartCrafter,

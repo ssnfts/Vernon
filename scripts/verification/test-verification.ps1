@@ -189,11 +189,134 @@ Assert-True (Test-VerificationWp9SizingOutput $sizingPassed $sizingMarker $sizin
 Assert-True (-not (Test-VerificationWp9SizingOutput $sizingPassed $sizingMarker $sizingPath)) 'serial row never passes the parallel profile'
 $serialSavedEnv = @{}
 foreach ($key in @('VERNON_WSL_DISTRO','VERNON_WSL_USER','VERNON_WSL_ENV_FILE','VERNON_CAR_REAR','VERNON_CAR_DX0','VERNON_CAR_NP','VERNON_CAR_ITER','VERNON_CAR_MESH_ONLY','VERNON_CAR_OUT')) { $serialSavedEnv[$key] = [Environment]::GetEnvironmentVariable($key,'Process') }
+$runModeKeys = @('VERNON_CAR_MESH_NP','VERNON_CAR_PILOT','VERNON_CAR_MESH_TIMEOUT_MIN','VERNON_CAR_SOLVE_TIMEOUT_MIN')
+foreach ($key in $runModeKeys) { $serialSavedEnv[$key] = [Environment]::GetEnvironmentVariable($key,'Process') }
 try {
+    foreach ($key in $runModeKeys) { [Environment]::SetEnvironmentVariable($key, '99', 'Process') }
     Set-VerificationWp9SizingEnvironment $sizingDirectory 1
     Assert-True ($env:VERNON_CAR_NP -ceq '1' -and $env:VERNON_CAR_MESH_ONLY -ceq '1') 'serial profile fixes one process while keeping the solver disabled'
+    Assert-True ($env:VERNON_CAR_MESH_NP -ceq '1' -and $env:VERNON_CAR_PILOT -ceq '0' -and $env:VERNON_CAR_MESH_TIMEOUT_MIN -ceq '300') 'sizing fixes its mesh rank count, pilot flag and mesh limit over inherited values'
+    Set-VerificationWp9SizingEnvironment $sizingDirectory 2
+    Assert-True ($env:VERNON_CAR_MESH_NP -ceq '2') 'two-rank sizing still meshes on two ranks'
 } finally { foreach ($key in $serialSavedEnv.Keys) { [Environment]::SetEnvironmentVariable($key,$serialSavedEnv[$key],'Process') } }
 Remove-Item -LiteralPath $sizingPath
+
+# ---- WP9 solve profiles: a diagnostic pilot and the protocol run.
+foreach ($solveProfile in @('wp9-solve-pilot', 'wp9-solve')) {
+    $solveSteps = @(Get-VerificationSteps $solveProfile)
+    Assert-True ($solveSteps.Count -eq 1 -and $solveSteps[0].name -eq 'wp9-solve' -and $solveSteps[0].executable -eq 'cargo' -and ($solveSteps[0].arguments -join "`0") -ceq ($sizingArguments -join "`0")) "$solveProfile runs only the exact ignored release road-car test"
+    foreach ($scriptPath in @($worker, $launcher)) {
+        $profileAttribute = (Get-Command $scriptPath).Parameters['Profile'].Attributes | Where-Object { $_ -is [System.Management.Automation.ValidateSetAttribute] }
+        Assert-True ($solveProfile -in $profileAttribute.ValidValues) "worker and launcher explicitly accept $solveProfile"
+    }
+    $rejected = $false
+    try { Assert-VerificationResumeInput $solveProfile 'old-run' } catch { $rejected = $true }
+    Assert-True $rejected "$solveProfile always executes afresh"
+}
+$solveEnvironment = Get-VerificationWp9SolveEnvironmentFile
+Assert-True ($solveEnvironment -cmatch '^/mnt/[a-z]/.+/scripts/cfd/wp9-replication-solve-env\.sh$') 'the solve environment is this checkout''s script as seen from WSL'
+Assert-VerificationWp9Input 'wp9-solve-pilot' $sizingDistribution $sizingUser $solveEnvironment 'C:\approved-cars'
+Assert-VerificationWp9Input 'wp9-solve' $sizingDistribution $sizingUser $solveEnvironment 'C:\approved-cars'
+foreach ($inputCase in @(
+    @('wp9-solve', $sizingDistribution, $sizingUser, $sizingEnvironment, 'C:\approved-cars'),
+    @('wp9-solve-pilot', $sizingDistribution, $sizingUser, $sizingEnvironment, 'C:\approved-cars'),
+    @('wp9-sizing-serial', $sizingDistribution, $sizingUser, $solveEnvironment, 'C:\approved-cars'),
+    @('wp9-solve', 'Ubuntu', $sizingUser, $solveEnvironment, 'C:\approved-cars'),
+    @('wp9-solve', $sizingDistribution, 'root', $solveEnvironment, 'C:\approved-cars'),
+    @('wp9-solve', $sizingDistribution, $sizingUser, $solveEnvironment, ' ')
+)) {
+    $rejected = $false
+    try { Assert-VerificationWp9Input $inputCase[0] $inputCase[1] $inputCase[2] $inputCase[3] $inputCase[4] } catch { $rejected = $true }
+    Assert-True $rejected "$($inputCase[0]) refuses another profile's environment, unapproved WSL identity or absent data"
+}
+Assert-True ((Get-VerificationDefaultJobTimeout 'wp9-solve-pilot') -eq 21600 -and (Get-VerificationDefaultJobTimeout 'wp9-solve') -eq 172800 -and (Get-VerificationDefaultJobTimeout 'wp9-sizing') -eq 21600 -and (Get-VerificationDefaultJobTimeout 'full') -eq 7200) 'each profile has its documented default outer bound'
+Assert-VerificationJobTimeout 'wp9-solve-pilot' 21600
+Assert-VerificationJobTimeout 'wp9-solve' 172800
+foreach ($timeoutCase in @(@('wp9-solve-pilot', 21601), @('wp9-solve', 172801), @('full', 86401), @('wp9-sizing', 172800))) {
+    $rejected = $false
+    try { Assert-VerificationJobTimeout $timeoutCase[0] $timeoutCase[1] } catch { $rejected = $true }
+    Assert-True $rejected "$($timeoutCase[0]) refuses an outer bound of $($timeoutCase[1]) s"
+}
+foreach ($mode in @('pilot', 'protocol')) {
+    $settings = Get-VerificationWp9SolveSettings $mode
+    $outer = Get-VerificationDefaultJobTimeout $(if ($mode -eq 'pilot') { 'wp9-solve-pilot' } else { 'wp9-solve' })
+    Assert-True ((($settings.VERNON_CAR_MESH_TIMEOUT_MIN + $settings.VERNON_CAR_SOLVE_TIMEOUT_MIN) * 60 + 3600) -le $outer) "$mode node limits leave an hour of the outer bound for cleanup"
+}
+$solveDirectory = Join-Path $repo ('scratch/continuation/library-checks/solve-' + [guid]::NewGuid().ToString('N'))
+Assert-VerificationOutputPath $solveDirectory
+[void][IO.Directory]::CreateDirectory($solveDirectory)
+$solvePath = Join-Path $solveDirectory 'replication-solve.json'
+$solveKeys = @('VERNON_WSL_DISTRO','VERNON_WSL_USER','VERNON_WSL_ENV_FILE','VERNON_CAR_REAR','VERNON_CAR_DX0','VERNON_CAR_NP','VERNON_CAR_MESH_NP','VERNON_CAR_ITER','VERNON_CAR_PILOT','VERNON_CAR_MESH_ONLY','VERNON_CAR_OUT','VERNON_CAR_MESH_TIMEOUT_MIN','VERNON_CAR_SOLVE_TIMEOUT_MIN')
+$solveSaved = @{}
+foreach ($key in $solveKeys) { $solveSaved[$key] = [Environment]::GetEnvironmentVariable($key, 'Process') }
+try {
+    foreach ($key in $solveKeys) { [Environment]::SetEnvironmentVariable($key, 'inherited', 'Process') }
+    Set-VerificationWp9SolveEnvironment $solveDirectory 'pilot'
+    $expected = [ordered]@{ VERNON_WSL_DISTRO = $sizingDistribution; VERNON_WSL_USER = $sizingUser; VERNON_WSL_ENV_FILE = $solveEnvironment; VERNON_CAR_REAR = 'Fastback'; VERNON_CAR_DX0 = '0.32'; VERNON_CAR_NP = '16'; VERNON_CAR_MESH_NP = '1'; VERNON_CAR_ITER = '200'; VERNON_CAR_PILOT = '1'; VERNON_CAR_MESH_ONLY = '0'; VERNON_CAR_OUT = $solvePath; VERNON_CAR_MESH_TIMEOUT_MIN = '100'; VERNON_CAR_SOLVE_TIMEOUT_MIN = '180' }
+    foreach ($key in $expected.Keys) { Assert-True ([Environment]::GetEnvironmentVariable($key, 'Process') -ceq $expected[$key]) "pilot fixes $key over an inherited value" }
+    Set-VerificationWp9SolveEnvironment $solveDirectory 'protocol'
+    Assert-True ($env:VERNON_CAR_ITER -ceq '7000' -and $env:VERNON_CAR_PILOT -ceq '0' -and $env:VERNON_CAR_NP -ceq '16' -and $env:VERNON_CAR_MESH_NP -ceq '1' -and $env:VERNON_CAR_SOLVE_TIMEOUT_MIN -ceq '2700' -and $env:VERNON_CAR_MESH_ONLY -ceq '0') 'protocol fixes 7000 iterations on 16 ranks with a serial mesh'
+} finally { foreach ($key in $solveSaved.Keys) { [Environment]::SetEnvironmentVariable($key, $solveSaved[$key], 'Process') } }
+
+$solvePassed = "running 1 test`ntest tests::real_openfoam_road_car_run ... ok`ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 374 filtered out;"
+$pilotMarker = 'WP9_SOLVE_PILOT_COMPLETE rear=Fastback cells=12056197 iterations=200 np=16 mesh_np=1 seconds_per_iteration=14.2 coefficients_reported=0'
+$validPilotRow = [ordered]@{
+    rear = 'Fastback'; profile = 'road_car_detailed_gs_16ms_v1'; scope = 'solver_pilot_diagnostic'; dx0_m = 0.32; cells = 12056197.0
+    np = 16; mesh_np = 1; n_iter = 200; iterations_read = 200; pilot = $true; mesh_only = $false; solver_ran = $true
+    physical_validation = $false; original_experiment_authenticated = $false; diagnostic_only = $true; coefficients_reported = $false
+    solve_diagnostics = [ordered]@{ solver = [ordered]@{ ended = $true; iterations = 200; seconds_per_iteration = 14.2 } }
+}
+Write-VerificationJson $solvePath $validPilotRow
+Assert-True (Test-VerificationWp9SolveOutput $solvePassed $pilotMarker $solvePath 'pilot') 'pilot accepts one executed test, its final marker and a reloaded diagnostic row'
+Assert-True (-not (Test-VerificationWp9SolveOutput $solvePassed $pilotMarker $solvePath 'protocol')) 'a pilot can never complete the protocol profile'
+foreach ($badMarker in @('', ('incidental ' + $pilotMarker), $pilotMarker.Replace('coefficients_reported=0', 'coefficients_reported=1'), $pilotMarker.Replace('iterations=200', 'iterations=7000'), $pilotMarker.Replace('np=16', 'np=8'), $pilotMarker.Replace('cells=12056197', 'cells=12056198'), ($pilotMarker + "`n" + $pilotMarker), ($pilotMarker + "`nSKIPPED runtime"))) {
+    Assert-True (-not (Test-VerificationWp9SolveOutput $solvePassed $badMarker $solvePath 'pilot')) 'only one exact pilot marker matching the row qualifies'
+}
+foreach ($badField in @(@('scope', 'published_replication'), @('pilot', $false), @('np', 8), @('mesh_np', 16), @('n_iter', 7000), @('iterations_read', 150), @('physical_validation', $true), @('coefficients_reported', $true), @('cd', 0.27), @('result', @{}), @('converged', $true))) {
+    $badRow = [ordered]@{}
+    foreach ($key in $validPilotRow.Keys) { $badRow[$key] = $validPilotRow[$key] }
+    $badRow[$badField[0]] = $badField[1]
+    Write-VerificationJson $solvePath $badRow
+    Assert-True (-not (Test-VerificationWp9SolveOutput $solvePassed $pilotMarker $solvePath 'pilot')) "pilot reload rejects $($badField[0]) = $($badField[1])"
+}
+$protocolMarker = 'WP9_REPLICATION_SOLVE_COMPLETE rear=Fastback cells=12056197 iterations=7000 np=16 mesh_np=1 converged=false benchmark_validated=false cd=0.301'
+$validProtocolRow = [ordered]@{
+    rear = 'Fastback'; profile = 'road_car_detailed_gs_16ms_v1'; scope = 'published_replication'; dx0_m = 0.32; cells = 12056197.0
+    np = 16; mesh_np = 1; n_iter = 7000; window = 1000; write_interval = 1000; pilot = $false; mesh_only = $false; solver_ran = $true
+    physical_validation = $false; original_experiment_authenticated = $false; coefficients_reported = $true
+    converged = $false; benchmark_validated = $false; cd = 0.301
+}
+Write-VerificationJson $solvePath $validProtocolRow
+Assert-True (Test-VerificationWp9SolveOutput $solvePassed $protocolMarker $solvePath 'protocol') 'a completed protocol run that did not converge is still a recorded completion, reported as not converged'
+Assert-True (-not (Test-VerificationWp9SolveOutput $solvePassed $protocolMarker $solvePath 'pilot')) 'a protocol row never completes the pilot profile'
+foreach ($badMarker in @($protocolMarker.Replace('converged=false', 'converged=true'), $protocolMarker.Replace('benchmark_validated=false', 'benchmark_validated=true'), $protocolMarker.Replace('cd=0.301', 'cd=0.275'), $protocolMarker.Replace('iterations=7000', 'iterations=200'), $pilotMarker)) {
+    Assert-True (-not (Test-VerificationWp9SolveOutput $solvePassed $badMarker $solvePath 'protocol')) 'the protocol marker must agree with the saved row'
+}
+foreach ($badField in @(@('converged', 'false'), @('benchmark_validated', $null), @('cd', 'NaN'), @('physical_validation', $true), @('pilot', $true), @('n_iter', 2000), @('window', 100), @('scope', 'solver_pilot_diagnostic'))) {
+    $badRow = [ordered]@{}
+    foreach ($key in $validProtocolRow.Keys) { $badRow[$key] = $validProtocolRow[$key] }
+    $badRow[$badField[0]] = $badField[1]
+    Write-VerificationJson $solvePath $badRow
+    Assert-True (-not (Test-VerificationWp9SolveOutput $solvePassed $protocolMarker $solvePath 'protocol')) "protocol reload rejects $($badField[0]) = $($badField[1])"
+}
+foreach ($badOutput in @($solvePassed.Replace('1 passed; 0 failed; 0 ignored;', '0 passed; 0 failed; 1 ignored;'), $solvePassed.Replace('tests::real_openfoam_road_car_run', 'tests::some_other_test'))) {
+    Assert-True (-not (Test-VerificationWp9SolveOutput $badOutput $protocolMarker $solvePath 'protocol')) 'zero, ignored or unrelated tests cannot complete a solve profile'
+}
+Remove-Item -LiteralPath $solvePath
+Assert-True (-not (Test-VerificationWp9SolveOutput $solvePassed $protocolMarker $solvePath 'protocol')) 'a missing saved row fails closed'
+# Graceful cancellation is requested through a file the worker polls.
+$cancelRun = Join-Path $repo ('scratch/continuation/library-checks/cancel-' + [guid]::NewGuid().ToString('N'))
+[void][IO.Directory]::CreateDirectory($cancelRun)
+Assert-True (-not (Test-VerificationCancelRequested $cancelRun)) 'no cancellation without a request file'
+Request-VerificationCancel $cancelRun 'library check'
+Assert-True (Test-VerificationCancelRequested $cancelRun) 'a written request is seen by the worker'
+# Status files are read back with ConvertFrom-Json, which turns ISO stamps into DateTime.
+$selfIdentity = [ordered]@{ workerPid = $PID; workerStartedUtc = (Get-Process -Id $PID).StartTime.ToUniversalTime().ToString('o') }
+$identityPath = Join-Path $cancelRun 'identity.json'
+Write-VerificationJson $identityPath $selfIdentity
+$reloadedIdentity = Get-Content -Raw -LiteralPath $identityPath | ConvertFrom-Json
+Assert-True (Test-VerificationProcess $reloadedIdentity.workerPid $reloadedIdentity.workerStartedUtc) 'a live worker is recognised from its reloaded status record'
+Assert-True (-not (Test-VerificationProcess $reloadedIdentity.workerPid ([DateTime]::UtcNow.AddDays(-1)))) 'a different start time is never the same process'
 $wp9NativeSteps = @(Get-VerificationSteps 'wp9-native')
 Assert-True ($wp9NativeSteps.Count -eq 1 -and ($wp9NativeSteps[0].arguments -join ' ') -match '--exact --ignored --nocapture') 'native capability executes only its explicit ignored test'
 $wp9NativePassed = "running 1 test`ntest tests::real_openfoam_chain_on_a_small_car ... ok`ntest result: ok. 1 passed; 0 failed; 0 ignored;"
@@ -306,4 +429,18 @@ try {
 } finally {
     if (Test-Path -LiteralPath $fixture) { Remove-Item -LiteralPath $fixture }
 }
+$stopScript = Join-Path $PSScriptRoot 'stop-verification.ps1'
+& $shell -NoProfile -NonInteractive -File $launcher -Profile smoke-cancel -RunId "$prefix-cancel" -JobTimeoutSeconds 300 | Out-Host
+Assert-True ($LASTEXITCODE -eq 0) 'cancel scenario launches'
+$cancelState = Wait-State "$prefix-cancel" 'hold'
+& $shell -NoProfile -NonInteractive -File $stopScript -RunId "$prefix-cancel" -Reason 'durable self-test' | Out-Host
+Assert-True ($LASTEXITCODE -eq 0) 'stop request is accepted for a running worker'
+$cancelled = Wait-State "$prefix-cancel" '' 60
+Assert-True ($cancelled.status -eq 'cancelled' -and $cancelled.exitCode -eq 130 -and $cancelled.steps[-1].exitCode -eq 130 -and $cancelled.steps[-1].status -eq 'cancelled') 'a stop request ends the run as cancelled, never completed or failed'
+Assert-True (-not (Test-VerificationProcess $cancelState.childPid $cancelState.childStartedUtc)) 'cancellation kills the active native step'
+Assert-True ($cancelled.cancelRequest.reason -eq 'durable self-test') 'the stop reason is recorded with the run'
+Assert-True ((Run-Worker 'smoke-cancel' "$prefix-cancel-resume" "$prefix-cancel") -ne 0) 'a cancelled run cannot be resumed'
+& $shell -NoProfile -NonInteractive -File $stopScript -RunId "$prefix-cancel" | Out-Host
+Assert-True ($LASTEXITCODE -ne 0) 'stopping a finished run is refused'
+$passed++
 Write-Output "PASS: $passed durable-runner scenarios; run prefix $prefix"

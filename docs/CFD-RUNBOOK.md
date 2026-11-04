@@ -9,6 +9,9 @@ recipe and reference stay exactly as accepted in
 1000-sample window convergence. Never lower them to make a run pass, and
 never relabel a failed run.
 
+> **2026-11-04 (later): the user resumed Stages 0–3.** Stage 0 is built (see "As built"
+> below); progress is in `docs/CONTINUATION.md`.
+>
 > **2026-11-04: Stages 0–3 are DEFERRED, not cancelled.** An AI preview (DoMINO) now screens
 > variants in minutes inside Vernon ([docs/specs/ai-models.md](specs/ai-models.md)), but it is
 > labelled "AI prediction — CFD validation pending" and does not satisfy, replace or relax any gate
@@ -88,9 +91,38 @@ of the following are true, each with a test observed failing first:
    MemAvailable and the solver processes' peak resident memory.
 7. **A fresh full queue passes.**
 
-## Stage 1: pilot (~2 h)
+### As built (2026-11-04)
+
+| Item | Where | Fixed values |
+|---|---|---|
+| Run modes | `RoadCarMode` in `crates/vernon-nodes-cfd/src/tests.rs` | `VERNON_CAR_MESH_NP` (default 1), `VERNON_CAR_PILOT` (pilot = 50..1999 iterations, never mesh-only), `VERNON_CAR_MESH_TIMEOUT_MIN`, `VERNON_CAR_SOLVE_TIMEOUT_MIN` |
+| Solver environment | `scripts/cfd/wp9-replication-solve-env.sh` | MemAvailable ≥ 23 GiB; 22 GiB `RLIMIT_AS` per serial tool; `mpirun -np 16 simpleFoam -parallel` only, 4 GiB per rank (provisional) |
+| Profiles | `scripts/verification/verification.ps1` | both: Fastback, dx0 0.32, 16 ranks, serial mesh. `wp9-solve-pilot`: 200 iterations, mesh 100 min, solve 180 min, outer 6 h. `wp9-solve`: 7000 iterations, mesh 100 min, solve 2700 min, outer 48 h |
+| Completion | same | pilot: `WP9_SOLVE_PILOT_COMPLETE … coefficients_reported=0` and a row with no Cd/convergence/benchmark keys. Protocol: `WP9_REPLICATION_SOLVE_COMPLETE … converged=… benchmark_validated=… cd=…` matching the saved row. A protocol run that did not converge still completes and is reported **not converged** |
+| Memory sampler | `scripts/cfd/wp9-memory-sampler.ps1` | every 60 s: WSL meminfo, VmRSS/VmHWM of the OpenFOAM programs, host free memory, run-folder bytes → `memory-samples.jsonl`, peaks → `memory-summary.json` (also copied into `status.json`) |
+| Stop | `scripts/verification/stop-verification.ps1 -RunId <id> -Reason <text>` | worker kills the step, still runs Linux cleanup, status `cancelled`, exit 130, not resumable |
+
+Tests: `cargo test -p vernon-nodes-cfd tests::road_car_run_mode tests::solver_log_timing`,
+`scripts/cfd/test-wp9-solve-policy.sh` and `test-wp9-solve-environment.sh` (run in WSL
+as `vernon` with the env file's WSL path), `scripts/cfd/test-wp9-memory-sampler.ps1`,
+`scripts/verification/test-verification.ps1`.
+
+Checkpoints: the accepted recipe writes binary fields every 1000 iterations and keeps
+the latest two (`purgeWrite 2`) in `processor*/`. The whole case stays in
+`scratch\continuation\runs\<run-id>\temp\`. **Automatic resume is not implemented**:
+a failed protocol run can be restarted by hand from its latest time directory, but the
+certification code does not accept a restarted history.
+
+Launching: `start-verification.ps1` waits only 30 s for the worker's first status, and
+the worker first scans `target\` for reparse points. If the launcher reports "has not
+published status", check that the worker PID is alive and wait; don't relaunch.
+
+## Stage 1: pilot (~2 h solver estimate; 6 h outer bound)
 
 ```powershell
+$env:VERNON_CAR_DIR = "$PWD\scratch\wp9-data\tum-drivaer\extracted"
+$env:VERNON_WSL_DISTRO = 'Vernon-Ubuntu-24.04'; $env:VERNON_WSL_USER = 'vernon'
+$env:VERNON_WSL_ENV_FILE = '/mnt/e/REA/vernon/scripts/cfd/wp9-replication-solve-env.sh'  # your checkout, as a WSL path
 .\scripts\verification\start-verification.ps1 -Profile wp9-solve-pilot -RunId wp9-solve-pilot-YYYYMMDD-a
 ```
 
