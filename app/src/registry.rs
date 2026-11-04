@@ -13,6 +13,7 @@ pub fn build_registry() -> Registry {
     vernon_nodes_fea::register(&mut reg);
     vernon_nodes_solar::register(&mut reg);
     vernon_nodes_perf::register(&mut reg);
+    vernon_nodes_ai::register(&mut reg);
     reg
 }
 

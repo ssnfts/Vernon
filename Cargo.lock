@@ -3180,6 +3180,7 @@ dependencies = [
  "vernon-core",
  "vernon-graph",
  "vernon-io",
+ "vernon-nodes-ai",
  "vernon-nodes-capture",
  "vernon-nodes-cfd",
  "vernon-nodes-clean",
@@ -3239,6 +3240,7 @@ dependencies = [
  "vernon-core",
  "vernon-graph",
  "vernon-io",
+ "vernon-nodes-ai",
  "vernon-nodes-capture",
  "vernon-nodes-cfd",
  "vernon-nodes-clean",
@@ -3280,6 +3282,18 @@ dependencies = [
  "miniz_oxide 0.8.9",
  "thiserror 2.0.21",
  "vernon-core",
+]
+
+[[package]]
+name = "vernon-nodes-ai"
+version = "0.1.0"
+dependencies = [
+ "glam",
+ "serde",
+ "serde_json",
+ "vernon-core",
+ "vernon-graph",
+ "vernon-io",
 ]
 
 [[package]]

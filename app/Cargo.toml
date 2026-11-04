@@ -21,6 +21,7 @@ vernon-nodes-cfd = { path = "../crates/vernon-nodes-cfd" }
 vernon-nodes-fea = { path = "../crates/vernon-nodes-fea" }
 vernon-nodes-solar = { path = "../crates/vernon-nodes-solar" }
 vernon-nodes-perf = { path = "../crates/vernon-nodes-perf" }
+vernon-nodes-ai = { path = "../crates/vernon-nodes-ai" }
 eframe = { version = "0.32", default-features = false, features = ["wgpu", "default_fonts", "accesskit"] }
 egui_extras = { version = "0.32" }
 # Default features enable the platform backends (DX12/Vulkan/Metal) eframe leaves off.

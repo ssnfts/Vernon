@@ -9,6 +9,11 @@ recipe and reference stay exactly as accepted in
 1000-sample window convergence. Never lower them to make a run pass, and
 never relabel a failed run.
 
+> **2026-11-04: Stages 0–3 are DEFERRED, not cancelled.** An AI preview (DoMINO) now screens
+> variants in minutes inside Vernon ([docs/specs/ai-models.md](specs/ai-models.md)), but it is
+> labelled "AI prediction — CFD validation pending" and does not satisfy, replace or relax any gate
+> below. These stages are still what validates the solver and what will measure the surrogate's error.
+
 ## Where things stand
 
 | Done | Result |

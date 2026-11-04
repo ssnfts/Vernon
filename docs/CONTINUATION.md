@@ -6,6 +6,50 @@ Sections are newest first. Older sections use the original machine's paths
 (C:\Users\mabdu\REA\...) and the old flat scripts/ layout, and are kept as
 evidence. For current commands use docs/SETUP.md and docs/CFD-RUNBOOK.md.
 
+## AI parts and aero preview added; OpenFOAM Stages 0–3 DEFERRED, 2026-11-04
+
+The user asked to use the installed open-weight models (E:\AI-3D: PartCrafter,
+DoMINO DrivAerML) inside Vernon instead of running the long OpenFOAM stages
+now. Ownership: Codex still owns WP9 CFD source; this work touched no
+`vernon-nodes-cfd` file, only a new crate plus two registry lines.
+
+Done:
+- New crate `crates/vernon-nodes-ai`: `geo.ai_partcrafter`,
+  `geo.ai_select_part`, `cfd.ai_aero_preview`, `cfd.ai_aero_compare`. Models
+  run as separate processes in the `AI-3D` WSL distribution through bridges in
+  `scripts/ai/` (embedded in the crate), with JSON-lines progress, time limit,
+  cancel (app cook cancel and `bridge::request_cancel`), GPU/RAM preflight,
+  per-run artifact folders with provenance (inputs, seed, settings, weight
+  revisions, checkpoint SHA-256, timings, memory).
+- DoMINO outputs are dimensionless model units (min–max scaling inverted),
+  labelled "AI prediction — CFD validation pending", `cfd_validation =
+  DEFERRED`; no force/drag is shown; only `ai_*` metrics, which no gate reads.
+  Geometry outside the checkpoint box is refused before inference; out of the
+  training span is labelled. Meshes over 20,000 triangles are refused
+  (33,540 crashed the model on the 16 GB GPU).
+- Spec with contract, licences and measured resources: docs/specs/ai-models.md.
+  README, CLEAN_ROOM.md (external programs), CFD-RUNBOOK (deferral banner),
+  NODES.md and AGENT_GUIDE.md (201 node types) updated.
+
+Evidence: crate tests 31 passed; the 3 ignored real-model tests were run and
+passed (DoMINO surface+volume on stand-in ellipsoids plus a compare; DoMINO
+19,800-triangle surface; PartCrafter object, draft, 3 parts, whose
+63k-triangle part the aero preview correctly refused). Workspace clippy
+`-D warnings` clean. Full workspace: 1763 passed, 0 failed, 38 ignored
+(after adding help text the catalogue test asked for); demo cook 0 failing
+gates, 5 expected; NODES.md and AGENT_GUIDE.md regenerate unchanged.
+No manual UI check was done; the app was not launched.
+
+Remaining / blockers:
+- OpenFOAM Stages 0–3 are deferred, not cancelled: still the only validation,
+  and needed to measure the surrogate's error (compare on the Stage 2 shape;
+  do not tune the surrogate to agree).
+- Not built: viewport legend widget (legend is in the summary JSON; colour via
+  `Cd`), a resident model service (each run reloads the model: DoMINO ~2.5 min
+  end to end for `both`, PartCrafter 73–434 s load).
+- PartCrafter `standard` quality and scene mode were not re-measured through
+  the node.
+
 ## Side branches merged into main, 2026-11-04
 
 The user asked to merge and push the work that was only on side branches.

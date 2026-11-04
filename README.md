@@ -69,17 +69,17 @@ fender in one graph.
 
 | Stage | What Vernon does | Implemented | White-box |
 |---|---|---:|---:|
-| Geometry | Primitives, test car panel, transform, merge, mirror, normals, noise, file read/write | 20 | 0 |
+| Geometry | Primitives, test car panel, transform, merge, mirror, normals, noise, file read/write, AI parts from an image (PartCrafter) and part selection | 22 | 0 |
 | 1 Capture | Import scans (PLY/OBJ/STL/XYZ), scale bars and markers, feature registration, robust multi-scan alignment, scan quality; verified external photogrammetry | 22 | 0 |
 | 2 Clean / Align | Decimate, remesh, outliers, smoothing, ICP alignment, certified conservative wrap, signed deviation with percentile gate | 26 | 0 |
 | 3 Mesh → Surface | Region refinement, field-aligned quad remeshing, connected B-spline layouts, measured subdivision continuity, analytic primitive recognition, sections, loft, thicken, surface deviation, STEP export | 23 | 0 |
 | 4 Split / Print | Projected body-line cuts, bounded partition search, dovetail/dowel/plug keys, strain-screened snap hooks, bed fit, 3MF packages, JSON/INI presets and G-code checks | 25 | 1 |
-| 5 Airflow (CFD) | Vehicle prep, frontal area, virtual tunnel, refinement plan, OpenFOAM case writing, convergence, force coefficients, Cp maps | 19 | 2 |
+| 5 Airflow (CFD) | Vehicle prep, frontal area, virtual tunnel, refinement plan, OpenFOAM case writing, convergence, force coefficients, Cp maps, AI aero preview and variant comparison (DoMINO, unvalidated) | 21 | 2 |
 | 6 Structure (FEA) | Printed orthotropic materials with temperature derating, mounts, aero/bump loads, CalculiX decks and results, safety factors | 20 | 0 |
 | 7 Solar / Heat | Sun position, weather files, sky matrix, incident radiation, surface temperature balance vs heat-deflection temperature | 14 | 0 |
 | 7b Flatten | Seam cutting, conformal flattening, as-rigid-as-possible stretch-aware flattening, strain report, pattern map-back | 6 | 0 |
 | 8 Performance | Aero loads, top speed, point-mass lap model and sweeps, coastdown fit, pressure-tap validation, tuft classification from measured angles | 19 | 0 |
-| **All** | | **194** | **3** |
+| **All** | | **198** | **3** |
 
 Nodes that drive external open-source programs (COLMAP, OpenFOAM,
 CalculiX, fTetWild, OrcaSlicer) write complete inputs without them and only
@@ -207,6 +207,20 @@ fine 12.06M-cell Fastback mesh is built and passes its quality gates. No
 solver has run on it yet. The next steps (Stages 0–3) are in
 [docs/CFD-RUNBOOK.md](docs/CFD-RUNBOOK.md). Their plan and estimates are in
 [docs/superpowers/plans/2026-11-04-wp9-solver-run.md](docs/superpowers/plans/2026-11-04-wp9-solver-run.md).
+
+## AI parts and aero preview (separate model processes)
+
+Two installed open-weight models run inside Vernon as nodes: PartCrafter
+(`geo.ai_partcrafter`, image to separate mesh parts) and DoMINO
+(`cfd.ai_aero_preview`, fast surface and volume aerodynamic prediction). Set
+`VERNON_AI3D_ROOT` to the model install folder, flip a node's **Run model**
+switch and use the app's normal cancel to stop it. The DoMINO output is
+labelled **"AI prediction — CFD validation pending"**: it is a screening aid in
+dimensionless model units, never a CFD result, and no OpenFOAM acceptance gate
+reads it. The long OpenFOAM Stages 0–3 are deferred, not cancelled; they remain
+the only way to validate anything. How to use it, the supported inputs and
+domain, licences, measured memory and time, and the limits are in
+[docs/specs/ai-models.md](docs/specs/ai-models.md).
 
 ## Connect an MCP client
 

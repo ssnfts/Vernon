@@ -27,5 +27,6 @@ vernon-nodes-cfd = { path = "../vernon-nodes-cfd" }
 vernon-nodes-fea = { path = "../vernon-nodes-fea" }
 vernon-nodes-solar = { path = "../vernon-nodes-solar" }
 vernon-nodes-perf = { path = "../vernon-nodes-perf" }
+vernon-nodes-ai = { path = "../vernon-nodes-ai" }
 anyhow.workspace = true
 serde_json.workspace = true
