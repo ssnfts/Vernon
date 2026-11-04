@@ -3215,6 +3215,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "vernon-bench"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "serde_json",
+ "vernon-cli",
+ "vernon-core",
+ "vernon-graph",
+ "vernon-io",
+ "vernon-nodes-capture",
+ "vernon-nodes-fea",
+ "vernon-nodes-print",
+]
+
+[[package]]
 name = "vernon-cli"
 version = "0.1.0"
 dependencies = [

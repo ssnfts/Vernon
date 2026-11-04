@@ -1,0 +1,21 @@
+[package]
+name = "vernon-bench"
+description = "Validation and benchmark suite: analytic checks, reference-tool comparisons, performance"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "vernon-bench"
+path = "src/main.rs"
+
+[dependencies]
+vernon-core.workspace = true
+vernon-graph.workspace = true
+vernon-io.workspace = true
+vernon-cli = { path = "../vernon-cli" }
+vernon-nodes-fea = { path = "../vernon-nodes-fea" }
+vernon-nodes-print = { path = "../vernon-nodes-print" }
+vernon-nodes-capture = { path = "../vernon-nodes-capture" }
+anyhow.workspace = true
+serde_json.workspace = true

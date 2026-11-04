@@ -1,0 +1,50 @@
+{
+  "P.decimate.100k": {
+    "peak_mb": 59.4375,
+    "wall_s": 0.3102746
+  },
+  "P.decimate.10k": {
+    "peak_mb": 17.71875,
+    "wall_s": 0.0351969
+  },
+  "P.deviation.100k": {
+    "peak_mb": 81.76171875,
+    "wall_s": 0.3396808
+  },
+  "P.deviation.10k": {
+    "peak_mb": 19.796875,
+    "wall_s": 0.0957715
+  },
+  "P.fea_solve.100k": {
+    "peak_mb": 190.25,
+    "wall_s": 28.2938127
+  },
+  "P.fea_solve.10k": {
+    "peak_mb": 36.91015625,
+    "wall_s": 2.7332744
+  },
+  "P.flatten.100k": {
+    "peak_mb": 206.515625,
+    "wall_s": 46.2200761
+  },
+  "P.flatten.10k": {
+    "peak_mb": 32.05078125,
+    "wall_s": 0.4274397
+  },
+  "P.icp.100k": {
+    "peak_mb": 81.74609375,
+    "wall_s": 0.6113815
+  },
+  "P.icp.10k": {
+    "peak_mb": 19.875,
+    "wall_s": 0.0781544
+  },
+  "P.quad_remesh.100k": {
+    "peak_mb": 148.3828125,
+    "wall_s": 7.5837047
+  },
+  "P.quad_remesh.10k": {
+    "peak_mb": 61.6796875,
+    "wall_s": 1.5663889
+  }
+}

@@ -37,13 +37,13 @@ processes**, not linked into Vernon, so Vernon's own code stays Apache-2.0:
 
 | Tool | Licence | Used for |
 |---|---|---|
-| COLMAP | BSD-3-Clause | photogrammetry (`capture.sfm_*`, `capture.mvs_*`) |
-| OpenFOAM | GPL-3.0 | CFD solver (`cfd.*` case writers and the optional run) |
-| CalculiX | GPL-2.0 | FEA solver (`fea.*` deck writers and the optional run) |
+| COLMAP | BSD-3-Clause | photogrammetry (`capture.sfm_*`, `capture.mvs_*`); `bench/` only reads a recorded sparse model |
+| OpenFOAM | GPL-3.0 | CFD solver (`cfd.*` case writers and the optional run); `bench/` only reads the output files of runs that already exist and starts no CFD job |
+| CalculiX | GPL-2.0 | FEA solver (`fea.*` deck writers and the optional run); `bench/` runs the cantilever deck through it (native or inside WSL) as a Tier B reference |
 | fTetWild | MPL-2.0 | tetrahedral meshing of watertight surfaces (`fea.tet_mesh`); driven as a process, no source copied, so the file-level copyleft never reaches Vernon's files |
-| OrcaSlicer / PrusaSlicer | AGPL-3.0 | slicing and G-code (`print.slice_external`) |
+| OrcaSlicer / PrusaSlicer | AGPL-3.0 | slicing and G-code (`print.slice_external`); `bench/` also slices a stored plate with them, as a separate process, to check G-code against `print.flavour_check` |
 | Klipper | GPL-3.0 | printer firmware (target only: Vernon writes macros, never links it) |
-| CloudCompare (CLI) | GPL-2.0+ | not driven by any node: the stage-2 deviation checks are native. Run headless as a separate process to record golden references (`tests/golden/cloudcompare/`) |
+| CloudCompare (CLI) | GPL-2.0+ | not driven by any node: the stage-2 deviation checks are native. Run headless as a separate process to record golden references (`tests/golden/cloudcompare/`) and, in `bench/` (`vernon-bench`, Tier B), to compare deviation statistics live |
 | Blender | GPL-2.0+ | not driven by any node. Run headless as a separate process to record golden references (`tests/golden/blender/`, script `scripts/golden/blender_subd.py`) |
 | FreeCAD (command line) | LGPL-2.1 ([project licence](https://github.com/FreeCAD/FreeCAD/blob/main/LICENSE)) | optional ignored STEP import validation test; runs as a separate process, no library linked or source copied |
 | Instant Meshes / QuadriFlow | BSD-3-Clause / MIT | not driven by any node: `surface` quad remeshing is native (`surface.quad_remesh`). Candidates for an optional external route; licences are as recalled and must be verified against each repository before a node drives either one |

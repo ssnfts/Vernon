@@ -30,7 +30,7 @@ pub mod snap_geometry;
 pub mod upload;
 mod curtain;
 mod gcode_check;
-mod snap;
+pub mod snap;
 mod partition;
 mod profiles;
 pub mod dialects;
