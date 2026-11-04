@@ -23,7 +23,8 @@ never relabel a failed run.
 |---|---|
 | Fine Fastback mesh (dx0 0.32, 5 layers, serial) | 12,056,197 cells, non-ortho 64.996°, skewness 3.452, 0 failed checks, layers 97.3%; 41 min, 20.7 GB peak |
 | Full check queue | 1732 passed / 0 failed / 35 ignored; clippy, demo, catalogue clean |
-| Solver on the 12M mesh | **not run** |
+| Solver on the 12M mesh | **not run** (protocol) |
+| Stage 1 pilot, 200 iterations, 16 ranks (2026-11-04) | 18.7 s/it (17.2–19.5), solver RSS ~18–21 GiB flat, rank peak 1.5 GiB, 1.0 GB per write; Stage 2 estimate 37–39 h. Details in CONTINUATION.md |
 
 Earlier 3.76M-cell runs (old 30 m/s setup, 16 ranks) took 4.44 s per iteration
 and never converged. They are diagnostics only.

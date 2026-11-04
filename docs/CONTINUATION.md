@@ -6,6 +6,46 @@ Sections are newest first. Older sections use the original machine's paths
 (C:\Users\mabdu\REA\...) and the old flat scripts/ layout, and are kept as
 evidence. For current commands use docs/SETUP.md and docs/CFD-RUNBOOK.md.
 
+## WP9 Stage 1 pilot measured; Stage 2 awaiting the user's approval, 2026-11-04
+
+Run `wp9-solve-pilot-20261104-a` (profile wp9-solve-pilot, commit b2a5a31, clean
+tree): status completed, exit 0, step wp9-solve passed; runner accepted the marker
+`WP9_SOLVE_PILOT_COMPLETE rear=Fastback cells=12056197 iterations=200 np=16 mesh_np=1
+seconds_per_iteration=18.65829145728643 coefficients_reported=0` and the saved row
+(replication-solve.json). sourceBefore = sourceAfter = 1f8d03eb…a6f6. 14:36:21 ->
+16:38:05 UTC (2 h 02 min). linuxCleanup success, attempted 0. Diagnostic only: no
+Cd, no convergence verdict, nothing for the benchmark or study.
+
+Measured (from the case logs and memory-samples.jsonl, 92 samples, ~80 s apart):
+- Mesh rebuilt identically: 12,056,197 cells, non-ortho 64.996, skew 3.452,
+  layers 97.33%. mesh_build wall 2917 s (48.6 min; 41 min on 11-04 sizing run).
+  snappyHexMesh peak HWM 19.8 GiB; WSL MemAvailable fell to 6.0 GiB, host free 0.6 GB.
+- potentialFoam 72 s wall, ≥2.0 GiB (one sample). decomposePar ~112 s (log mtimes),
+  peak 5.9 GiB. reconstructPar ~134 s, peak 7.1 GiB. (Neither utility prints ClockTime.)
+- simpleFoam, 16 ranks: 200 iterations, clean End, 3737 s clock. 18.66 s/it mean
+  after the first; per 25-iteration blocks 17.2, 18.6, 18.7, 18.8, 18.9, 18.8, 18.8,
+  19.5 (last block includes the 1 GB write). GAMG p iterations flat (2.3 -> 2.0), so
+  the drift is not solver work. The plan's linear-scaling guess was 14.3 s/it.
+- Solver memory flat, no growth: total RSS 17.9–20.9 GiB, peak rank HWM 1.49 GiB
+  (cap 4 GiB address space), sum of rank HWMs 22.4 GiB. WSL MemAvailable min 4.0 GiB;
+  host free 3.4–6.3 GB during the solve. No swap used.
+- Disk: one write = 1.01 GB decomposed (processor*/200) or 0.99 GB reconstructed;
+  polyMesh 1.5 GB; solved case 6.3 GB; run folder peak 10.8 GB. E: 909 GB free.
+- Residuals (initial) at 1/51/101/151/200: p 1, 7.1e-3, 4.2e-3, 3.3e-3, 2.5e-3;
+  U 0.27, 0.034, 0.028, 0.018, 0.020; k 1, 8.8e-4, 4.6e-4, 3.3e-4, 2.8e-4; omega
+  3.6e-3, 1.9e-4, 1.1e-4, 8.7e-5, 7.6e-5. U is flattening near 0.02 (the old
+  3.76M run sat at 0.018 after 3000 iterations): "not converged" is a real risk.
+- Log warnings: 6 FOAM warnings that monitor patches wheel_fl/wheel_rl don't exist
+  (half model keeps only the right wheels); pre-existing recipe, forces unaffected.
+
+Stage 2 estimate from these numbers: solver 7000 x 18.7–19.5 s = 36.4–37.9 h; plus
+mesh 0.8 h and pre/post ~0.1 h => about 37–39 h wall (above the runbook's 30–36 h).
+Solver node limit 2700 min (45 h) is hit only if the mean exceeds 23.1 s/it (+23%).
+Memory fits (flat ~21 GiB of 25.4 GiB) but leaves only ~4 GiB in WSL and a few GB
+on the host: close large apps for the run. Disk ~15 GB. No automatic resume.
+
+Next: Stage 2 (`wp9-solve`) only after the user approves. Command in the runbook.
+
 ## WP9 Stage 0 built (solve profiles, pilot mode, sampler, stop), 2026-11-04
 
 The user asked to execute CFD validation Stages 0–3 per docs/CFD-RUNBOOK.md, stopping
