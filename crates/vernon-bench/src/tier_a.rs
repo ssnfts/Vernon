@@ -242,7 +242,7 @@ fn file_round_trips() -> Case {
 
 fn ahmed_published_window() -> Case {
     const REF: &str = "Ahmed, Ramm & Faltin 1984, SAE 840300; ERCOFTAC case AC 1-05 https://kbwiki.ercoftac.org/w/index.php/AC_1-05 ; reference values 0.299 (25 deg) and 0.279 (35 deg) from a secondary table https://skill-lync.com/student-projects/project-1-flow-over-ahmed-body-7 (NOT the primary paper; confirm before quoting)";
-    let dir = std::env::var_os("VERNON_AHMED_RESULTS").map(std::path::PathBuf::from).unwrap_or_else(|| std::path::PathBuf::from(r"C:\Users\mabdu\REA\vernon\scratch\wp9-ahmed"));
+    let dir = std::env::var_os("VERNON_AHMED_RESULTS").map(std::path::PathBuf::from).unwrap_or_else(|| std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scratch/wp9-ahmed"));
     if !dir.is_dir() {
         return skipped("A.cfd.ahmed_drag_window", TIER, "Ahmed body drag within published window", REF, "no completed Ahmed-body run on this machine (set VERNON_AHMED_RESULTS)");
     }

@@ -27,6 +27,10 @@ record** and the slot in `bench/golden/` stays empty. No competitor figure is es
 | P | Wall time and peak memory on synthetic meshes against stated targets and a stored baseline | unless `-NoPerf` | `perf.rs` |
 | E | Example pipeline, per-stage CLI smoke, desktop app start | always (app needs a build) | `e2e.rs` |
 
+Recorded results are found from the checkout: the Ahmed-body runs in `scratch/wp9-ahmed/`
+(or the folder named by `VERNON_AHMED_RESULTS`). The COLMAP model is used only when
+`VERNON_COLMAP_MODEL` names its `sparse/0` folder. Without them those checks are SKIPPED.
+
 ## What is verified, and how
 
 ### Tier A (analytic)

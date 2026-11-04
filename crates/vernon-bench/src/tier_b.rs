@@ -151,7 +151,7 @@ fn calculix() -> Case {
 
 fn openfoam_existing() -> Case {
     const REF: &str = "OpenFOAM v2606 (GPL-3.0) forceCoeffs output of an existing run; no CFD job is started by the bench";
-    let dir = std::env::var_os("VERNON_AHMED_RESULTS").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(r"C:\Users\mabdu\REA\vernon\scratch\wp9-ahmed"));
+    let dir = std::env::var_os("VERNON_AHMED_RESULTS").map(PathBuf::from).unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scratch/wp9-ahmed"));
     let json = dir.join("a25-g3.json");
     if !json.is_file() {
         return skipped("B.openfoam.force_reduction", TIER, "Cd reduction vs OpenFOAM forceCoeffs", REF, "no existing OpenFOAM result (set VERNON_AHMED_RESULTS)");
@@ -178,7 +178,7 @@ fn openfoam_existing() -> Case {
 
 fn colmap_sample() -> Case {
     const REF: &str = "COLMAP 4.2.1 (BSD-3-Clause) sparse model recorded from the WP8 public sample run (south-building)";
-    let dir = std::env::var_os("VERNON_COLMAP_MODEL").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(r"C:\Users\mabdu\REA\vernon\scratch\continuation\runs\wp8-real-20261030-b\temp\vernon-wp8-real-63600-1793347686143423200\sparse\sparse\0"));
+    let dir = std::env::var_os("VERNON_COLMAP_MODEL").map(PathBuf::from).unwrap_or_default();
     if !dir.join("points3D.txt").is_file() {
         return skipped("B.colmap.sample_model", TIER, "COLMAP sample model ingest", REF, "no recorded COLMAP model (set VERNON_COLMAP_MODEL); COLMAP is not re-run by the bench, it needs a GPU and hours");
     }

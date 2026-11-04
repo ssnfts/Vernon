@@ -1,7 +1,0 @@
-#!/bin/sh
-cd "${0%/*}" || exit 1
-set -e
-potentialFoam > log.potentialFoam 2>&1
-decomposePar -force > log.decomposePar 2>&1
-mpirun -np 8 simpleFoam -parallel > log.solver 2>&1
-reconstructPar -latestTime > log.reconstructPar 2>&1
