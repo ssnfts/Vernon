@@ -1,0 +1,209 @@
+{
+  "id": "road_car_detailed_gs_16ms_v1",
+  "status": "user-accepted-reference-contract; geometry binding and physical acceptance pending",
+  "accepted_date": "2026-11-02",
+  "scope": "published replication; original 2012 experiment not independently authenticated",
+  "air": {
+    "u_ms": 16.0,
+    "rho_kg_m3": 1.184,
+    "nu_m2_s": 1.567e-05,
+    "mu_pa_s": 1.855328e-05
+  },
+  "derived_dry_air_node_parameters": {
+    "t_c": 28.824111071928996,
+    "p_pa": 102633.95590128556,
+    "rh_pct": 0.0,
+    "u_ms": 16.0
+  },
+  "geometry": {
+    "underbody": "Detailed",
+    "mirrors": true,
+    "engine_bay_flow": false,
+    "ground": "moving",
+    "wheels": "rotating",
+    "archive_sha256": "cb2130d354248597f853793be0850cc1552a41dfdf488e09d6ca9986f019896c",
+    "component_binding": "all eight source SHA256s verified under read-only leases; fresh three-case prepared SHA256s match prior geometry-only bytes",
+    "components": [
+      {
+        "file": "part_01_Body.stl",
+        "bytes": 113727779,
+        "sha256": "4040139b1e54ce525f94588ca4b104e3f75e95e8022fd22d3caaf14a9eb46a08"
+      },
+      {
+        "file": "part_02_UB_Detailed.stl",
+        "bytes": 276101388,
+        "sha256": "f9fad6a4639756e70773678716853ecf3a70a8ecc201a7e343dd774815b2d217"
+      },
+      {
+        "file": "part_03_Fastback.stl",
+        "bytes": 58848217,
+        "sha256": "37f703636106ed0d932cd0e09ac46d13b42a3dd8ca83bb1caa62fb41fcfc43d8"
+      },
+      {
+        "file": "part_03_Estate.stl",
+        "bytes": 63823013,
+        "sha256": "c73d1cb16c6b26955b5d27a58dc2c9102af735affdf1cbf42e90238cb31bdafa"
+      },
+      {
+        "file": "part_03_Notchback.stl",
+        "bytes": 54875327,
+        "sha256": "be62da8d6337cb4cb21c6be5798a22a9304bac0114ba59193c960a5ce4a1ad0b"
+      },
+      {
+        "file": "part_05_Wheels_Front.stl",
+        "bytes": 43434782,
+        "sha256": "0f34463299aa1b383eb7387f751ecc513194349e42003c48f736abaa066d18dc"
+      },
+      {
+        "file": "part_06_Wheels_Rear.stl",
+        "bytes": 164015756,
+        "sha256": "4c66688e398b44af79afa03cc670c9205b59c2906f7c917aca60b56bad667be1"
+      },
+      {
+        "file": "part_07_Mirror.stl",
+        "bytes": 8510882,
+        "sha256": "7ca3467ed8077500e9fa74653b1b41edd6396bc358957f2874c90f3b6da8c151"
+      }
+    ],
+    "prepared_cases": [
+      {
+        "candidate": "drivaer_fastback",
+        "preparation_revision": "vehicle-prep-minus-x-half-sink2-mm-v1",
+        "tri_surface_fingerprint": "4de3bd09d927f4dc",
+        "prepared_surfaces": [
+          {
+            "file": "body.stl",
+            "bytes": 298262351,
+            "sha256": "36417ec851e2548ee8dd04753b7f4b44ddcd70035d2857d3c2e08d9e2442504c"
+          },
+          {
+            "file": "wheel_fr.stl",
+            "bytes": 29260752,
+            "sha256": "8bc97d77205e1f4af089d930d42a2c674652d94a510cc2ffedaae67e7bb4e40c"
+          },
+          {
+            "file": "wheel_rr.stl",
+            "bytes": 111891095,
+            "sha256": "f1dca091e651c0c998fa5b27ea5a14b876a1d67ca524db633ce1c78f29d2728d"
+          }
+        ],
+        "wheel_centres_m": {
+          "wheel_fr": [
+            0.8148519935,
+            0.760269436,
+            0.31650019599999996
+          ],
+          "wheel_rr": [
+            3.601033365,
+            0.7634309750000001,
+            0.316500243
+          ]
+        },
+        "prepared_matches_prior_geometry_only": true
+      },
+      {
+        "candidate": "drivaer_estate",
+        "preparation_revision": "vehicle-prep-minus-x-half-sink2-mm-v1",
+        "tri_surface_fingerprint": "b1a1d6d4525fcb1c",
+        "prepared_surfaces": [
+          {
+            "file": "body.stl",
+            "bytes": 301752157,
+            "sha256": "a73b882d3f812d543d53782d80433ed3dfc9d3eb305eebcf7de2274a2aaeb257"
+          },
+          {
+            "file": "wheel_fr.stl",
+            "bytes": 29260752,
+            "sha256": "8bc97d77205e1f4af089d930d42a2c674652d94a510cc2ffedaae67e7bb4e40c"
+          },
+          {
+            "file": "wheel_rr.stl",
+            "bytes": 111891095,
+            "sha256": "f1dca091e651c0c998fa5b27ea5a14b876a1d67ca524db633ce1c78f29d2728d"
+          }
+        ],
+        "wheel_centres_m": {
+          "wheel_fr": [
+            0.8148519935,
+            0.760269436,
+            0.31650019599999996
+          ],
+          "wheel_rr": [
+            3.601033365,
+            0.7634309750000001,
+            0.316500243
+          ]
+        },
+        "prepared_matches_prior_geometry_only": true
+      },
+      {
+        "candidate": "drivaer_notchback",
+        "preparation_revision": "vehicle-prep-minus-x-half-sink2-mm-v1",
+        "tri_surface_fingerprint": "f8399fd496485c02",
+        "prepared_surfaces": [
+          {
+            "file": "body.stl",
+            "bytes": 295462763,
+            "sha256": "715efe52b7f938067e50eb159d82dca3c973ae581bd1b3f97282524250ff3db9"
+          },
+          {
+            "file": "wheel_fr.stl",
+            "bytes": 29260752,
+            "sha256": "8bc97d77205e1f4af089d930d42a2c674652d94a510cc2ffedaae67e7bb4e40c"
+          },
+          {
+            "file": "wheel_rr.stl",
+            "bytes": 111891095,
+            "sha256": "f1dca091e651c0c998fa5b27ea5a14b876a1d67ca524db633ce1c78f29d2728d"
+          }
+        ],
+        "wheel_centres_m": {
+          "wheel_fr": [
+            0.8148519935,
+            0.760269436,
+            0.31650019599999996
+          ],
+          "wheel_rr": [
+            3.601033365,
+            0.7634309750000001,
+            0.316500243
+          ]
+        },
+        "prepared_matches_prior_geometry_only": true
+      }
+    ],
+    "capture_run": "wp9-replication-geometry-20261103-a",
+    "source_fingerprint": "9b92a1c15cf045d2d977876458ef4bb3143eb0d5dfb0c67ddfe728929d4d0781"
+  },
+  "targets_cd": {
+    "Fastback": 0.275,
+    "Estate": 0.319,
+    "Notchback": 0.277
+  },
+  "acceptance": {
+    "drag_band_pct": 5.0,
+    "minimum_half_cells": 12000000,
+    "minimum_full_cells": 24000000,
+    "window_samples": 1000,
+    "minimum_samples": 2000,
+    "maximum_window_change_pct": 0.2,
+    "maximum_drift_pct": 0.1,
+    "maximum_sst_residual_rms": 1e-05,
+    "maximum_nonorthogonality_deg_exclusive": 70.0,
+    "maximum_skewness_exclusive": 4.0,
+    "three_grid_study_required": true,
+    "fitted_drag_shift_allowed": false
+  },
+  "source_note": "docs/research/wp9-reference-baselines.md",
+  "derived_air_note": "Synthetic equivalent dry-air node settings for the code gas constant; not source-weather measurements.",
+  "wheel_protocol": {
+    "angular_speed_magnitude_rad_s": 51.0,
+    "dynamic_radius_mm": 313.72549019607845,
+    "axis": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "signed_omega_rad_s": -51.0
+  }
+}

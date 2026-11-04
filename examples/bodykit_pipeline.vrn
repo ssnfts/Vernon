@@ -62,8 +62,14 @@
     "31": { "type_id": "flatten.conformal_map", "name": "flatten", "pos": [1760, 0], "inputs": [[0, 0], null] },
     "32": { "type_id": "flatten.strain_report", "name": "flatten_strain", "pos": [1760, 120], "inputs": [[31, 0], [31, 1]] },
 
-    "33": { "type_id": "perf.vehicle", "name": "vehicle", "pos": [1980, 0], "inputs": [null],
-            "params": { "mass_kg": 1400.0, "power_w": 150000.0, "cda_m2": 0.64, "cla_m2": 0.1 } },
+    "38": { "type_id": "cfd.solve_steady", "name": "cfd_solve", "pos": [1100, 840], "inputs": [[21, 0]],
+            "expect_fail": { "solve_done": "the example writes the airflow case but does not run the solver" } },
+    "39": { "type_id": "cfd.force_coeffs", "name": "cfd_forces", "pos": [1100, 960], "inputs": [[38, 1], [16, 1], [15, 0]],
+            "expect_fail": { "data_available": "no solver history exists until the airflow case is run" } },
+
+    "33": { "type_id": "perf.vehicle", "name": "vehicle", "pos": [1980, 0], "inputs": [[39, 1]],
+            "params": { "mass_kg": 1400.0, "power_w": 150000.0, "cda_m2": 0.64, "cla_m2": 0.1, "allow_missing_aero": true },
+            "expect_fail": { "aero_from_solver": "the manual CdA and ClA stand in until the airflow case is run" } },
     "34": { "type_id": "perf.aero_loads", "name": "aero_loads", "pos": [1980, 120], "inputs": [[15, 0], [33, 0]] },
     "35": { "type_id": "perf.top_speed", "name": "top_speed", "pos": [1980, 240], "inputs": [[15, 0], [33, 0]] }
   }

@@ -1554,8 +1554,9 @@ mod tests {
             .map(|g| g.stage)
             .collect();
         assert_eq!(missing, Vec::<Stage>::new());
-        // The demo has no wheels on its body and no FEA solver, so these two
-        // gates fail on purpose and the scene lists them under expect_fail.
+        // The demo has no wheels on its body and runs neither the FEA mesher
+        // nor the airflow solver, so these gates fail on purpose and the scene
+        // lists them under expect_fail.
         // They stay visible on their nodes (every report node of a stage
         // counts, not just the newest) but, as in vernon-cli, they are
         // expected and do not fail the pipeline.
@@ -1573,7 +1574,13 @@ mod tests {
         expected.sort();
         assert_eq!(
             expected,
-            vec!["Cfd: cfd.vehicle_prep wheels_found".to_string(), "Fea: fea.tet_mesh placeholder".to_string()],
+            vec![
+                "Cfd: cfd.force_coeffs data_available".to_string(),
+                "Cfd: cfd.solve_steady solve_done".to_string(),
+                "Cfd: cfd.vehicle_prep wheels_found".to_string(),
+                "Fea: fea.tet_mesh placeholder".to_string(),
+                "Performance: perf.vehicle aero_from_solver".to_string(),
+            ],
         );
         assert!(gates.iter().all(|g| g.failing_metrics().is_empty()), "no unexpected failures");
         assert!(gates.iter().all(|g| g.state != crate::gate::GateState::Error));

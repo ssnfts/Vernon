@@ -13,6 +13,7 @@ pub const FLAVOURS: &[&str] = &[
     "foundation11",
     "foundation10",
     "foundation9",
+    "opencfd2606",
     "opencfd2512",
     "opencfd2506",
     "opencfd2412",
@@ -90,8 +91,10 @@ impl Flavour {
         }
     }
 
+    /// The OpenCFD releases ship `surfaceFeatureExtract` and its dictionary;
+    /// `surfaceFeatures` exists only in the Foundation releases.
     pub fn old_feature_extract(self) -> bool {
-        matches!(self, Flavour::OpenCfd(2006))
+        matches!(self, Flavour::OpenCfd(_))
     }
 
     /// Argv of the steady solver.
@@ -365,7 +368,7 @@ pub fn snappy_dict(s: &SnappySpec) -> String {
             o += &format!("        \"{r}\"\n        {{\n            nSurfaceLayers {};\n        }}\n", s.n_layers);
         }
     }
-    o += "    }\n    nGrow 0;\n    featureAngle 130;\n    nRelaxIter 5;\n    nSmoothSurfaceNormals 1;\n    nSmoothNormals 3;\n    nSmoothThickness 10;\n    maxFaceThicknessRatio 0.5;\n    maxThicknessToMedialRatio 0.3;\n    minMedianAxisAngle 90;\n    nBufferCellsNoExtrude 0;\n    nLayerIter 50;\n    nRelaxedIter 20;\n}\n\n";
+    o += "    }\n    nGrow 0;\n    featureAngle 130;\n    nRelaxIter 5;\n    nSmoothSurfaceNormals 1;\n    nSmoothNormals 3;\n    nSmoothThickness 10;\n    maxFaceThicknessRatio 0.5;\n    maxThicknessToMedialRatio 0.3;\n    minMedianAxisAngle 90;\n    minMedialAxisAngle 90;\n    nBufferCellsNoExtrude 0;\n    nLayerIter 50;\n    nRelaxedIter 20;\n}\n\n";
     o += "meshQualityControls\n{\n    #include \"meshQualityDict\"\n    relaxed\n    {\n        maxNonOrtho 75;\n    }\n}\n\nwriteFlags ();\n\nmergeTolerance 1e-6;\n";
     o
 }
@@ -373,7 +376,7 @@ pub fn snappy_dict(s: &SnappySpec) -> String {
 pub fn mesh_quality_dict(max_non_ortho: f64) -> String {
     let mut o = header("dictionary", "system", "meshQualityDict");
     o += &format!(
-        "maxNonOrtho {};\nmaxBoundarySkewness 20;\nmaxInternalSkewness 4;\nmaxConcave 80;\nminVol 1e-13;\nminTetQuality -1e30;\nminArea -1;\nminTwist 0.05;\nminDeterminant 0.001;\nminFaceWeight 0.05;\nminVolRatio 0.01;\nminTriangleTwist -1;\nnSmoothScale 4;\nerrorReduction 0.75;\n",
+        "maxNonOrtho {};\nmaxBoundarySkewness 3.5;\nmaxInternalSkewness 3.5;\nmaxConcave 80;\nminVol 1e-13;\nminTetQuality -1e30;\nminArea -1;\nminTwist 0.05;\nminDeterminant 0.001;\nminFaceWeight 0.05;\nminVolRatio 0.01;\nminTriangleTwist -1;\nnSmoothScale 4;\nerrorReduction 0.75;\n",
         num(max_non_ortho)
     );
     o
@@ -420,6 +423,8 @@ pub struct CaseSpec<'a> {
     pub residual: f64,
     pub write_interval: u32,
     pub nonortho_over_70: bool,
+    /// Surfaces with their own force history, for shares of the total drag.
+    pub monitor_patches: Vec<String>,
 }
 
 impl CaseSpec<'_> {
@@ -595,6 +600,17 @@ pub fn momentum_transport(c: &CaseSpec) -> String {
     o
 }
 
+/// The time and numerics files the mesh tools refuse to start without. They
+/// solve nothing; the solver case writer replaces all three.
+pub fn mesh_only_system() -> [(&'static str, String); 3] {
+    let mut control = header("dictionary", "system", "controlDict");
+    control += "application     simpleFoam;\nstartFrom       startTime;\nstartTime       0;\nstopAt          endTime;\nendTime         1;\ndeltaT          1;\nwriteControl    timeStep;\nwriteInterval   1;\nwriteFormat     binary;\nwritePrecision  8;\ntimeFormat      general;\ntimePrecision   6;\nrunTimeModifiable false;\n";
+    let mut schemes = header("dictionary", "system", "fvSchemes");
+    schemes += "ddtSchemes\n{\n    default         steadyState;\n}\n\ngradSchemes\n{\n    default         Gauss linear;\n}\n\ndivSchemes\n{\n    default         none;\n}\n\nlaplacianSchemes\n{\n    default         Gauss linear corrected;\n}\n\ninterpolationSchemes\n{\n    default         linear;\n}\n\nsnGradSchemes\n{\n    default         corrected;\n}\n";
+    let solution = header("dictionary", "system", "fvSolution");
+    [("system/controlDict", control), ("system/fvSchemes", schemes), ("system/fvSolution", solution)]
+}
+
 pub fn fv_schemes(c: &CaseSpec) -> String {
     let lap = if c.nonortho_over_70 { "limited corrected 0.5" } else { "corrected" };
     let mut o = header("dictionary", "system", "fvSchemes");
@@ -610,17 +626,13 @@ pub fn fv_solution(c: &CaseSpec) -> String {
     let r = num(c.residual);
     let corr = u32::from(c.nonortho_over_70);
     let mut o = header("dictionary", "system", "fvSolution");
-    o += "solvers\n{\n    p\n    {\n        solver          GAMG;\n        smoother        GaussSeidel;\n        tolerance       1e-10;\n        relTol          0.1;\n    }\n\n    \"(U|k|omega)\"\n    {\n        solver          smoothSolver;\n        smoother        symGaussSeidel;\n        tolerance       1e-10;\n        relTol          0.1;\n    }\n}\n\n";
+    o += "solvers\n{\n    p\n    {\n        solver          GAMG;\n        smoother        GaussSeidel;\n        tolerance       1e-10;\n        relTol          0.1;\n    }\n\n    Phi\n    {\n        solver          GAMG;\n        smoother        GaussSeidel;\n        tolerance       1e-6;\n        relTol          0.01;\n    }\n\n    \"(U|k|omega)\"\n    {\n        solver          smoothSolver;\n        smoother        symGaussSeidel;\n        tolerance       1e-10;\n        relTol          0.1;\n    }\n}\n\npotentialFlow\n{\n    nNonOrthogonalCorrectors 3;\n}\n\n";
     o += &format!("SIMPLE\n{{\n    consistent      yes;\n    nNonOrthogonalCorrectors {corr};\n    residualControl\n    {{\n        p               {r};\n        U               {r};\n        \"(k|omega)\"      {r};\n    }}\n}}\n\n");
     o += "relaxationFactors\n{\n    equations\n    {\n        U               0.9;\n        \".*\"            0.9;\n    }\n}\n";
     o
 }
 
 pub fn control_dict(c: &CaseSpec) -> String {
-    let patches = c.force_patches();
-    let porosity = if c.zones.is_empty() { "no" } else { "yes" };
-    let (cofr, a) = (vec3s(c.cofr()), c.aref());
-    let fl = |lib: &str| c.flavour.libs(lib);
     let mut o = header("dictionary", "system", "controlDict");
     if c.flavour.uses_foam_run() {
         o += "application     foamRun;\nsolver          incompressibleFluid;\n";
@@ -631,7 +643,91 @@ pub fn control_dict(c: &CaseSpec) -> String {
         "startFrom       startTime;\nstartTime       0;\nstopAt          endTime;\nendTime         {};\ndeltaT          1;\nwriteControl    timeStep;\nwriteInterval   {};\npurgeWrite      2;\nwriteFormat     binary;\nwritePrecision  8;\ntimeFormat      general;\ntimePrecision   6;\nrunTimeModifiable true;\n\n",
         c.n_iter, c.write_interval
     );
-    o += "functions\n{\n";
+    o + &monitors(c)
+}
+
+/// Requested physical-time and corrector settings of the transient recipe.
+/// These are requests, not measurements of what a run achieved.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TransientControls {
+    pub end_time_s: f64,
+    pub delta_t_s: f64,
+    pub max_delta_t_s: f64,
+    pub max_co: f64,
+    pub write_interval_s: f64,
+    pub outer_correctors: u32,
+    pub correctors: u32,
+}
+
+impl TransientControls {
+    pub fn validate(&self) -> Result<(), String> {
+        for (name, v) in [("end time", self.end_time_s), ("time step", self.delta_t_s), ("largest time step", self.max_delta_t_s), ("Courant limit", self.max_co), ("write interval", self.write_interval_s)] {
+            if !v.is_finite() || v <= 0.0 {
+                return Err(format!("the {name} must be positive and finite"));
+            }
+        }
+        if self.delta_t_s > self.max_delta_t_s {
+            return Err("the time step is larger than the largest time step".into());
+        }
+        if self.max_delta_t_s > self.end_time_s || self.write_interval_s > self.end_time_s {
+            return Err("the largest time step and the write interval must fit inside the end time".into());
+        }
+        if !(1..=10).contains(&self.outer_correctors) || !(1..=10).contains(&self.correctors) {
+            return Err("corrector counts must be between 1 and 10".into());
+        }
+        Ok(())
+    }
+}
+
+pub fn ddes_turbulence(c: &CaseSpec) -> String {
+    let mut o = header("dictionary", "constant", c.flavour.momentum_transport());
+    o += "simulationType  LES;\n\nLES\n{\n    LESModel        kOmegaSSTDDES;\n    turbulence      on;\n    printCoeffs     on;\n    delta           maxDeltaxyz;\n}\n";
+    o
+}
+
+pub fn ddes_fv_schemes(c: &CaseSpec) -> String {
+    let lap = if c.nonortho_over_70 { "limited corrected 0.5" } else { "corrected" };
+    let mut o = header("dictionary", "system", "fvSchemes");
+    o += "ddtSchemes\n{\n    default         backward;\n}\n\n";
+    o += "gradSchemes\n{\n    default         Gauss linear;\n    grad(U)         cellLimited Gauss linear 1;\n}\n\n";
+    o += "divSchemes\n{\n    default         none;\n    div(phi,U)      Gauss linear;\n    div(phi,k)      Gauss limitedLinear 1;\n    div(phi,omega)  Gauss limitedLinear 1;\n    div((nuEff*dev2(T(grad(U))))) Gauss linear;\n}\n\n";
+    o += &format!("laplacianSchemes\n{{\n    default         Gauss linear {lap};\n}}\n\n");
+    o += &format!("interpolationSchemes\n{{\n    default         linear;\n}}\n\nsnGradSchemes\n{{\n    default         {lap};\n}}\n\nwallDist\n{{\n    method          meshWave;\n}}\n");
+    o
+}
+
+pub fn ddes_fv_solution(c: &CaseSpec, t: &TransientControls) -> String {
+    let mut o = header("dictionary", "system", "fvSolution");
+    o += "solvers\n{\n    p\n    {\n        solver          GAMG;\n        smoother        GaussSeidel;\n        tolerance       1e-8;\n        relTol          0.1;\n    }\n\n    pFinal\n    {\n        $p;\n        relTol          0;\n    }\n\n    \"(U|k|omega)\"\n    {\n        solver          smoothSolver;\n        smoother        symGaussSeidel;\n        tolerance       1e-8;\n        relTol          0.1;\n    }\n\n    \"(U|k|omega)Final\"\n    {\n        solver          smoothSolver;\n        smoother        symGaussSeidel;\n        tolerance       1e-8;\n        relTol          0;\n    }\n}\n\n";
+    o += &format!(
+        "PIMPLE\n{{\n    momentumPredictor yes;\n    nOuterCorrectors {};\n    nCorrectors     {};\n    nNonOrthogonalCorrectors {};\n}}\n",
+        t.outer_correctors,
+        t.correctors,
+        u32::from(c.nonortho_over_70)
+    );
+    o
+}
+
+pub fn ddes_control_dict(c: &CaseSpec, t: &TransientControls) -> String {
+    let mut o = header("dictionary", "system", "controlDict");
+    o += "application     pimpleFoam;\n";
+    o += &format!(
+        "startFrom       startTime;\nstartTime       0;\nstopAt          endTime;\nendTime         {};\ndeltaT          {};\nadjustTimeStep  yes;\nmaxCo           {};\nmaxDeltaT       {};\nwriteControl    adjustableRunTime;\nwriteInterval   {};\npurgeWrite      2;\nwriteFormat     binary;\nwritePrecision  8;\ntimeFormat      general;\ntimePrecision   12;\nrunTimeModifiable true;\n\n",
+        num(t.end_time_s),
+        num(t.delta_t_s),
+        num(t.max_co),
+        num(t.max_delta_t_s),
+        num(t.write_interval_s)
+    );
+    o + &monitors(c)
+}
+
+fn monitors(c: &CaseSpec) -> String {
+    let patches = c.force_patches();
+    let porosity = if c.zones.is_empty() { "no" } else { "yes" };
+    let (cofr, a) = (vec3s(c.cofr()), c.aref());
+    let fl = |lib: &str| c.flavour.libs(lib);
+    let mut o = String::from("functions\n{\n");
     o += &format!(
         "    forceCoeffs1\n    {{\n        type            forceCoeffs;\n        libs            {};\n        writeControl    timeStep;\n        writeInterval   1;\n        patches         {patches};\n        p               p;\n        U               U;\n        rho             rhoInf;\n        rhoInf          {};\n        pRef            0;\n        porosity        {porosity};\n        CofR            {cofr};\n        liftDir         (0 0 1);\n        dragDir         (1 0 0);\n        pitchAxis       (0 1 0);\n        magUInf         {};\n        lRef            {};\n        Aref            {};\n    }}\n\n",
         fl("forces"),
@@ -645,6 +741,13 @@ pub fn control_dict(c: &CaseSpec) -> String {
         fl("forces"),
         num(c.rho)
     );
+    for patch in &c.monitor_patches {
+        o += &format!(
+            "    forces_{patch}\n    {{\n        type            forces;\n        libs            {};\n        writeControl    timeStep;\n        writeInterval   1;\n        patches         (\"{patch}\");\n        p               p;\n        U               U;\n        rho             rhoInf;\n        rhoInf          {};\n        pRef            0;\n        porosity        no;\n        CofR            {cofr};\n    }}\n\n",
+            fl("forces"),
+            num(c.rho)
+        );
+    }
     o += &format!(
         "    yPlus1\n    {{\n        type            yPlus;\n        libs            {};\n        writeControl    writeTime;\n    }}\n\n",
         fl("fieldFunctionObjects")

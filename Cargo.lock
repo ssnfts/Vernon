@@ -3268,6 +3268,7 @@ dependencies = [
  "serde_json",
  "vernon-core",
  "vernon-graph",
+ "vernon-io",
 ]
 
 [[package]]

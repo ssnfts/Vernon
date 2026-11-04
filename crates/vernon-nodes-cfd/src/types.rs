@@ -256,6 +256,33 @@ impl Recipe {
     }
 }
 
+/// Measured mesh checks bound to the contents of the five base mesh tables.
+/// A cell budget or background estimate is not mesh evidence.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MeshEvidence {
+    pub version: u32,
+    pub cells: u64,
+    pub mesh_fingerprint: String,
+    pub max_nonortho: f64,
+    pub max_skew: f64,
+}
+
+/// Successful steady-run input provenance. The reference mapping stays absent
+/// unless a separate verified source supplies it; a selected preset is no proof.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SolveEvidence {
+    pub version: u32,
+    pub mesh: MeshEvidence,
+    pub input_fingerprint: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reference_scope: Option<String>,
+    /// Input-bound published-replication evidence; a scope label alone is insufficient.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reference_binding: Option<crate::reference::ReferenceBinding>,
+}
+
 /// Time series table: one `time` column and named columns of equal length.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Series {
@@ -268,6 +295,9 @@ pub struct Series {
     /// Settings the run was solved with (from the case manifest), when known.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recipe: Option<Recipe>,
+    /// Optional measured provenance. Legacy histories remain usable diagnostics.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub solve_evidence: Option<SolveEvidence>,
 }
 
 impl Series {
@@ -300,5 +330,44 @@ impl Series {
 
     pub fn col(&self, name: &str) -> Option<&[f64]> {
         self.columns.get(name).map(Vec::as_slice)
+    }
+}
+
+#[cfg(test)]
+mod evidence_tests {
+    use super::*;
+
+    #[test]
+    fn wp9_mesh_evidence_legacy_series_keeps_absent_provenance() {
+        let old = serde_json::json!({
+            "time": [1.0], "columns": {"Cd": [0.275]},
+            "meta": {}, "placeholder": false,
+        });
+        let series = Series::from_json(&old).unwrap();
+        assert!(series.solve_evidence.is_none());
+        assert!(series.to_json().get("solve_evidence").is_none());
+    }
+
+    #[test]
+    fn wp9_mesh_evidence_series_roundtrip_does_not_invent_reference_scope() {
+        let series = Series {
+            solve_evidence: Some(SolveEvidence {
+                version: 1,
+                mesh: MeshEvidence {
+                    version: 1,
+                    cells: 12_345_678,
+                    mesh_fingerprint: "0123456789abcdef".into(),
+                    max_nonortho: 62.5,
+                    max_skew: 2.25,
+                },
+                input_fingerprint: "fedcba9876543210".into(),
+                reference_scope: None,
+                reference_binding: None,
+            }),
+            ..Series::default()
+        };
+        let json = series.to_json();
+        assert!(json["solve_evidence"].get("reference_scope").is_none());
+        assert_eq!(Series::from_json(&json).unwrap(), series);
     }
 }

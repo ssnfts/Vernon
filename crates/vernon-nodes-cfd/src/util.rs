@@ -7,6 +7,12 @@ use serde_json::Value;
 use vernon_core::{Report, Severity};
 use vernon_graph::{CookContext, CookError, CookResult, Data, NodeOp, NodeTypeInfo, Params};
 
+mod staging;
+pub(crate) use staging::{
+    case_input_fingerprint, read_mesh_evidence, stage_case, stage_case_optional, tri_surface_fingerprint,
+    write_mesh_evidence, CaseStageKind, InitialFieldSource,
+};
+
 pub(crate) type CookFn = fn(&CookContext, &[Option<Data>], &Params) -> CookResult<Vec<Data>>;
 
 /// A node type described by two plain functions; keeps every node file short.

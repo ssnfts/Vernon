@@ -9,12 +9,12 @@ Vernon drives OpenFOAM as a **separate process** (GPL-3.0); it writes input file
 **Behaviour reproduced.** A hosted automotive wind-tunnel service and a general cloud CFD product (reference class: AirShaper, SimScale), re-built on the open stack the toolchain report recommends: OpenFOAM driven by a FreeCAD front end (CfdOF) [S1, S11].
 Observable service behaviour (from the toolchain report, no private observation): upload body + wheels + optional radiators, choose speed, pick ground/wheel treatment, get Cd, Cl, CdA, ClA, surface-pressure maps and A/B comparisons; "regular" runs are ~10M cells with rotating wheels and radiators [S11].
 
-**Reference versions.** CfdOF supports OpenFOAM Foundation 9-13 and OpenCFD 2006-2512, uses snappyHexMesh / cfMesh / Gmsh, simpleFoam, porous zones and baffles, AMI rotating regions, basic force/force-coefficient function objects, LGPL-3.0 [S1]. The dataset used as calibration ran OpenFOAM v11 [S4]. Vernon's writer takes a `flavour` enum (`foundation{9..13}`, `opencfd{2006..2512}`) because file names and keywords differ (see 3.7).
+**Reference versions.** CfdOF supports OpenFOAM Foundation 9-13 and OpenCFD 2006-2512, uses snappyHexMesh / cfMesh / Gmsh, simpleFoam, porous zones and baffles, AMI rotating regions, basic force/force-coefficient function objects, LGPL-3.0 [S1]. The dataset used as calibration ran OpenFOAM v11 [S4]. Vernon's writer takes a `flavour` enum (`foundation{9..13}`, `opencfd{2006..2606}`; the added2606 path has real local runtime capability evidence, not automotive validation) because file names and keywords differ (see 3.7).
 
 **In scope (v1).** Steady incompressible RANS (simpleFoam, k-omega SST), half-car with symmetry plane at zero yaw, moving ground, rotating wheels (wall velocity BC, optional MRF zones), porous radiator zones, force/pressure post-processing, mesh and iteration convergence gates, baseline-vs-kit deltas, density scaling, validation on DrivAer-class and Ahmed-body setups.
-**Out of scope (v1).** DDES/SBES/LES, lattice-Boltzmann, yaw (needs full car), engine-bay and brake-duct flow without explicit internal geometry, thermal/CHT, sliding-mesh wheels, free-surface flow, AI surrogates (R2 only ~0.60-0.64 on varied designs, 19-25% surface-pressure error [S4, S11]).
+**Transient capability.** The OpenCFD2606 writer additionally supports the restricted DDES setup in3.10; a short real run checks runtime compatibility, not transient accuracy. SBES/LES validation, lattice-Boltzmann, engine-bay and brake-duct flow without explicit internal geometry, thermal/CHT, sliding-mesh wheels, free-surface flow and AI surrogates remain outside this verified scope. Yaw requires a full car.
 
-**Hand-offs.** Upstream: watertight surface set from the surface stage (metres, x forward, z up). Downstream: CdA, ClA, axle balance, design-speed pressure load (FEA), force table at site density (performance stage).
+**Hand-offs.** Upstream Geometry uses millimetres and Z up. Vehicle preparation converts to the solver's SI frame, with positive X downstream; select the nose direction explicitly. Downstream force results expose CdA, ClA and axle balance. The current performance vehicle consumes CdA/ClA, not axle balance automatically; pressure loads and site-density forces use their own nodes. An explicit nonconverged force qualification fails the Report and JSON performance handoff while retaining raw diagnostic values. Legacy absent proof remains readable and does not establish benchmark validity.
 
 ## 2. Feature catalogue
 
@@ -40,7 +40,7 @@ Observable service behaviour (from the toolchain report, no private observation)
 
 | Parameter | Default | Range | Unit | Basis |
 |---|---|---|---|---|
-| speed `U` | 30 | 10-100 | m/s | 30 m/s used by the calibration dataset [S4]; Mach 0.20 at 250 km/h so incompressible is fine |
+| speed `U` | 30 | 10-100 | m/s | generic default; the accepted detailed reference uses16m/s (see the baseline note); Mach0.20 at250km/h remains incompressible |
 | yaw | 0 | 0 (half) / +-10 (full car) | deg | half-car valid only at zero yaw [S11] |
 | `rho_inf` | 1.225 | 0.9-1.3 | kg/m3 | ISA; Dubai 1.098-1.127 [S11] |
 | `nu` | 1.5e-5 | 1.4e-5-1.9e-5 | m2/s | Sutherland-based, see 3.12 |
@@ -64,7 +64,7 @@ Observable service behaviour (from the toolchain report, no private observation)
 | averaging window | last 1000 | 100-2000 | iter | [S4] |
 | residual target (RMS) | 1e-5 | 1e-3-1e-6 | - | [S4] |
 | mesh-study refinement ratio `r` | 1.3 | 1.25-2 | linear | Celik et al. [S9]; cell count x r^3 = 2.2 |
-| mesh acceptance | last two Cd within 2% | 1-2 | % | [S11]; plus GCI_fine <= 3% (Vernon rule) |
+| mesh acceptance | last two Cd within 2% | 1-2 | % | [S11]; plus GCI_fine <= 3%, observed order 0.5-4 and every wired grid's iteration scatter within the two-grid limit (Vernon rules; the last two added after the slant-body runs of 3.11a gave order 10 with the grid change inside the scatter) |
 | y+ (body mean) | 30-300 warn outside | - | - | wall-function regime; Spalding tolerates 1-300 |
 | min cells, Ahmed-class half body | 0.5M (high-Re), 1.5M (low-Re) | - | cells | [S5] |
 | RAM rule of thumb | 1-2 GB per M cells | - | GB | report estimate [S11], not sourced |
@@ -93,10 +93,10 @@ Order of operations in snappyHexMesh [S2]: refine at feature edges -> refine at 
 - `locationInMesh`: a point in the free stream, off any cell face (e.g. 0.5 dx0 jitter) [S2].
 - Closed volumes can become zones (`cellZone` with inside selection) for porous cores and MRF cylinders; snappy then writes `cellZones`.
 - Keywords and typical values from [S2]: `nCellsBetweenLevels 3`, `resolveFeatureAngle 30`, `maxLocalCells`/`maxGlobalCells` per memory limit, `snap{nSmoothPatch 3; tolerance 2.0; nSolveIter 30-100; nRelaxIter 5}`; layers `nSmoothSurfaceNormals 1; nSmoothNormals 3; nSmoothThickness 10; maxFaceThicknessRatio 0.5; maxThicknessToMedialRatio 0.3; minMedianAxisAngle 90; nBufferCellsNoExtrude 0; nLayerIter 50; nRelaxedIter 20`; give exactly two of `expansionRatio / finalLayerThickness / firstLayerThickness / thickness` [S2]. Unsourced typicals to verify in golden runs: `nFeatureSnapIter 10`, `featureAngle 130`, `nGrow 0`, `minThickness 0.1 (relative)`.
-- Quality dictionary [S2]: `maxNonOrtho 65; maxBoundarySkewness 20; maxInternalSkewness 4; maxConcave 80; minVol 1e-13; minTetQuality off; minArea -1; minTwist 0.05; minDeterminant 0.001; minFaceWeight 0.05; minVolRatio 0.01; minTriangleTwist -1; nSmoothScale 4; errorReduction 0.75`; `relaxed{}` overrides after `nRelaxedIter`.
+- Quality dictionary [S2]: `maxNonOrtho 65; maxBoundarySkewness 3.5; maxInternalSkewness 3.5; maxConcave 80; minVol 1e-13; minTetQuality off; minArea -1; minTwist 0.05; minDeterminant 0.001; minFaceWeight 0.05; minVolRatio 0.01; minTriangleTwist -1; nSmoothScale 4; errorReduction 0.75`; `relaxed{}` overrides after `nRelaxedIter`. [S2]'s skewness values are 20 and 4, but the gate below is < 4 on every face: a 3.76M-cell road-car mesh built with them failed it at 5.3. The slant-body meshes of 3.11a were built with 20 and 4 and peaked at2.6462508 (about2.65), below the new limits.
 - Refinement design: body `(L_min L_max) = (4,5)`; wheels 5; underbody/diffuser/splitter strips 6 within 0.1 m of the surface (distance mode, nearest first); kit box +1 level around kit bbox expanded by 0.15 m; near-wake box (x from tail - 0.5 m to tail + 1.0 L, y 0..W, z 0..1.3 H) level 4; far-wake box to tail + 2 L level 3. Calibration dataset: castellated up to level 5 on car and wheels, 5 relaxation iterations, boxes adjusted per body category, 500-750k car-surface cells, ~12M cells per half model [S4].
 - Layer budget: first-layer height from the y+ target with `y1 = y+ * nu / u_tau`, `u_tau = U sqrt(Cf/2)`, `Cf = 0.026 Re_L^(-1/7)` (flat-plate turbulent estimate; Schlichting). Use as a starting guess, then read the real y+ after the first run.
-- Gate after meshing (`checkMesh`): 0 failed checks, max non-orthogonality < 70 (warn 65), layer coverage >= 70% of requested faces on body+wheels (warn below), cell count within [0.5, 1.2] x target, no cell with negative volume.
+- Gate after meshing (`checkMesh`): 0 failed checks, max non-orthogonality < 70 (warn 65), max skewness <4. Layer coverage >=70%, cell count within[0.5,1.2] times the chosen target, nonnegative volumes and body wall-treatment checks remain additional physical validation requirements; the measured angle/skew gates alone do not establish them. The quality reader averages y+ over the body patches only (`body` and `body_*`); wheels, ground and other walls are excluded. The optional extended topology/geometry checks remain separately disclosed below.
 
 ### 3.4 Boundary conditions
 | Patch | U | p | k, omega | nut |
@@ -142,7 +142,9 @@ case/
                 meshQualityDict  decomposeParDict  topoSetDict / createPatchDict
 ```
 Per-flavour file-name differences are version facts to confirm with a golden run on each supported flavour.
-Run sequence: `surfaceFeatures` -> `blockMesh` -> `decomposePar` -> parallel `snappyHexMesh -overwrite` -> `reconstructParMesh` (or single-process for small cases) -> `checkMesh -allTopology -allGeometry` -> `potentialFoam` (initial field, as in [S4]) -> `decomposePar` -> `mpirun simpleFoam -parallel` -> `reconstructPar -latestTime` -> post-processing function objects (run live, written under `postProcessing/`).
+Run sequence: `surfaceFeatures` -> `blockMesh` -> `decomposePar` -> parallel `snappyHexMesh -overwrite` -> `reconstructParMesh` (or single-process for small cases) -> `checkMesh` -> `potentialFoam` (initial field, as in [S4]) -> `decomposePar` -> `mpirun simpleFoam -parallel` -> `reconstructPar -latestTime` -> post-processing function objects (run live, written under `postProcessing/`).
+
+`checkMesh` runs without `-allTopology -allGeometry`, as `docs/HANDOFF.md` WP9 says. This spec first named those flags. On the first real small-car mesh they failed three extra checks (concave cells, low-quality tets, small determinants) that the default check does not make, so "Mesh OK" and the non-orthogonality and skewness gates cover the default check only. OpenCFD v2606 ships `surfaceFeatureExtract`; `surfaceFeatures` is the Foundation flavour's tool.
 Numerics (starting recipe, practice - verify): `steadyState`; `div(phi,U) bounded Gauss linearUpwind grad(U)`; `div(phi,k|omega) bounded Gauss limitedLinear 1` (upwind on first 500 iterations); `grad Gauss linear` with `cellLimited` on U; laplacian `Gauss linear corrected` (limited 0.5 if max non-orthogonality > 70); p by GAMG (`relTol 0.1`), U/k/omega smoothSolver; SIMPLE `consistent yes`, equation relaxation 0.9, `nNonOrthogonalCorrectors 0` (1 above 70). Calibration run: 7000 iterations, forces averaged over the last 1000, RMS residuals < 1e-5 [S4].
 
 ### 3.8 Force-coefficient function object
@@ -153,9 +155,9 @@ Numerics (starting recipe, practice - verify): `steadyState`; `div(phi,U) bounde
 - Surface Cp: `Cp = (p - p_inf)/q`; kinematic p => `Cp = p_kin / (0.5 U^2)` with `p_inf = 0` at the outlet. Write wall-shear and y+ with the `yPlus` and `wallShearStress` objects.
 
 ### 3.9 Convergence
-Iteration gate (pass all): RMS initial residuals of p, U, k, omega below target; `|mean(window_2) - mean(window_1)| / mean < 0.2%` for two adjacent windows of `N_w`; drift < 0.1% per window; Cd sd < 0.5% of mean (else flag "unsteady - report spread"; steady RANS on separated rears oscillates).
+Iteration gate: complete finite, nonnegative p/U/k/omega residual histories, RMS at most the target; two complete adjacent windows with relative mean change at most0.2% and maximum drift at most0.1%. Scatter above0.5% flags unsteadiness rather than independently passing or failing stationarity. Qualification binds the actual coefficient source, window and sample count, requires recorded positive normalization metadata, and rejects nonfinite, negative or non-increasing time coordinates. The benchmark requires1000-sample windows and at least2000 samples.
 Mesh gate (Celik et al., GCI) [S9]: three grids fine/medium/coarse with refinement ratio `r21, r32 >= 1.3`, same recipe, only `dx0` (and layer sizes) scaled. With `e21 = phi2 - phi1`, `e32 = phi3 - phi2`, `s = sign(e32/e21)`:
-iterate `p = |ln|e32/e21| + q| / ln r21`, `q = ln((r21^p - s)/(r32^p - s))` until converged; `phi_ext = (r21^p phi1 - phi2)/(r21^p - 1)`; `e_a = |(phi1 - phi2)/phi1|`; `GCI_fine = 1.25 e_a / (r21^p - 1)`. `e32/e21 < 0` means oscillatory convergence: skip extrapolation and report the spread of the three values. Safety factor 1.25 for three grids [S9]. Acceptance (Vernon): `|Cd_fine - Cd_med| / Cd_fine < 2%` (toolchain rule [S11]) and `GCI_fine <= 3%`.
+For the monotone branch, iterate `p = abs(log(e32/e21) + q) / log(r21)`, with the signed logarithm retained before adding `q`; `q = log((r21^p - 1)/(r32^p - 1))`. Then `phi_ext = (r21^p phi1 - phi2)/(r21^p - 1)`, `e_a = abs((phi1 - phi2)/phi1)`, and `GCI_fine = 1.25 e_a/(r21^p - 1)`. Oscillatory, diverging, identical or indeterminate-order grids cannot skip acceptance checks. Acceptance additionally requires a finite observed order in0.5..4, two-grid change within the limit capped at2%, GCI at most3%, and known iteration scatter of every wired result within that two-grid limit. A result averaged over fewer than two samples has unknown scatter. These numerical checks do not replace iteration convergence or physical validation.
 
 ### 3.10 Protocol (the toolchain report's 7 steps mapped to graph checks) [S11]
 1. Validate on DrivAer/Ahmed first (`cfd.benchmark_check`; the project cannot enable kit runs until the template is within band).
@@ -165,12 +167,30 @@ iterate `p = |ln|e32/e21| + q| / ln r21`, `q = ln((r21^p - s)/(r32^p - s))` unti
 5. Refinement boxes around the part under test (`cfd.refinement_plan`).
 6. Three mesh levels, accept when last two within 1-2% of Cd (`cfd.mesh_study`, limit capped at 2 %). `cfd.mesh_levels` scales every cell size of one plan by the refinement ratio (about 1.3, so the cell count grows by 1.3^3 = 2.2 per level) to give the three plans.
 6a. Memory: plan 1 to 2 GB of RAM per million cells (the project note's rule of thumb, 32 to 64 GB for a 24 million-cell mesh); `cfd.mesh_setup` reports it at the cell limit and `cfd.mesh_quality` for the built mesh, against the machine's memory when given.
-6b. Fidelity: steady k-omega SST is what the case writer produces. Diffusers, rear wings near stall and tail separation are separated flows where steady RANS misses or smears the separation and detached-eddy (DDES/SBES) transient runs are recommended; `cfd.case_setup` has a flag for them that makes the case report and `cfd.force_coeffs` warn. No transient case is written yet.
+6b. Fidelity: steady k-omega SST is what the case writer produces. Diffusers, rear wings near stall and tail separation are separated flows where steady RANS misses or smears the separation and detached-eddy (DDES/SBES) transient runs are recommended; `cfd.case_setup` has a flag for them that makes the case report and `cfd.force_coeffs` warn. Its `solver_mode = transient_ddes` writes a `pimpleFoam` case with `kOmegaSSTDDES` for the OpenCFD v2606 flavour only, refused with a slip ground, MRF wheels or porous zones. The real solver has accepted that case for a few time steps; no transient run has been checked for accuracy, and `cfd.solve_steady` refuses it.
 7. Kit vs baseline on the same recipe and identical background/refinement settings, forces averaged over final iterations (`cfd.compare_ab`).
 
 ### 3.11 Validation geometries and known behaviour
-- **DrivAer-class** (fastback, notchback, estate rear ends; TUM 1:2.5 model tested in a 4.8 x 2.4 x 1.8 m section, 8% blockage, moving belt up to 50 m/s, 188 pressure taps [S6]). Wind-tunnel Cd: fastback detailed underbody 0.275, estateback 0.319, notchback 0.277 [S6]. A scale-resolving LBM run gave 0.268 / 0.304 / 0.271 (2.55 / 4.70 / 2.24% off) [S6]. Steady k-omega SST in OpenFOAM v11 was 2.88% (fastback smooth), 2.18% (fastback detailed), 4.88% (notchback), 4.11% (estate) from experiment [S4]. Estate drag is higher than fastback/notchback (reported as 15-20% in a Monash DrivAer study [S10]); the tunnel numbers above give ~13%.
+- **DrivAer-class** (fastback, notchback, estate rear ends; TUM 1:2.5 model tested in a 4.8 x 2.4 x 1.8 m section, 8% blockage, moving belt up to 50 m/s, 188 pressure taps [S6]). Wind-tunnel Cd: fastback detailed underbody 0.275, estateback 0.319, notchback 0.277 [S6]. A scale-resolving LBM run gave 0.268 / 0.304 / 0.271 (2.55 / 4.70 / 2.24% off) [S6]. Steady k-omega SST in OpenFOAM v11 was 2.88% (fastback smooth), 2.18% (fastback detailed), 4.88% (notchback), 4.11% (estate) from experiment [S4]. Estate drag is higher than fastback/notchback (reported as 15-20% in a Monash DrivAer study [S10]); the listed estate coefficient is about15-16% higher than the listed fastback/notchback values. These S6 targets are retained, but S4 uses smooth-underbody notchback/estate baselines with different target values; see [the reference audit](../research/wp9-reference-baselines.md) before interpreting its errors as validation of the current setup.
 - **Ahmed body** (25 and 35 degree slants): half body, symmetry, ground plate starting 2L ahead, inlet >= 3L, outlet ~5L, minimum cross-section 2L x 1.35L (full body), experiment blockage ~4%, stilts contribute >= 10% of drag and must be modelled, slant pressure drag is ~55% of total at 25 degrees vs ~35% at 35 degrees, drag crisis near 25-30 degrees, nearly all RANS miss the 25-degree wake transition and underpredict base-pressure drop; k-omega SST and low-Re variants predict separation, high-Re k-epsilon does not; hybrid DDES/SBES recommended for separated flow [S5]. Mesh minimums for a half body: 0.5M cells (wall functions) or 1.5M (y+ ~ 1); double for a full body [S5].
+
+### 3.11a Measured on this recipe (OpenFOAM v2606, 2026-10-31)
+Slant body, half model, 40 m/s, stationary ground, 3000 iterations, 16 ranks, averaged over the last 1000. Body 1044 x 389 x 288 mm, 50 mm clearance, four 30 mm stilts. **The stilt positions (x 202 and 672 mm, y +/-121.5 mm) are assumed:** no public source consulted gave them. Fixture implementation is in `crates/vernon-nodes-cfd/src/tests.rs`; actual result JSON/logs are local ignored files in `scratch/wp9-ahmed/`. No default unit test establishes physical acceptance.
+
+| Slant | Cells (M) | Cd | Cd scatter | Cl | Slant share | Stilt share | Body y+ mean | Slant y+ mean |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| 25 | 0.50 | 0.394 | 1.4% | 0.362 | 37.0% | 8.6% | 72 | 49 |
+| 25 | 0.99 | 0.371 | 1.8% | 0.332 | 40.4% | 8.5% | 57 | 36 |
+| 25 | 2.03 | 0.369 | 3.3% | 0.277 | 40.6% | 8.5% | 43 | 25 |
+| 35 | 0.50 | 0.486 | 2.5% | 0.450 | 53.5% | 7.1% | 72 | 50 |
+| 35 | 0.99 | 0.472 | 1.6% | 0.416 | 54.1% | 6.6% | 57 | 40 |
+| 35 | 2.03 | 0.314 | 0.9% | -0.003 | 34.0% | 10.0% | 44 | 13 |
+
+- **Not mesh independent, and no run met the convergence gate.** Residuals exceed the1e-5 target. At25 degrees the fine/medium change is0.6135%, inside3.3% iteration scatter; nominal refinement ratio1.3 gives observed order8.92, outside0.5..4. At35 degrees the change is49.99%. A small mean-only GCI cannot override those failures.
+- **The35-degree numerical result changes with the mesh.** Coarser results have higher drag and lift, while fine-grid lift is near zero. These numbers alone do not establish the wake mechanism or show that another refinement would preserve the fine-grid state.
+- **G25, finest grids:** Cd(25) > Cd(35) holds, on the finest pair only. Slant share 34.0% against 35% is inside +/-10 points. 40.6% against 55% is 14.4 points off and outside the band; this is recorded, as G25 asks, and not tightened or relaxed.
+- **Stilts** carry6.6-10.0% in these measured rows; five of six are below10%. Do not present this as reproducing a universal minimum, especially with assumed support positions.
+- **Drag level not explained.** There is no sourced absolute Ahmed drag gate here. Unverified remembered values are not references. The recorded body y+ is within30-300, while the slant drops below30 on the finest grids; these diagnostics do not establish acceptable wall treatment or convergence.
 
 ### 3.12 Site-density scaling (Dubai)
 - Moist air: `rho = p_d/(R_d T) + p_v/(R_v T)`, `R_d = 287.05, R_v = 461.5 J/(kg K)`, `p_v = RH p_sat(T)`, `p_sat = 610.94 exp(17.625 T_C/(T_C + 243.04))` Pa (Magnus form), `p_d = p - p_v`. Viscosity by Sutherland `mu = 1.458e-6 T^1.5/(T + 110.4)` Pa s.
@@ -235,7 +255,7 @@ Ports: Surf = tagged surface set, Mesh, Case = OpenFOAM case dir, Series = time-
 | G21 | surface_pressure | dp -91 and -103 Pa, 100 km/h, rho 1.11 | q 428.2 Pa; Cp -0.212 and -0.241 (puck check) | +/-0.001 |
 | G22 | frontal_area | sphere r 1 m; box 4.5 x 1.8 x 1.4 m | pi m2 (+/-0.5%); 2.52 m2 (exact) | as stated |
 | G23 | symmetry_check | body mirrored with 0.3 mm vs 5 mm shift | pass at tol 1 mm; fail for 5 mm | exact |
-| G24 | benchmark_check | DrivAer fastback detailed, estate, notchback (user-supplied geometry, U 30) | Cd within 5% of 0.275 / 0.319 / 0.277; ordering estate > notchback ~ fastback | 5% (dataset spans 2.2-4.9%) |
+| G24 | benchmark_check | all-detailed DrivAer fastback, estate, notchback (approved original components, U16; published replication) | Cd within 5% of 0.275 / 0.319 / 0.277; ordering estate > notchback ~ fastback | 5% (dataset spans 2.2-4.9%) |
 | G25 | benchmark_check | Ahmed 25 vs 35 degree | Cd(25) > Cd(35) experimentally; RANS should show slant pressure share 55% vs 35% +/-10 pts; assert and record the known under-prediction, do not tighten | soft |
 | G26 | ground_wheels (end-to-end A/B) | road-car geometry, moving+rotating vs static | dCd < 0, rear lift lower, front lift change small (directional) | sign only |
 | G27 | mesh_quality | recorded poor mesh (max non-orthogonality 78) | warn at 65, fail at 70, y+ outside 30-300 flagged | exact |
@@ -257,3 +277,30 @@ Cost/size notes for fixtures: a 12M-cell half DrivAer run is ~375 CPU-hours per 
 - S10 Ground/wheel simulation studies: https://web-test.research.chalmers.se/publication/196986 (saloon car moving ground + rotating wheels), https://research.chalmers.se/publication/513305 , https://saemobilus.sae.org/content/2018-01-0728 (wheel-rotation methods on DrivAer), https://saemobilus.sae.org/content/2008-01-0659 (racing-car contrast), https://flair.monash.edu/publications/pdfs/effect_of_moving_ground.pdf , https://flair.monash.edu/publications/pdfs/AvThShBu_jweia_2018.pdf (DrivAer estate vs fastback/notchback drag)
 - S11 Local toolchain report: `C:\Users\mabdu\REA\3D printed body kit toolchain.md`, which cites AirShaper pricing https://airshaper.com/pricing , SimScale Community https://www.simscale.com/?p=111634 , SimScale GPU LBM https://www.digitalengineering247.com/article/simscale-releases-a-gpu-based-lattice-boltzmann-solver/cfd , Chalmers https://research.chalmers.se/publication/513305 , pressure puck https://ecomodder.com/forum/639288-post1.html , coastdown https://cleanfleetreport.com/?p=33672 , lap sim https://www.optimumg.com/software/optimumlap/
 - Other pages seen in search results only (not relied on for numbers): https://arxiv.org/pdf/2603.27565 (OpenFOAM HPC challenge, steady SST, static wheels); https://doc.cfd.direct/openfoam/user-guide-v8 (user guide index).
+
+### Accepted replication input provenance (2026-11-03)
+
+The user selected the documented16m/s published replication in
+[the baseline decision](../research/wp9-reference-baselines.md). Generic speed
+continues to default to30m/s. The named reference uses rho1.184kg/m3,
+nu1.567e-5m2/s, full area2.16m2, length4.6m, moving ground and wheels rotating
+at-51rad/s about+Y with dynamic radius16/51m. This does not independently
+authenticate the original2012 experiment. No fitted drag correction is allowed.
+
+Reference qualification recognizes prepared STL content against the captured
+three-case registry. It also checks the actual domain and right-wheel layout,
+the current builder input stamp and measured mesh, and a versioned structured
+meshing recipe. The recipe reconstructs complete meshing, quality and feature
+extraction dictionaries, including all three required surfaces and five requested
+prism layers. A legacy record or a modified dictionary cannot qualify.
+
+Owned case records distinguish prepared inputs from completed solves. The
+solver captures an expected input hash before external programs and withholds
+reference proof if physical inputs change. The force consumer rechecks typed
+profile evidence against current normalization and recipe; a scope label alone
+is insufficient. These checks establish input consistency, not physical accuracy.
+All existing cell, convergence, coefficient and three-grid gates remain required.
+Very small absolute first-layer heights may be rejected after a floating-point
+JSON roundtrip; this fails closed and does not affect the verified relative-layer
+recipe. Actual three-car preparation is checked without creating a volume mesh
+or launching any CFD program. Physical reference runs remain outstanding.

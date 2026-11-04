@@ -153,6 +153,10 @@ pub mod keys {
     pub const CDA_ALIASES: [&str; 3] = [CDA, "cda_m2", "cda"];
     /// Where a lift area may be found: reports, vehicle tables, force results.
     pub const CLA_ALIASES: [&str; 3] = [CLA, "cla_m2", "cla"];
+    /// Explicit iteration-readiness status carried by an airflow force report.
+    /// Absence is a legacy diagnostic; this does not establish benchmark validity.
+    pub const CFD_ITERATION_QUALIFIED: &str = "iteration_qualified";
+    pub const CFD_ITERATION_QUALIFIED_ALIASES: [&str; 1] = [CFD_ITERATION_QUALIFIED];
 }
 
 #[cfg(test)]

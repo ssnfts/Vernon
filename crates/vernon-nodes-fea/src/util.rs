@@ -47,7 +47,10 @@ pub mod testing {
     use vernon_graph::{CookContext, NodeOp, Params};
 
     pub fn ctx(tag: &str) -> CookContext {
-        let d = std::env::temp_dir().join(format!("vernon_fea_{tag}_{}", std::process::id()));
+        // one work dir per call: parallel tests cooking the same node must not share result files
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let d = std::env::temp_dir().join(format!("vernon_fea_{tag}_{}_{n}", std::process::id()));
         CookContext { node_name: tag.into(), work_dir: d, frame: 0.0 }
     }
 

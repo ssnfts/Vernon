@@ -665,6 +665,101 @@ fn vehicle_node_refuses_a_placeholder_aero_result() {
     let ok = serde_json::json!({"placeholder": false, "cda": 0.64, "cla": -0.9});
     let out = cook("perf.vehicle", vec![Some(Data::json(ok))], &[]).unwrap();
     close(Vehicle::from_json(out[0].as_json().unwrap()).unwrap().cda_m2, 0.64, 1e-12, "CdA");
+    assert!(out[1].as_report().unwrap().passes());
+    // A result with zero drag area is a run without data, whatever its flag says.
+    let zero = serde_json::json!({"placeholder": false, "cda": 0.0, "cla": 0.0});
+    let err = cook("perf.vehicle", vec![Some(Data::json(zero))], &[]).unwrap_err().to_string();
+    assert!(err.contains("placeholder"), "{err}");
+}
+
+#[test]
+fn vehicle_override_uses_the_manual_aero_and_fails_a_visible_gate() {
+    let ph = serde_json::json!({"placeholder": true, "cda": 0.0, "cla": 0.0});
+    let out = cook(
+        "perf.vehicle",
+        vec![Some(Data::json(ph))],
+        &[("allow_missing_aero", ParamValue::Bool(true)), ("cda_m2", ParamValue::Float(0.7)), ("cla_m2", ParamValue::Float(0.2))],
+    )
+    .unwrap();
+    let v = Vehicle::from_json(out[0].as_json().unwrap()).unwrap();
+    close(v.cda_m2, 0.7, 1e-12, "CdA");
+    close(v.cla_m2, 0.2, 1e-12, "downforce area");
+    let r = out[1].as_report().unwrap();
+    assert_eq!(r.metrics["aero_from_solver"].value, 0.0);
+    assert!(!r.passes(), "the substitution must stay visible: {r:?}");
+    // With real data the override changes nothing: the result wins and the gate passes.
+    let ok = serde_json::json!({"placeholder": false, "cda": 0.64, "cla": -0.9});
+    let out = cook("perf.vehicle", vec![Some(Data::json(ok))], &[("allow_missing_aero", ParamValue::Bool(true))]).unwrap();
+    close(Vehicle::from_json(out[0].as_json().unwrap()).unwrap().cda_m2, 0.64, 1e-12, "CdA");
+    assert!(out[1].as_report().unwrap().passes());
+}
+
+#[test]
+fn vehicle_rejects_explicitly_failed_aero_checks() {
+    let rejected = serde_json::json!({"placeholder":false,"mesh_accepted":false,"cda":0.64,"cla":-0.9});
+    assert!(cook("perf.vehicle", vec![Some(Data::json(rejected.clone()))], &[]).is_err(), "failed mesh evidence was used as solver aero");
+    let fallback = cook("perf.vehicle", vec![Some(Data::json(rejected))], &[("allow_missing_aero", ParamValue::Bool(true)), ("cda_m2",ParamValue::Float(0.7))]).unwrap();
+    let vehicle = Vehicle::from_json(fallback[0].as_json().unwrap()).unwrap();
+    close(vehicle.cda_m2,0.7,1e-12,"explicit override uses manual aero");
+    assert_eq!(fallback[1].as_report().unwrap().metrics["aero_from_solver"].value,0.0);
+    assert!(!fallback[1].as_report().unwrap().passes());
+
+    let mut failed = Report::new("failed airflow run");
+    failed.metric("data_available",Metric::new(1.0,"-"))
+        .metric("CdA",Metric::new(0.64,"m2"))
+        .metric("ClA",Metric::new(-0.9,"m2"));
+    failed.note(vernon_core::Severity::Error,"the run failed its quality checks");
+    assert!(cook("perf.vehicle",vec![Some(Data::report(failed))],&[]).is_err(),"a failed report overrode vehicle aero");
+}
+
+#[test]
+fn vehicle_rejects_nonfinite_data_availability() {
+    let mut failed=Report::new("invalid availability");
+    failed.metric("data_available",Metric::new(f64::NAN,"-"))
+        .metric("CdA",Metric::new(0.64,"m2"))
+        .metric("ClA",Metric::new(-0.9,"m2"));
+    assert!(cook("perf.vehicle",vec![Some(Data::report(failed))],&[]).is_err(),"NaN availability was treated as measured aero");
+}
+
+#[test]
+fn vehicle_rejects_explicit_failed_iteration_qualification_in_json() {
+    let ready = serde_json::json!({"version":1,"convergence":{
+        "converged":true,"enough_iterations":true,"residuals_checked":true,"residuals_ok":true
+    }});
+    for field in ["converged","enough_iterations","residuals_checked","residuals_ok"] {
+        let mut qualification=ready.clone();
+        qualification["convergence"][field]=serde_json::json!(false);
+        let data=serde_json::json!({"placeholder":false,"cda":0.64,"cla":-0.9,"qualification":qualification});
+        assert!(cook("perf.vehicle",vec![Some(Data::json(data.clone()))],&[]).is_err(),"failed {field} evidence reached vehicle aero");
+        let fallback=cook("perf.vehicle",vec![Some(Data::json(data))],&[("allow_missing_aero",ParamValue::Bool(true)),("cda_m2",ParamValue::Float(0.7))]).unwrap();
+        close(Vehicle::from_json(fallback[0].as_json().unwrap()).unwrap().cda_m2,0.7,1e-12,"failed evidence uses explicit manual override");
+        assert_eq!(fallback[1].as_report().unwrap().metrics["aero_from_solver"].value,0.0);
+        assert!(!fallback[1].as_report().unwrap().passes());
+    }
+    for invalid in [serde_json::json!({}),serde_json::json!({"version":2,"convergence":{"converged":true}}),serde_json::json!(false)] {
+        let data=serde_json::json!({"placeholder":false,"cda":0.64,"cla":-0.9,"qualification":invalid});
+        assert!(cook("perf.vehicle",vec![Some(Data::json(data))],&[]).is_err(),"malformed or unknown explicit qualification was accepted");
+    }
+    for qualification in [serde_json::Value::Null,ready] {
+        let data=serde_json::json!({"placeholder":false,"cda":0.64,"cla":-0.9,"qualification":qualification});
+        assert!(cook("perf.vehicle",vec![Some(Data::json(data))],&[]).is_ok(),"legacy absence or passing explicit status remains readable");
+    }
+}
+
+#[test]
+fn vehicle_rejects_explicit_failed_iteration_qualification_in_report() {
+    for value in [0.0,2.0,f64::NAN,f64::INFINITY] {
+        let mut report=Report::new("explicit airflow iteration status");
+        report.metric("data_available",Metric::new(1.0,"-"))
+            .metric("CdA",Metric::new(0.64,"m2"))
+            .metric("ClA",Metric::new(-0.9,"m2"))
+            .metric(vernon_core::keys::CFD_ITERATION_QUALIFIED,Metric::new(value,"-"));
+        assert!(cook("perf.vehicle",vec![Some(Data::report(report))],&[]).is_err(),"invalid ungated readiness flag {value} was accepted");
+    }
+    let mut ready=Report::new("ready airflow diagnostic");
+    ready.metric("CdA",Metric::new(0.64,"m2")).metric("ClA",Metric::new(-0.9,"m2"))
+        .metric(vernon_core::keys::CFD_ITERATION_QUALIFIED,Metric::new(1.0,"-"));
+    assert!(cook("perf.vehicle",vec![Some(Data::report(ready))],&[]).is_ok());
 }
 
 #[test]

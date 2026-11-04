@@ -122,7 +122,7 @@ pub(crate) fn gw_info() -> NodeTypeInfo {
 
 pub(crate) fn gw_cook(ctx: &CookContext, ins: &[Option<Data>], p: &Params) -> CookResult<Vec<Data>> {
     let (rf, _) = ref_in(ins, 1)?;
-    let _domain = domain_in(ins, 0, &rf)?;
+    let domain = domain_in(ins, 0, &rf)?;
     let air = air_in(ins, 2)?;
     let u = air.u.unwrap_or(p.float("u_ms")?);
     let axis = p.vec3("axis")?;
@@ -133,11 +133,19 @@ pub(crate) fn gw_cook(ctx: &CookContext, ins: &[Option<Data>], p: &Params) -> Co
     let omega = wheel_omega(u, r_dyn, axis).ok_or_else(|| ctx.fail("wheel axis must be along y and the rolling radius positive"))?;
     let ground = p.str("ground_mode")?.to_string();
     let wheel = p.str("wheel_mode")?.to_string();
-    let wheels: Vec<WheelBc> = if rf.wheel_centres_m.is_empty() {
-        vec![]
-    } else {
-        rf.wheel_centres_m.iter().map(|(n, c)| WheelBc { name: n.clone(), centre_m: *c }).collect()
-    };
+    let mut wheels: Vec<WheelBc> = rf.patches.iter().filter(|name| name.starts_with("wheel")).map(|name| {
+        let centre_m = rf.wheel_centres_m.get(name).copied()
+            .ok_or_else(|| ctx.fail(format!("wheel patch '{name}' has no measured centre in the vehicle reference")))?;
+        if !centre_m.iter().all(|value| value.is_finite()) {
+            return Err(ctx.fail(format!("wheel patch '{name}' has a non-finite measured centre")));
+        }
+        Ok(WheelBc { name: name.clone(), centre_m })
+    }).collect::<CookResult<_>>()?;
+    if domain.half_model {
+        // Preparation retains full geometry metadata; mesh setup clips the
+        // positive-y half. Validate centres before selecting that same half.
+        wheels.retain(|wheel| wheel.centre_m[1] >= 0.0);
+    }
     let belt = if p.bool("belt_start")? { Some(rf.nose_x_m + p.float("belt_start_l")? * rf.length_m) } else { None };
     let bc = BcSet {
         ground_mode: ground.clone(),
@@ -587,11 +595,100 @@ mod tests {
     fn ground_wheels_flags_unrepresentative() {
         let out = run(gw_info, gw_cook, &[], &[("u_ms", ParamValue::Float(16.0)), ("r_dyn_mm", ParamValue::Float(313.7))]);
         let bc = BcSet::from_json(out[0].as_json().unwrap()).unwrap();
-        assert_eq!(bc.wheels.len(), 4);
+        assert_eq!(bc.wheels.len(), 2, "the default domain is the positive-y half model");
         assert!((out[1].as_report().unwrap().metrics["omega_rad_s"].value - 51.0).abs() < 0.1);
         assert!(out[1].as_report().unwrap().passes());
         let out = run(gw_info, gw_cook, &[], &[("ground_mode", ParamValue::Str("stationary".into()))]);
         assert!(!out[1].as_report().unwrap().passes());
+    }
+
+    #[test]
+    fn wp9_ground_wheels_half_patch_inventory_excludes_retained_left_centres() {
+        let mut reference = RefGeom::reference_car();
+        reference.half_model = true;
+        reference.patches = vec!["body".into(), "wheel_fr".into(), "wheel_rr".into()];
+        assert_eq!(reference.wheel_centres_m.len(), 4, "preparation retains measured metadata for both sides");
+        let out = run(gw_info, gw_cook, &[None, Some(Data::json(reference.to_json()))], &[]);
+        let boundary = BcSet::from_json(out[0].as_json().unwrap()).unwrap();
+        let names: Vec<_> = boundary.wheels.iter().map(|wheel| wheel.name.as_str()).collect();
+        assert_eq!(names, ["wheel_fr", "wheel_rr"], "boundary records must represent actual prepared patches");
+        for wheel in boundary.wheels {
+            assert_eq!(wheel.centre_m, reference.wheel_centres_m[&wheel.name]);
+        }
+    }
+
+    #[test]
+    fn wp9_ground_wheels_full_patch_inventory_retains_all_four_wheels() {
+        let mut reference = RefGeom::reference_car();
+        reference.half_model = false;
+        let out = run(gw_info, gw_cook, &[None, Some(Data::json(reference.to_json()))], &[]);
+        let boundary = BcSet::from_json(out[0].as_json().unwrap()).unwrap();
+        let names: Vec<_> = boundary.wheels.iter().map(|wheel| wheel.name.as_str()).collect();
+        assert_eq!(names, ["wheel_fl", "wheel_fr", "wheel_rl", "wheel_rr"]);
+    }
+
+    #[test]
+    fn wp9_ground_wheels_actual_domain_selects_half_from_full_preparation_metadata() {
+        for reference_half in [true, false] {
+            for domain_half in [true, false] {
+                let mut reference = RefGeom::reference_car();
+                reference.half_model = reference_half;
+                assert_eq!((reference.patches.len(), reference.wheel_centres_m.len()), (5, 4));
+                let domain = size_domain(&reference, 1.0, 3.0, 6.0, 5.0 / 3.0, domain_half, 0.0);
+                let out = run(gw_info, gw_cook, &[Some(Data::json(domain.to_json())), Some(Data::json(reference.to_json()))], &[]);
+                let boundary = BcSet::from_json(out[0].as_json().unwrap()).unwrap();
+                let names: Vec<_> = boundary.wheels.iter().map(|wheel| wheel.name.as_str()).collect();
+                if domain_half {
+                    assert_eq!(names, ["wheel_fr", "wheel_rr"], "domain half overrides reference_half={reference_half}");
+                    assert!(boundary.wheels.iter().all(|wheel| wheel.centre_m[1] >= 0.0));
+                } else {
+                    assert_eq!(names, ["wheel_fl", "wheel_fr", "wheel_rl", "wheel_rr"], "explicit full domain overrides reference_half={reference_half}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn wp9_ground_wheels_half_selection_does_not_hide_a_missing_patch_centre() {
+        let mut reference = RefGeom::reference_car();
+        reference.wheel_centres_m.shift_remove("wheel_fl");
+        let domain = size_domain(&reference, 1.0, 3.0, 6.0, 5.0 / 3.0, true, 0.0);
+        let error = gw_cook(&ctx("half-missing-left-centre"), &[Some(Data::json(domain.to_json())), Some(Data::json(reference.to_json()))], &Params::from_specs(&gw_info().params))
+            .expect_err("validate the actual patch metadata before geometric half selection");
+        assert!(error.to_string().contains("wheel_fl"));
+    }
+
+    #[test]
+    fn wp9_ground_wheels_reordered_right_patches_keep_centres_bound_to_names() {
+        let mut reference = RefGeom::reference_car();
+        reference.patches = vec!["wheel_rr".into(), "body".into(), "wheel_fr".into()];
+        let out = run(gw_info, gw_cook, &[None, Some(Data::json(reference.to_json()))], &[]);
+        let boundary = BcSet::from_json(out[0].as_json().unwrap()).unwrap();
+        assert_eq!(boundary.wheels.len(), 2);
+        for name in ["wheel_fr", "wheel_rr"] {
+            let wheel = boundary.wheels.iter().find(|wheel| wheel.name == name).unwrap();
+            assert_eq!(wheel.centre_m, reference.wheel_centres_m[name]);
+        }
+    }
+
+    #[test]
+    fn wp9_ground_wheels_body_only_patch_inventory_does_not_invent_wheels() {
+        let mut reference = RefGeom::reference_car();
+        reference.patches = vec!["body".into(), "body_wing".into()];
+        let out = run(gw_info, gw_cook, &[None, Some(Data::json(reference.to_json()))], &[]);
+        assert!(BcSet::from_json(out[0].as_json().unwrap()).unwrap().wheels.is_empty());
+    }
+
+    #[test]
+    fn wp9_ground_wheels_present_wheel_patch_requires_a_measured_centre() {
+        for missing in ["wheel_fr", "wheel_unknown"] {
+            let mut reference = RefGeom::reference_car();
+            reference.patches = vec!["body".into(), missing.into()];
+            reference.wheel_centres_m.shift_remove(missing);
+            let error = gw_cook(&ctx("ground-missing-centre"), &[None, Some(Data::json(reference.to_json()))], &Params::from_specs(&gw_info().params))
+                .expect_err("an actual wheel patch cannot silently lose its boundary or receive an invented origin");
+            assert!(error.to_string().contains(missing), "missing-centre diagnostic: {error}");
+        }
     }
 
     #[test]

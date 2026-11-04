@@ -8,6 +8,18 @@ definition-of-done check from `AGENTS.md`.
 
 ## Progress — 2026-10-30 (WP8)
 
+Current continuation checkpoint2026-11-03:WP9 is still incomplete. The
+accepted16m/s published-replication geometry/physics/mesh-recipe binding and
+case-to-solve provenance pass the complete integrated workspace queue:
+1540 tests/0failures/35ignored, clean build/Clippy, demo40nodes with0unexpected
+and5expected gates, matching197-node catalogue(194implemented/3whitebox),
+and bounded GPU app startup. Three actual geometry preparations also pass
+content/protocol/recipe checks without launching CFD. Automotive cell,
+convergence, coefficient and three-grid acceptance remain outstanding.
+No WP9 completion commit/publication. See docs/CONTINUATION.md for fingerprints,
+logs and the next guarded mesh-sizing task. Do not replay or relabel old30m/s
+runs or promote input/runtime consistency to physical validation.
+
 WP1–WP8 are implemented under their measured contracts. WP9 (real CFD) is
 next and requires a separate installation decision. Registry:197 nodes,
 190 implemented/7 white-box; Capture 22 implemented/0 white-box. Full bounded

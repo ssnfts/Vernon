@@ -311,6 +311,7 @@ fn vehicle_info() -> NodeTypeInfo {
         .param(ParamSpec::float("v_cap_ms", "Speed cap", d.v_cap_ms, 10.0, 150.0).unit("m/s").help("Top-speed cap for straights"))
         .param(ParamSpec::float("aero_balance_front", "Front aero balance", d.aero_balance_front, 0.0, 1.0).help("Stored for reports only: the point-mass model ignores balance"))
         .param(ParamSpec::bool("lift_positive", "Aero input is lift-positive", true).help("The airflow stage reports ClA negative for downforce; on flips the sign of a connected aero result"))
+        .param(ParamSpec::bool("allow_missing_aero", "Use manual aero if the result has no data", false).help("Off, a connected aero result without solver data is an error. On, the manual CdA and ClA stand in and the report's aero_from_solver gate fails, so the substitution stays visible."))
         .help("Collects the car's mass, power, tyres, rolling resistance and aero numbers into one vehicle description. A connected aero result (CdA, ClA) overrides the manual aero values.")
         .emulates("vehicle definition (mass, power, tyres, aero) of a point-mass lap simulator")
 }
@@ -326,12 +327,33 @@ fn aero_from(d: &Data) -> Result<(f64, f64), String> {
             if v.get("placeholder").and_then(|x| x.as_bool()) == Some(true) {
                 return Err(NO_DATA.into());
             }
+            if v.get("mesh_accepted").is_some_and(|x| x.as_bool() != Some(true)) {
+                return Err("the aero input has not passed its mesh-convergence checks".into());
+            }
+            if let Some(qualification) = v.get("qualification").filter(|q| !q.is_null()) {
+                let convergence = &qualification["convergence"];
+                if qualification.get("version").and_then(|v| v.as_u64()) != Some(1)
+                    || ["converged", "enough_iterations", "residuals_checked", "residuals_ok"].iter()
+                        .any(|field| convergence.get(*field).and_then(|v| v.as_bool()) != Some(true)) {
+                    return Err("the aero input has not passed its recorded iteration-convergence checks".into());
+                }
+            }
             let g = |names: &[&str]| names.iter().find_map(|k| v.get(*k).and_then(|x| x.as_f64()));
             (g(&vernon_core::keys::CDA_ALIASES), g(&vernon_core::keys::CLA_ALIASES))
         }
         Data::Report(r) => {
-            if r.metrics.get("data_available").is_some_and(|m| m.value < 0.5) {
+            if r.metrics.get("data_available").is_some_and(|m| !m.value.is_finite() || m.value < 0.5) {
                 return Err(NO_DATA.into());
+            }
+            if r.metrics.get("mesh_accepted").is_some_and(|m| !m.value.is_finite() || m.value < 1.0) {
+                return Err("the aero input has not passed its mesh-convergence checks".into());
+            }
+            if r.first_metric(&vernon_core::keys::CFD_ITERATION_QUALIFIED_ALIASES)
+                .is_some_and(|(_, value)| !value.is_finite() || value != 1.0) {
+                return Err("the aero input has not passed its recorded iteration-convergence checks".into());
+            }
+            if !r.passes() {
+                return Err("the aero input failed its report checks".into());
             }
             let g = |names: &[&'static str]| r.first_metric(names).map(|(_, v)| v);
             (g(&vernon_core::keys::CDA_ALIASES), g(&vernon_core::keys::CLA_ALIASES))
@@ -339,6 +361,8 @@ fn aero_from(d: &Data) -> Result<(f64, f64), String> {
         _ => (None, None),
     };
     match (cda, cla) {
+        // Zero or negative drag area is what a run without data looks like.
+        (Some(cda), Some(_)) if cda <= 0.0 => Err(NO_DATA.into()),
         (Some(cda), Some(cla)) if cda.is_finite() && cla.is_finite() => Ok((cda, cla)),
         _ => Err(NO_VALUES.into()),
     }
@@ -373,10 +397,19 @@ fn vehicle_cook(ctx: &CookContext, inputs: &[Option<Data>], p: &Params) -> CookR
     };
     let mut rep = Report::new("Vehicle");
     if let Some(d) = inputs.first().and_then(|d| d.as_ref()) {
-        let (cda, cla) = aero_from(d).map_err(|e| ctx.fail(e))?;
-        v.cda_m2 = cda;
-        v.cla_m2 = if p.bool("lift_positive")? { -cla } else { cla };
-        rep.note(Severity::Info, format!("aero taken from the connected result: CdA {:.4} m2, downforce area {:.4} m2", v.cda_m2, v.cla_m2));
+        match aero_from(d) {
+            Ok((cda, cla)) => {
+                v.cda_m2 = cda;
+                v.cla_m2 = if p.bool("lift_positive")? { -cla } else { cla };
+                rep.note(Severity::Info, format!("aero taken from the connected result: CdA {:.4} m2, downforce area {:.4} m2", v.cda_m2, v.cla_m2));
+                rep.metric("aero_from_solver", Metric::new(1.0, "-").with_limit(1.0, false));
+            }
+            Err(e) if p.bool("allow_missing_aero")? => {
+                rep.note(Severity::Warning, format!("{e}; the manual CdA and ClA are used instead"));
+                rep.metric("aero_from_solver", Metric::new(0.0, "-").with_limit(1.0, false));
+            }
+            Err(e) => return Err(ctx.fail(e)),
+        }
     }
     v.validate().or_fail(ctx)?;
     rep.metric("mass", Metric::new(v.mass_kg, "kg"))

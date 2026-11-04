@@ -2,12 +2,504 @@
 
 Read AGENTS.md, CLEAN_ROOM.md and docs/HANDOFF.md before editing code.
 This is the current recovery entry point for scheduled/manual continuation.
+Sections are newest first. Older sections use the original machine's paths
+(C:\Users\mabdu\REA\...) and the old flat scripts/ layout, and are kept as
+evidence. For current commands use docs/SETUP.md and docs/CFD-RUNBOOK.md.
 
-## Latest verified checkpoint — 2026-10-30, WP8
+## Repository organised for a second PC, 2026-11-04
+
+The user asked to connect https://github.com/ssnfts/Vernon.git, organise the
+files, document every step in the README and prepare Stages 0–3 for another PC.
+- Scripts moved: scripts/setup/ (setup-wp9-{wsl,ubuntu,openfoam}, new
+  setup-dev.ps1 and prepare-drivaer-data.ps1), scripts/verification/
+  (verification, start-verification, verification-status, test-verification,
+  replication-inputs + test), scripts/cfd/ (wp9-replication-sizing-env.sh,
+  sizing policy/environment/cleanup tests, wp9-sizing-cleanup.ps1,
+  wp9-cfd-smoke.sh). dev-env.ps1, third-party-licenses.ps1 and golden/ stay.
+- Machine paths removed from code and scripts. The runner derives the sizing
+  environment's WSL path from the checkout (Get-VerificationWp9SizingEnvironmentFile).
+  Setup tools live in `<checkout parent>\tools\wsl`, which on this PC is still
+  C:\Users\mabdu\REA\tools\wsl. The `mabdu`-only account guards are gone;
+  the unelevated checks stay. Ubuntu setup accepts WSL >= 3.0.3. OpenFOAM
+  install now also creates the locked-password `vernon` user.
+- New docs: docs/SETUP.md, docs/CFD-RUNBOOK.md, docs/README.md (index).
+  README rewritten with a step-by-step section. AGENTS.md is portable.
+- This PC: the REA folder now physically lives on E:\REA, and
+  C:\Users\mabdu\REA\* are junctions (created 2026-11-04 04:20, after the
+  sizing runs). The input-lease and cleanup checks refuse junction paths, so
+  run everything from E:\REA\vernon. VERNON_WSL_ENV_FILE is then
+  /mnt/e/REA/vernon/scripts/cfd/wp9-replication-sizing-env.sh.
+- Checks from E:\REA\vernon after the move: runner library PASS; sizing cleanup
+  55 checks PASS; replication-inputs PASS; WSL policy 27/0; live environment
+  24/0/0 blocked; smoke classifier 8; OpenFOAM setup script bash -n OK;
+  setup path resolution OK; prepare-drivaer-data verified all 8 parts (fresh
+  extraction tested in a throwaway folder); setup-dev reports ready.
+
+## Next — solver-run plan proposed, 2026-11-04
+
+The user asked for a plan for the first 12M-cell solver run. Plan:
+docs/superpowers/plans/2026-11-04-wp9-solver-run.md. Status: proposed, nothing
+started, no source changed for it.
+Key points: the harness uses one np for mesh and solve (16-rank meshing won't fit).
+The 30 h solve timeout is about equal to the ~28 h estimate for 7000 iterations at
+16 ranks. There is no solver environment or solve profile yet. Stage 0 is code
+only; Stage 1 is a ~2 h diagnostic pilot (200 iterations) before any 30 h+ run.
+Awaiting the user's go-ahead for Stage 0.
+
+## Latest result — first PASSING 12M+ sizing row, 2026-11-04
+
+`wp9-replication-serial-sizing-22gib-20261104-a`: status completed, exit 0, step
+wp9-sizing passed. Profile output check and row readback accepted. sourceBefore =
+sourceAfter = 2593d85e…a2fc, 21:25:08 -> 22:09:40 UTC. Marker
+`WP9_REPLICATION_MESH_ONLY_COMPLETE rear=Fastback cells=12056197.0 solver_runs=0`.
+Fastback, dx0 0.32, np1, 14M cap, 5 layers: 12,056,197 cells, identical to the
+previous run (deterministic). Max non-ortho 64.996, skewness 3.452, 0 failed checks,
+layers 97.33%, quality pass. snappy "Finished meshing without any errors" in
+2488.4 s, Memory per-node 20719872 (about 20.7GB). solver_ran=false,
+physical_validation=false. linuxCleanup success with attempted 0: no leftover
+control records. The snappy log has VERNON_WSL_GROUP_EMPTY for its group.
+
+What this does and doesn't establish: the one-grid mesh-only sizing gate for the
+fine grid fits on this host with the 26GB WSL / 22GiB cap. It is not a solver
+result, convergence, a coefficient comparison or the three-grid study. Those are
+the next WP9 steps, and the solver at 12M cells needs its own memory and time
+budget check before launch. WP9 remains incomplete and uncommitted; no push.
+
+## Earlier — readback fixed, fresh 22GiB sizing launched, 2026-11-04
+
+The user said "Yes, fix and rerun". Done (Claude session):
+- Workspace Cargo.toml: `serde_json = { version = "1", features = ["float_roundtrip"] }`.
+  No new crates. The pre-existing Cargo.lock diff is the earlier vernon-io line.
+  New test tests::saved_json_rows_read_back_bit_exact (vernon-nodes-cfd) failed RED
+  with the exact sizing values (scratch/wp9-json-roundtrip-red-20261104-a.log),
+  then passed GREEN (…-green-…). The case.rs reference_json_equivalent tolerance is kept.
+- Full queue wp9-float-roundtrip-full-20261104-a FAILED in tests: vernon-nodes-fea
+  full_chain_on_the_reference_solver_gates_by_element_order read
+  "DISP has no value for node 2126". Cause: a test race that was already there. The test helper
+  util::testing::ctx gave every cook of the same node one shared work dir per
+  process, so parallel tests overwrote each other's solver results. The test passed
+  alone with and without float_roundtrip. Fixed (test-only) with a per-call counter
+  in the dir name. FEA lib then passed 128/0/9 three times. The race was never
+  reproduced on demand.
+- Full queue wp9-float-roundtrip-full-20261104-b PASSED all five steps: build,
+  1543 passed/0 failed/35 ignored, clippy, demo (5 expected/0 unexpected),
+  catalogue. Source 2593d85e0190109e904418883ce59a3a0d5d5659c50202fc3b33bdd8b6fea2fc.
+  App startup was not rechecked; no app or node metadata changed.
+- CURRENT WORKER: `wp9-replication-serial-sizing-22gib-20261104-a`, profile
+  wp9-sizing-serial, worker PID 556572, 21600s bound, launched from the Claude
+  desktop shell. DO NOT LAUNCH ANOTHER COPY. Expect about 45 min. Check
+  verification-status, the snappy log, replication-sizing.json, the
+  WP9_REPLICATION_MESH_ONLY_COMPLETE marker and linuxCleanup. Same acceptance rules
+  as below.
+
+## Previous result — 22GiB serial mesh BUILT 12.06M cells; harness readback failed, 2026-11-04
+
+`wp9-replication-serial-sizing-22gib-20261103-a` finished 18:05:30 UTC with status
+failed, exit 101. sourceBefore = sourceAfter = 6b117a12... No worker is active.
+The mesh itself completed: snappyHexMesh says "Finished meshing without any errors"
+in 2481.9 s. Memory per-node was 20720304 (about 20.7GB, so the old 15.5GiB VM
+could never fit it). The test's own measurements: cells 12,056,197 (at or above the
+12M half-model floor, under the 14M cap), max non-ortho 64.996, max skewness 3.452,
+0 failed checks, layers 97.33%, mesh_quality_passes=true. Mesh-only, solver_ran=false.
+The run summary row was written to replication-sizing.json in the run dir. The
+runner's linuxCleanup is success with attempted 0. The snappy log ends with
+VERNON_WSL_GROUP_EMPTY for its group.
+
+Why it failed: tests.rs:945 `assert_eq!(saved, row)` after writing and re-reading
+the JSON. serde_json (workspace `serde_json = "1"`, no `float_roundtrip` feature)
+re-parses some f64 values one ulp off: domain.min_m[0] -13.799999999999999 -> -13.8,
+first_layer_yplus_estimate ...291 -> ...293. That is a harness readback defect, not
+a mesh failure. It is likely the same root cause as the earlier note about tiny
+absolute layer heights failing qualification after a JSON roundtrip. The run stays
+recorded as failed; don't relabel it. Its mesh is diagnostic evidence only until
+a passing run produces an accepted row.
+
+Next (needs the user's go-ahead): enable serde_json `float_roundtrip` in the
+workspace Cargo.toml (or otherwise make the readback exact). Add a RED regression
+for the 1-ulp case. Rerun focused tests, then the full queue. Then one fresh
+22GiB serial sizing run (about 45 min) with a new run id. Then the 3-grid
+study and solver work.
+
+## Earlier — 22GiB serial sizing launched, 2026-11-03 21:22 (Dubai)
+
+The user approved raising WSL memory ("Yes, raise WSL memory"); this resolves the
+decision below. Done (Claude session):
+- Created C:/Users/mabdu/.wslconfig with `[wsl2] memory=26GB` (there was no file
+  before; delete it to revert). Ran `wsl --shutdown` with no distro running. WSL
+  now reports MemTotal 26670292 kB, MemAvailable about 25.7M kB, swap 7340032 kB, 32 CPUs.
+  The host is 31.81GiB and Windows apps were using about 17GiB, so heavy WSL use
+  will page Windows. Close large apps during runs.
+- scripts/wp9-replication-sizing-env.sh: serial cap 12582912 -> 23068672 KiB
+  (22GiB), MPI rank cap 6291456 -> 11534336 (11GiB), MemAvailable floor
+  13631488 -> 24117248 (23GiB). Probe scripts test-wp9-sizing-{policy,environment}.sh
+  were updated first. Policy RED was observed (16 passed/11 failed), then GREEN
+  27/0. The live environment probe passed 24/0/0 blocked. Logs:
+  scratch/wp9-sizing-{policy,integration}-22gib-20261103-a.log. Pre-edit copies
+  are in the Claude scratchpad. test-verification.ps1 -LibraryChecksOnly PASS.
+  No Rust, PowerShell, recipe, cell cap or gate changed. ram_gb 15.52 in
+  tests.rs/verification.ps1 was left as is: it's a conservative warning input
+  only, and changing it would change the fixed protocol.
+  The full queue was not rerun, because no file it exercises changed.
+- CURRENT WORKER: `wp9-replication-serial-sizing-22gib-20261103-a`, profile
+  wp9-sizing-serial, worker PID 339740 (child pwsh 345664 -> cargo), 21600s bound,
+  sourceBefore 6b117a12bad792790152151bec34e85180bfd7780d38de7c6a055231f63a67e8.
+  It was launched from the Claude desktop app's shell. An app update or quit may
+  kill it, as the Codex update killed the previous worker. The machine must stay
+  awake (no keep-awake hold covers 6h). DO NOT LAUNCH ANOTHER COPY or edit its
+  inputs. Next: verification-status.ps1, then that run's snappyHexMesh.log and
+  final status. Same rules as below: exit status + actual mesh logs + row readback
+  + positive linuxCleanup receipt. Below 12M is diagnostic only. If the worker
+  disappears, run Stop-Wp9SizingLinuxGroups on its run dir first.
+
+## Previous state — serial sizing FAILED, memory decision pending, 2026-11-03 21:25 (Dubai)
+
+Supersedes "CURRENT WORKER" below. Serial trial `wp9-replication-serial-sizing-20261103-a`
+(np1, 12GiB per-process cap) FAILED meshing: snappyHexMesh.log ends at shell
+refinement iteration5 with "new cannot satisfy memory request" after reaching
+11,277,125 cells (iteration4). Log last written 21:14:58. Serial got only about 0.4M
+cells further than np2 (10,894,785 at iteration4). Surface snapping and the 5 layers
+had not started. No solver ran. No checkMesh, row or certified mesh.
+The worker then died without a completion record. verification-status shows
+`interrupted`, workerAlive/childAlive false, lock available, stdout/stderr 0 bytes,
+no exit record in .wsl-control. Probable cause: Windows Update installed an
+OpenAI.Codex app update and restarted CodexSandboxService at 21:15:17-21:15:20
+(System/Application event logs), which took down the Codex-launched worker. The WSL
+VM then idled down at 21:16:33. snappy's own exit code was never recorded.
+Linux cleanup was positively confirmed after the fact: Stop-Wp9SizingLinuxGroups
+attempted 1, receipt `VERNON_WSL_GROUP_STOPPED vernon-cfd-wsl-328120-5b88d00-2`,
+saved as linux-cleanup-receipt.json in the run dir. All logs are retained; never
+relabel this run.
+
+Assessment: both trials fail during refinement, before snapping and layers, which
+usually need more memory. Removing MPI overhead gave about 3.5% more cells. The
+earlier 3.76M-cell road-car mesh peaked at about 10.5GB. With no .wslconfig, the WSL VM
+gets the default half of the 31.81GiB host (15.52GiB visible). The 12M-cell minimum is
+not reachable on this VM budget with the current recipe. Don't lower the cell or
+accuracy gates.
+
+DECISION NEEDED FROM THE USER (not yet asked or approved; no elapsed time counts as
+approval): a global WSL memory increase through %USERPROFILE%\.wslconfig (e.g.
+memory=26GB, plus raising the per-process caps to match), which needs `wsl --shutdown`;
+or a larger/remote machine; or accept that WP9 physical acceptance is blocked on this
+host. No new sizing run, cap change or WSL config change until they answer.
+No worker is active. WP9 incomplete and uncommitted; no push or publication.
+
+## Earlier live state — serial sizing launched, 2026-11-03
+
+Parallel trial `wp9-replication-sizing-20261103-a` actually ran and FAILED,
+exit101. It reached10,894,785 intermediate cells in shell refinement3; at shell
+refinement4 the mesher reported an unsatisfied allocation request and MPI rank0
+aborted(signal6). Both6GiB rank address-space caps were active. This is not a
+finished/certified mesh and does not prove the exact physical RAM requirement.
+No solver ran. The worker's Linux cleanup was positively confirmed(1attempt).
+Logs/status remain under scratch/continuation/runs/<that run id>; never rerun
+or relabel it as successful. Source before/after remained acef84b2.
+
+Before that trial, full queue `wp9-sizing-full-20261103-a` passed1542/0/35ignored,
+clean build/all-target Clippy, demo40/0unexpected/5expected, matching catalogue,
+and app startup12s/GPU Vulkan4x/nonzeroHWND. Sourceacef84b2bbae1f1a0342b7b7171519b0b557042b90cb468c098669ac2d2ab4d6.
+
+A safer serial experiment is now prepared as a SEPARATE fixed profile
+`wp9-sizing-serial`:same Fastback/dx0.32/14M cap/5layers/mesh-only protocol and
+approved environment, np1 instead of2. It uses the already tested12GiB serial
+cap; no memory-cap increase or shared WSL change. Serial profile guard tests
+were observed RED, then library GREEN, including noresume/max6h/approvedidentity/
+strict matching np1 row; np1 cannot pass the old np2 profile. Rust code was not
+changed for this variant. This tests whether removing parallel overhead helps;
+it makes no promise of fitting the12M minimum.
+
+SERIAL POLICY VERIFIED: wp9-serial-policy-full-20261103-a passed all five
+steps,1542/0/35ignored, clean Clippy/build, demo40/0unexpected/5expected,
+matching catalogue. Source before/after495c37fb24bc3bd07df54aede661692dc6cede863dccae828885a28642a1e9a0.
+Only PowerShell profile selection changed after the prior checked runtime/app.
+
+CURRENT WORKER: `wp9-replication-serial-sizing-20261103-a`, profilewp9-sizing-serial,
+worker PID328244, fixed21600s bound, node300min. It is already launched.
+DO NOT LAUNCH ANOTHER COPY or edit its source/run inputs. First next action:
+verification-status.ps1 then inspect that exact run's saved progress/logs.
+The new run keeps original source leases, geometry/physics,14M cap,5layers,
+mesh-only1 and12GiB serial address-space cap. No solver/global WSL change.
+
+If active, inspect only. If finished, require exit status + actual meshing logs,
+row readback and positive linuxCleanup receipt; a partial mesh is not success.
+A successful trial below12M remains diagnostic. If allocation still fails,
+record the exact stage/cells and assess next execution strategy or prepare a
+concrete memory-budget decision; don't lower accuracy/cell gates. If a sizing
+worker unexpectedly disappears before final status, positively clean its
+recorded Linux groups with Stop-Wp9SizingLinuxGroups before starting new work.
+All old runs are retained. WP9 incomplete/uncommitted; no push/publication.
+
+## Active sizing-runner batch — 2026-11-03
+
+The verified code checkpoint below is preserved; a new runner-only batch is now
+in progress. Root owns the five-hour mesh-node timeout change in tests.rs and
+serial verification. Agent sizing_profile owns verification.ps1,
+start-verification.ps1 and test-verification.ps1; agent sizing_cleanup owns the
+new wp9-sizing-cleanup.ps1 + test script. All source writers are now frozen. Root alone runs serial verification; inspect
+verification-status.ps1 before starting anything. No CFD sizing job has started.
+Observed pure profile/parser RED, then library GREEN and55cleanup parser checks
+passed. Added durable Rust .intent before process::run; focused RED349/2/13ignored
+then GREEN351/0/13ignored. Active runtime check is
+wp9-sizing-wsl-runtime-20261103-a (real WSL runner tests, no CFD).
+Next: actual owned Bash/sleep forced-client cleanup + intent-only late-start probe
+from scratch/wp9-sizing-cleanup-live.ps1 when author freezes it; then integrated
+checks and one fixed mesh-only sizing job. Root owns all execution.
+Verified runtime: wp9-sizing-wsl-runtime-20261103-a passed all7actual WSL
+startup/timeout/cancellation regressions,0ignored. Live cleanup probe
+cleanup-live-20261103-164754-a7c22ff0/proof.json passed: actual group survived
+Windows client termination; stale startticks refused(exit131) without killing
+it; restored identity cleaned with marker + independent group-gone; intent-only
+late start refused(exit125) with no PID/tmp/tool witness. No CFD executed.
+Current frozen-source full queue: wp9-sizing-full-20261103-a,1200s bound,
+source acef84b2bbae1f1a0342b7b7171519b0b557042b90cb468c098669ac2d2ab4d6.
+Inspect actual final logs/status before launching sizing; don't assume success.
+Resource snapshot scratch/wp9-sizing-resource-preflight-20261103.json:
+host31.81GiB,total/free13.56GiB; WSL15.52GiB/MemAvailable15413952KiB;
+swap4GiB unused; disk229.26GiB free. Caps/checks remain active at execution.
+Once full checks pass and app startup is checked, set VERNON_CAR_DIR to
+C:/Users/mabdu/REA/vernon/scratch/wp9-data/tum-drivaer/extracted,
+VERNON_WSL_DISTRO=Vernon-Ubuntu-24.04, VERNON_WSL_USER=vernon,
+VERNON_WSL_ENV_FILE=/mnt/c/Users/mabdu/REA/vernon/scripts/wp9-replication-sizing-env.sh.
+Use existing bundled pwsh start-verification.ps1 -Profile wp9-sizing -RunId
+wp9-replication-sizing-20261103-a -JobTimeoutSeconds21600 (space before21600).
+Check the run id does not already exist and worker.lock is available. Only one
+mesh-only Fastback/dx0.32/np2/14M-cap trial; node limit300min, parent6h, with
+positive Linux cleanup receipts required on exit. No solver or global WSL change.
+A completion row below12M is diagnostic only. Preserve every failure/log.
+
+No long run is authorized to start without those checks. Existing external
+program authorization remains sufficient; no install/global WSL change/push.
+
+## Active implementation checkpoint — 2026-11-03
+
+Codex owns WP9. Checkout is now on `2e01920` after the separately recorded
+local source consolidation; the older “merge main before WP9 commit” notes
+below are historical. All current WP9 edits remain uncommitted. WP9 physical
+acceptance is still false. Current worker status is recorded below; inspect it before launching anything.
+
+User-approved reference remains the detailed16m/s published replication, with
+all existing numeric/cell/convergence gates unchanged. Never relabel old30m/s
+runs or call the original experiment independently authenticated.
+
+Verified this batch:
+- `wp9-reference-primitives-red-20261103-b`:314 passed/1 failed/13 ignored;
+  only the missing certified-builder-input helper failed. Its repair is in place.
+- `wp9-reference-integration-red-20261103-b`:322 passed/18 failed/13 ignored;
+  semantic RED for wheel/domain/patch/proof/record regressions. The earlier-a
+  attempt was only a missing Recipe test import, not semantic RED.
+- `wp9-reference-integration-green-20261103-a`:340 passed/0 failed/13 ignored,
+  source `f98a9c88c9913d6612731ff6322bc337e91807dad768669cb1e0f72db0b17d08`
+  unchanged before/after. No external ignored test counted as executed.
+- Sizing policy27/0 and fresh-shell integration24/0/0-blocked passed; no mesh
+  or solver invoked. Logs `scratch/wp9-sizing-policy-green-20261103-a.*` and
+  `scratch/wp9-sizing-integration-20261103-a.*`. Maintained probes are
+  `scripts/test-wp9-sizing-{policy,environment}.sh`; environment caps are
+  per-process virtual memory (12GiB serial/6GiB MPI rank), not aggregate RSS.
+
+Latest verified source and precise next action:
+- `wp9-mesh-recipe-green-20261103-a`:349 passed/0 failed/13 ignored.
+- `wp9-replication-geometry-20261103-c`:one real preparation test executed,
+ 0ignored; all three cases matched registered geometry, actual2right-wheel
+ boundaries, complete structured meshing dictionaries and the supported16m/s
+ protocol. Final marker cases=3/external_programs=0; no physical mesh/solver.
+ Both runs have identical source fingerprint:
+ `69942e2cb41d53cfb9b972d2869fccd201d2df3460d2291d8cf0c97e194284a2`.
+ Canonical F/E/N surface identities remain4de3bd09d927f4dc/b1a1d6d4525fcb1c/
+ f8399fd496485c02. Eight original component SHA256s were checked under read leases.
+
+The actual half-domain metadata failure is repaired in tunnel.rs: measured
+full-car wheel metadata is retained, but actual domain.half_model selects y>=0
+boundaries. Case setup now passes its effective domain into the default boundary
+node, so explicit full domains retain four wheels. Old half-domain tests now
+check right-wheel names/origins; full-domain coverage remains explicit.
+
+The meshing admission gap is repaired. mesh_setup emits a strict numeric typed
+MeshingRecipe v1. Admission re-renders complete snappy, quality and extraction
+dictionaries, requires the canonical three patches and five requested layers,
+and rejects legacy/edited/unsupported/unsafe recipes. Independent narrow review
+found no remaining blocker under the quiescent-input/non-authentication contract.
+Very small absolute-layer heights can fail qualification after an f64 JSON
+roundtrip; this fails closed and does not affect the checked relative-layer recipe.
+Case/solve input-bound Setup/Solved records and typed benchmark consumer are
+wired. They prove current input consistency, not physical accuracy.
+
+FINAL VERIFIED CHECKPOINT: `wp9-integrated-full-20261103-c`, exit0, all five
+steps passed. Build clean;1540 tests/0failures/35ignored; all-target Clippy
+-Dwarnings clean; demo40nodes/0unexpected/5expected gates; generated catalogue
+matches docs/NODES.md. README counts match197total/194implemented/3whitebox.
+Source before/after is unchanged:
+`a765d522c9b4f8992cae49a306bbd2fb18b1327cf9ecdec0c8166ecc242b88cb`.
+The only changes after geometry-c were three test-expression lint repairs.
+Bounded app smoke: alive after12s, nonzero window handle, Vulkan4x on the RTX4090
+Laptop GPU, then only its own process was stopped. This was startup coverage;
+manual visual/interaction testing was not performed. Saved app-startup.json and
+app logs are beside the full queue logs. No worker/app remains active.
+
+Full queue-a had already passed all1540 tests but failed three test-only Clippy
+styles. Queue-b safely refused resume of that failed run. Queue-c was completely
+fresh and passed after the lint repairs. The briefly observed old running status
+was a completion race, not evidence of a persistent-launcher defect.
+
+NEXT ACTION: add a bounded mesh-only sizing profile with eight source
+leases, fixed Fastback/dx0.32/np2/14M cap/mesh-only1, approved sizing environment
+and a six-hour total deadline. The node chain needs an earlier deadline that
+leaves cleanup time before the outer worker expires. Confirm Linux group cleanup
+on forced outer termination before a long sizing job; do not duplicate old queues
+or change global WSL memory/restart settings. No new automotive run was launched.
+The ignored harness already uses exact16/rho1.184/nu1.567e-5, radius16000/51,
+fixed1000window/write, initial7000 iterations, visible15.52GiB memory warning
+and a mesh-only final marker. Actual12M-cell/convergence/coefficient/three-grid
+acceptance and WP9 completion remain outstanding. No commit/push/publication.
+
+## Active resume — accepted replication baseline, 2026-11-02
+
+User selected "Use the documented16m/s replication baseline". This supersedes
+the historical pending-decision notes below; do not ask again. Codex ownership
+was returned after Claude's body-only y+ fix (see final ownership note). Keep
+that fix and its reported257/0/12-ignored CFD verification. Main has later WP10
+commits; integrate main before the eventual WP9 completion commit, preserving
+the dirty WP9 tree. No acceptance or completion claim follows from this decision.
+
+Accepted contract:docs/research/wp9-replication-baseline-v1.json and the research
+note. Scope is the documented all-detailed published replication at16m/s,
+rho1.184kg/m3,nu1.567e-5m2/s,moving ground/rotating wheels,mirrors,noenginebay.
+TargetsF/E/N0.275/0.319/0.277; preserve5%,12M-half/24M-full,three-grid and strict
+1000-window/2000-sample convergence gates; no fitted Cd shift. Original2012
+experiment authentication remains unclaimed. Geometry and physics binding must
+precede any trusted scope/resolver acceptance. Existing old30m/s runs remain
+failed diagnostics, never relabelled.
+
+Dictionary-only preparation already cooked3 nodes with0 failing gates under
+scratch/wp9-replication-16ms-setup-20261102/. Check its saved manifest when
+setting exact air: the first equivalent T/P used287.05 instead of codeR_DRY;
+the corrected synthetic equivalent uses287.058. Neither equivalent T/P is a
+measurement of source weather. Casegeneration is not a mesh or solver run.
+
+Current batch plan:docs/superpowers/plans/2026-11-02-wp9-replication.md.
+Root owns serialverification; agent runtime_spec owns study.rs TEST-only speed
+regressions until observedRED; other agents are read-only preflight/binding
+design. Check their saved scratch reports before resuming. No verification/CFD
+worker was active on takeover. The older full runner fingerprint is stale after
+Claude's y+ change; its full result remains historical evidence only.
+
+## Current owner — Codex takeover authorized by user, 2026-10-31
+
+The user explicitly chose "Have Codex take over WP9". This supersedes the
+local_f9c822bb checkout reservation below. Codex now owns WP9 source changes and
+serial verification in this checkout; other sessions must leave them untouched.
+Existing frozen road-car CFD jobs are preserved and must not be duplicated or
+have their binary, scripts or case inputs edited while running. Source edits are
+independent of that frozen executable. No push, publication or installation is
+authorized by this handoff.
+
+PowerShell 7.6.5 is already available at
+C:/Users/mabdu/.cache/codex-runtimes/codex-primary-runtime/dependencies/native/powershell/pwsh.exe.
+Use this existing executable for bounded verification; no PowerShell installation
+is needed. The stale RED verification status predates the current source.
+
+The completed Ahmed audit is saved outside this checkout in
+C:/Users/mabdu/REA/tools/wsl/wp9-ahmed-audit/completed-audit.md.
+All six iteration gates fail; road-car runs at3.76M cells cannot satisfy the12M
+preset floor. The validation-gate and explicit convergence-handoff defects are
+repaired and verified below. Remaining work is physical reference/configuration
+binding, calibration/convergence and the remaining review items.
+WP9 remains incomplete and uncommitted.
+
+## WP9 partial verification checkpoint — 2026-11-02
+
+WP9 remains incomplete and uncommitted. Do not replay the old RED patch work.
+The mesh/solve/force/benchmark evidence repair batch is now implemented:
+measured mesh records bind the five base tables, cached mesh acceptance binds
+the full physical inputs, and successful owned solves carry the final input
+fingerprint. Force qualification uses the same source/window and rejects invalid
+timestamps. Benchmark checks separate numeric coefficient agreement from full
+validation, keep the 12M half/24M full road-car cell floor, recheck strict
+stationarity/residual evidence, and fail while reference mapping is unresolved.
+A/B comparison requires the full passing benchmark report.
+
+Verified source fingerprint:
+9bb0858f17c247e15bb1f4491d733cb659139c8c1949972d4236f0994b4a2d54.
+
+- wp9-evidence-red-20261031-b:233 passed/20 failed/12 ignored; the new evidence
+  regressions exposed the missing behavior before implementation.
+- wp9-evidence-review-20261102-a:253 passed/1 failed/12 ignored; only the newly
+  added duplicate-timestamp regression failed before its narrow repair.
+- wp9-evidence-green-20261102-a:254 passed/0 failed/12 ignored, exit0 and identical
+  before/after fingerprints. External tests were not counted as executed.
+- wp9-native-evidence-20261102-a:one actual ignored test executed, zero ignored,
+  exit0 in103.11s. New bounded wp9-native profile requires the exact test and its
+  final completion marker. Real own small-car mesh30874 cells,500 solver samples,
+  matching mesh/solve/force evidence. Converged=false and capability_only=true;
+  this is runtime evidence, not automotive validation or mesh independence.
+- Verification parser/library checks passed after the native profile addition.
+  Prior performance-guard GREEN62/0 is historical; current workspace checks below
+  must confirm the integrated checkout.
+
+The preserved old road-car queue has finished. Read-only host inventory on
+2026-11-02 found no remaining CFD/WSL worker. Its frozen binary predates these
+repairs; its legacy within_band flag is coefficient comparison only:
+
+| Case | Measured cells | Cd | Outcome |
+| --- | ---: | ---: | --- |
+| Fastback | 3756304 | 0.2887171068 | 3000 samples; not converged; below cell floor |
+| Estate | 3759643 | 0.2833486565 | 3000 samples; not converged; outside5% band; below cell floor |
+| Notchback | see saved mesh log | no final result | timeout at iteration1049; Linux process-group cleanup verified |
+
+All six completed slant-body runs still fail iteration convergence. Do not reuse
+their outputs as accepted validation or launch duplicate road-car runs. Original
+logs/results remain in scratch/wp9-car and scratch/wp9-ahmed. No accepted
+experimental mapping has been established from the filenames or preset names.
+
+Final integrated source checkpoint:4738d65bf17f85cbe630a4746e43ee63eb5494c6e990f33d6aad255e03da56a4.
+Full queue wp9-evidence-full-20261102-b completed exit0:1443 passed/0 failed/
+29 ignored; build, workspace tests, all-target Clippy, demo and catalogue all
+passed. Demo40 nodes/0 failures/5 expected gates; generated catalogue exactly
+matches NODES.md. First full attempt failed only stale NODES.md; it was
+regenerated before the passing run. Counts remain197 nodes/192 implemented/
+5 white-box, matching README.
+
+The independent review found an explicit convergence handoff gap. Actual RED
+wp9-perf-status-red-20261102-a:62 passed/2 failed; CFD status RED254 passed/
+3 failed/12 ignored. The final full run includes repaired CFD257/0/12 ignored
+and performance64/0. A present force qualification now emits the shared
+iteration_qualified metric; failure reaches the Report and JSON performance
+consumers. Raw values remain readable; absent legacy proof retains its previous
+diagnostic policy. aero_from_solver still describes origin, not full benchmark
+validation. Independent re-review found no material remaining defect in this
+repair batch; report:scratch/wp9-evidence-independent-review-20261102.md.
+
+Actual bounded app startup:alive after12s, nonzero window handle, GPU Vulkan4x
+MSAA on RTX4090 Laptop GPU. Only the owned probe was stopped. This was hidden
+startup coverage, not manual visual/interaction QA. Files:scratch/wp9-app-startup-20261102.*.
+The real node-chain source fingerprint above predates only the later explicit
+readiness-report/consumer changes; the final full queue verifies those changes.
+
+Precise next action: resolve the experimental reference/configuration before a
+new acceptance run. Read docs/research/wp9-reference-baselines.md and ignored
+scratch/wp9-{reference-mapping-audit,original-reference-followup}-20261102.md.
+The existing targets are retained. S4 uses different smooth N/E baselines; S6
+and a later author paper corroborate the detailed target family at16m/s, not
+the current30m/s setup. Original experiment/archive equivalence remains unknown;
+one ordinary TUM retry and three targeted primary-source searches did not obtain
+the original experimental tables. Do not treat another Cd result as that missing
+provenance. Preserve all completed/failing runs, no duplicate queue. A full WP9
+completion commit still requires physical acceptance. No push, publication,
+new installation or K2 upload.
+
+Baseline decision requested2026-11-02: keep the original-experiment contract
+and obtain an authorized SAE2012-01-0168 copy, or adopt the documented16m/s
+published-replication baseline described in the research note. Await the user's
+answer before changing G24/default reference conditions, populating a verified
+scope resolver or launching the dependent acceptance run. No elapsed time counts
+as approval. Independent remaining source review item: body-only y+ selection
+in the generic mesh-quality reader; the current aggregate is documented as such.
+All verification workers/probes from this checkpoint have finished.
+
+## Latest completed work package — 2026-10-30, WP8
 
 WP1–WP8 complete under their measured contracts. The local WP8 completion
 commit contains this file; use git log to identify it. Branch:
-codex/wp8-photogrammetry. Registry197 nodes/190 implemented/7 white-box;
+codex/wp9-cfd (WP9 setup in progress). Registry197 nodes/190 implemented/7 white-box;
 Capture 22/0. No remote push/publication occurred. Do not restart completed
 packages or discard local work. Previous verified WP7 commit:e560a35.
 
@@ -60,20 +552,54 @@ No separate image licence/readme found:local evaluation only; no sample
 photos/binaries/reconstructions committed or redistributed. Spec records
 all20photo hashes and precise parameters/argv/log paths.
 
-## Precise next action — WP9 installation decision
+## Precise next action — approved WP9 setup
 
 WP9 is incomplete. Read its prepared plan and HANDOFF/spec before coding.
 Read-only inventory found no simpleFoam/foamRun/Docker on PATH; wsl.exe
 reported WSL not installed. Proposed route follows HANDOFF:WSL2 + Ubuntu 24.04
 LTS+official OpenCFD OpenFOAM-v2606 precompiled packages, separate processes.
 Proposed distro storage:C:/Users/mabdu/REA/tools/wsl/ubuntu-24.04.
-User approval is required before installing these programs/dependencies;
-COLMAP approval does not extend to them. Administrator access/restart may
-be required; never automatically reboot. Check the actual human answer,
-not a later timer/continue prompt. No WP9 setup/OS changes have occurred.
-Independent audit/spec/test preparation can proceed while this decision is
-pending, but dependent real-run work must wait. Never mark WP9 complete
-without real mesh/solver/benchmark gates and full verification.
+The human explicitly approved setup and local CFD checks on2026-10-30.
+Do not request this approval again. Runtime phase completed:official Microsoft
+WSL3.0.3 x64 MSI, SHA256
+ae977286974255bd26bf925f00f40f5692c6b2084155cbc0563c09aea091f211,
+Valid Microsoft Corporation Authenticode, MSIexit0 and VMPexit0. WSL reports
+3.0.3.0/kernel6.18.54.1-1, defaultWSL2; no reported restart requirement.
+Only VMP was enabled, no legacyWSL1 component. No automatic restart.
+
+Inspect C:/Users/mabdu/REA/tools/wsl/wp9-setup-status.json and
+wp9-ubuntu-status.json plus the shared setup.lock/native-*.json leases
+before another setup attempt. A live process, heldlock or uncertain identity
+means no duplicate. Phase2 helper:scripts/setup-wp9-ubuntu.ps1 registers
+Vernon-Ubuntu-24.04 at the approved path, under normalmabdu (not an elevated
+or different account), with --no-launch; probes Linuxroot and24.04 explicitly.
+No Ubuntu/solver success can be inferred from runtime-only status.
+
+Ubuntu has booted successfully and OpenFOAM is installed. Exact signed Noble
+candidate/runtime/common version:2606.0~rc2-1. Vendor metadata describes it as
+the v2606 runtime; retain that exact version rather than claiming a final
+stable build from its banner. Package SHA256:
+ef129961af180427090ff04938845c54a21419376474baa371559bad31e19a26.
+Official key fingerprint:DC93C096174122E256DA24063386DD74948D208F.
+Scoped signed-by repository and strict APT refresh passed; dependencies were
+simulated/reviewed before exact-candidate install. No tutorials/dev/GUI extras.
+
+Runtime root:/usr/lib/openfoam/openfoam2606, bannerWM_PROJECT_VERSION=v2606.
+Bounded help checks passed for blockMesh,surfaceFeatureExtract,snappyHexMesh,
+checkMesh,simpleFoam,pimpleFoam. When invoking the installed etc/bashrc,
+disable errexit/nounset/pipefail around source, then restore strict settings
+and verify its exit/version; strictmode during source caused an actual error.
+The project distro is currently used via explicit --user root; no passwords
+or default-user changes. A nonroot project user is still needed before MPI.
+
+Next:finish the fresh duct capability smoke and begin the audited native
+driver repairs. Any required future restart remains human-initiated. Never
+mark WP9 complete without real mesh/solver/benchmark gates and full checks.
+
+Independent audits are scratch/wp9-driver-audit.md,wp9-handoff-audit.md and
+wp9-install-review.md. They identify owned-case/path safety, stale results,
+missing quality/residual gates, WSL environment/paths, absent real benchmark
+templates and CFD/performance handoff gaps. WP9 is still uncommitted/incomplete.
 
 ## Persistent verification and recovery
 
@@ -116,3 +642,350 @@ installation,push,publication,deployment or contact with others without
 separate authorization. Never inspect proprietary/Houdini installation
 folders or CGAL/TetGen GPL source. Disable the follow-up only after all
 ordered packages complete or an explicit user request.
+
+## WP9 installation authorization received — 2026-10-30
+
+The user explicitly approved setup and local CFD checks for WSL2, Ubuntu
+24.04 LTS and official OpenFOAM v2606. This supersedes the pending decision
+above; do not ask again. Branch codex/wp9-cfd; WP8 commit b708fd4 remains the
+latest completed package. No restart authorization: human initiates it.
+
+Approved runtime setup helper: scripts/setup-wp9-wsl.ps1 (phase1only), parser
+checked, independent review pending before execution. It downloads official
+Microsoft WSL3.0.3 x64 MSI (WSL2 backend), pins published size/hash and checks
+Microsoft Authenticode, uses MSI /norestart and VMP /norestart, then saves
+status. No legacyWSL1 feature, distro or solver in this phase. Setup state
+will be C:/Users/mabdu/REA/tools/wsl/wp9-setup-status.json. Inspect it and
+setup.lock before any retry; elevated setup may await Windows UAC consent.
+Do not run Ubuntu registration under a different administrator account.
+
+## Ubuntu verified and package inspection prepared — 2026-10-30
+
+Ubuntu phase2 completed ubuntu-ready (statuswp9-ubuntu-status.json), native
+install/probe both0. DistroVernon-Ubuntu-24.04 registeredasWSL2 exactlyat
+C:/Users/mabdu/REA/tools/wsl/ubuntu-24.04 under normalmabdu. Explicitroot
+probe confirms Ubuntu24.04 and kernel boot. No restart required, no passwords
+or defaultroot account changes; no CFDsolver installed yet.
+
+Phase3 helpers:scripts/setup-wp9-openfoam.ps1 and .sh. Inspect mode obtains
+signed officialNobleAPT metadata and installsimulation, recordingkeyhash/
+fingerprint and exactcandidate to tools/wsl/openfoam; install mode is a
+separate explicit command pinnedto that candidate. Review actualmetadata
+and dependencylist before install. Scripts parse/builtinUbuntu bash-n passed;
+independent review pending. Use shared setup.lock/native leases; no duplicate
+native job or code changes while a helper uses it. DefaultRust/source counts
+stillWP8; WP9fullverification/commit notdone.
+
+## OpenFOAM setup verified; WP9 native work started — 2026-10-30
+
+Signed officialNobleAPT inspect completed and exactcandidate2606.0~rc2-1
+runtime/common installed successfully (wp9-openfoam-status.json modeinstall,
+install-complete,exit0). Sources/keys/policy/simulation/packagehashes and
+installed package metadata are in C:/Users/mabdu/REA/tools/wsl/openfoam.
+Six actual binary help probes passed,WM_PROJECT_VERSION=v2606. No reboot,
+password/default-user change, tutorials/dev/GUIextras, push or publication.
+
+The own clean-room320-cell laminar duct script is scripts/wp9-cfd-smoke.sh.
+Firstrunfailedpreflight because dpkgwildcard matched an uninstalled tutorial;
+fixedinstalled-statusfilter. Secondrun duct-smoke-20261030-100022 actually
+ran blockMesh/checkMesh/simpleFoam with exit0, MeshOK and60/U,p; finalsmoke
+classifier rejected normal trapFpe informational banners. Child owns that
+narrow classifier correction; rerun a NEW case folder and inspect logs.
+This is capabilityonly,notAhmed/DrivAer or calibrated physical validation.
+
+Root mesh.rs quality slice observed RED0passed/3failed then GREEN14passed,
+scratch/wp9-mesh-quality-{red,green}.log. Required finitecomplete mesh data,
+positivecellcounts, real skewness and strict70degree/4skewness gates now
+implemented; current-runlogs preferred over legacy. No implementationflag
+promotion. Native fullworkspace checks not yetrun; cataloguemustregenerate
+before eventual fullqueue aftermetadatachanges.
+
+Approved nextcode batches: parent wp8_model_import owns util.rs/newprivate
+staging.rs transactional ownedcase helper; wp8_runtime_spec owns extproc.rs
+structuredWSL/cleanup/deadlines. Both currently RED-test/API phase and must
+wait for root-owned serialCargo evidence before productionfixes. Root owns
+mesh.rs/case.rs caller integration and provenance. Reports and complete
+acceptance gaps: scratch/wp9-driver-audit.md and wp9-handoff-audit.md.
+Latestcompletedpackage remainsWP8 b708fd4; WP9dirty/uncommitted/incomplete.
+
+## Verified capability checkpoint — 2026-10-30
+
+OpenFOAM setup and own duct capability smoke passed. Status:
+C:/Users/mabdu/REA/tools/wsl/wp9-smoke-status.json.
+Case:scratch/wp9-setup/duct-smoke-20261030-101004.
+Actual blockMesh/checkMesh/simpleFoam and script exits0;320cells,MeshOK,
+maxnonortho0degrees,maxskew8.881784197e-15;60iterations,End,nonemptyfinite
+60/U,p. Finalpressure residual5.666868658e-09. This is capabilityonly;
+no automotive benchmark or Vernon's real-driver contract has passed yet.
+
+Classifier corrected only for exact benign trapFpe banner. Eightpure
+classifierprobes RED->GREEN; oldfailed cases retained. Root independent
+finite-token check passed on written U/p. Sixprogramhelpprobes also0.
+
+Nativework status:meshquality sliceGREEN14; stagingRED0/17fail nowall
+behavioral, Windowsjunctionfixturecorrected; extprocRED3pass/13fail.
+Logs scratch/wp9-stage-red.log/wp9-extproc-red.log. Parent/runtimeagents
+are implementing those approved modules withoutCargo; waitforfrozenready,
+runroot-ownedGREENserially andinspectactualoutputs. Childreviewing
+rootmeshqualityslice. Nofullqueueactive; latestpriorWP8statusisnaturally
+stale dueWP9files anddoesnot invalidate completedWP8. Don't rerunWP8.
+
+## Current checkpoint — 2026-10-31 (Dubai)
+
+WP9 remains incomplete and uncommitted; WP8 `b708fd4` is the latest completed
+package. The older RED summaries above are historical. No worker is active.
+Usage was checked on resumption: ordinary usage available, no reset purchased.
+
+The persistent `wp9-wsl-containment-20261030-b` profile completed with exit 0:
+16 default runner tests passed and all 7 actual WSL tests passed. Its logs are
+under `scratch/continuation/runs/wp9-wsl-containment-20261030-b`. Two newly
+reproduced containment bugs were repaired: surviving background children after
+a successful leader exit, and delayed cancelled launches after case replacement.
+The new WSL API takes an explicit stable control directory outside the movable
+case. Keep this directory beside the case under its owner, not inside a case
+generation. MPI/detached process groups have not been qualified.
+
+The mesh-quality slice passed 17 tests and independent review. Original owned
+staging passed 18. Integration exposed the need for optional-source templates
+and optional mesh preservation: its 10 new tests produced 1 pass/9 failures in
+`scratch/wp9-stage-optional-red.log`. The approved extension is being implemented
+by wp8_model_import. The wall-quality manual-provenance test produced 0/1 in
+`scratch/wp9-wall-provenance-red.log`; model_review owns its narrow correction.
+Root's 3 case-setup regressions failed as expected in `scratch/wp9-case-owned-red.log`:
+upstream writes, stale optional physics, and legacy unmarked folder adoption.
+Root owns case.rs integration. All Cargo execution remains serial and root-owned.
+
+The user supplied publisher access for the registered TUM download; it was used
+through hidden stdin, with no credentials saved in project files or logs.
+The official STL archive is local only in `scratch/wp9-data/tum-drivaer`:
+590,018,283 bytes, SHA-256
+`cb2130d354248597f853793be0850cc1552a41dfdf488e09d6ca9986f019896c`.
+Its 48 entries contain two sets of 24 ASCII STL components, with no licence or
+README. Do not commit or redistribute the data. Geometry audit metrics already
+exist there; field_method is finishing the report without rerunning the scan.
+Benchmark configuration equivalence and physical acceptance remain unverified.
+
+Next: finish/freeze the optional staging and wall-provenance corrections;
+integrate consumer-owned case setup in a fresh namespace preserving legacy data;
+run bounded focused verification and inspect its logs. Then integrate fresh
+mesh/solve execution, input provenance and real-node tests before automotive
+validation, performance wiring, full checks or any WP9 completion commit.
+
+## Resumption check — 2026-10-31 (later)
+
+No worker or cargo job is running (worker.lock pid 77324 is dead; the only live
+processes are unrelated python/claude). `scripts/verification-status.ps1`
+needs PowerShell 7.2+ and `pwsh` is not on PATH here, so status was read
+directly from `scratch/continuation/latest.json` and the run `status.json` files.
+Latest run `wp9-fresh-driver-red-20261031-a` is the intended RED for the fresh
+mesh/solve driver: `cargo test -p vernon-nodes-cfd` = 161 pass / 8 fail
+(mesh.rs: defaults serial + explicit WSL fields, blank WSL context fails before
+any step, build owns inputs and never writes the upstream case, failed build
+publishes no File, zero-exit fixtures cannot certify bad mesh evidence;
+case.rs: solve provenance must cover constant/physicalProperties, failed solve
+must not publish old history/upstream coefficients, exit 0 without fresh
+results cannot certify old data). WP9 remains incomplete and uncommitted; no
+code was changed in this check.
+
+Next precise action: implement the fresh mesh/solve execution in
+`crates/vernon-nodes-cfd/src/mesh.rs` and `case.rs` (copy case into an owned
+fresh generation, run with the explicit WSL context, publish only on fresh
+verified outputs, hash physics/mesh/initial snapshot into provenance) until
+those 8 tests pass; run via the bounded `wp9-focused` profile, inspect logs,
+then input provenance, real-node tests, automotive validation, performance
+wiring and full checks before any WP9 commit.
+
+## Concurrent-edit stop — 2026-10-31 02:48 (Claude session)
+
+A live codex.exe was found editing this checkout (case.rs, coeffs.rs and this
+file changed 02:44-02:46) while a Claude session resumed the same step. Claude
+stopped to avoid competing edits. Claude DID apply one uncompiled, untested
+change to `crates/vernon-nodes-cfd/src/mesh.rs`: `run_owned_chain`,
+`unavailable_output`, `mesh_certified`, WSL params, serial default, an owned
+fresh `build_cook`, and `build_without_run_writes_script_and_fails_closed`
+updated. The matching solve_cook rewrite was NOT applied; it is saved in
+`scratch/wp9-claude-solve-patch-20261031.py` (its recipe_key edit is obsolete:
+that change is already in case.rs). Next: one owner only; review mesh.rs, then
+run the wp9-focused checks. The 8 RED tests are not yet shown passing. pwsh 7.2+ was
+not found on PATH or in Program Files, so verification scripts could not start here.
+
+## Checkpoint — 2026-10-31 02:55 (corrects the concurrent-edit stop above)
+
+The "live codex.exe" in the stop note was wrong: the 02:44-02:46 edits came from
+another Claude session on this checkout. Codex showed no CPU activity. Run only
+one continuation session at a time on this checkout.
+
+Now implemented, uncommitted: the checked history reader in coeffs.rs, `run`
+excluded from `recipe_key`, owned fresh `build_cook` (mesh.rs) and `solve_cook`
+(case.rs) with WSL params, and regenerated docs/NODES.md. The saved
+scratch/wp9-claude-solve-patch-20261031.py is obsolete; do not apply it.
+Pre-edit source copy: scratch/wp9-snapshot-20261031-claude.
+
+Evidence, direct cargo runs because pwsh 7.2+ is not installed here, so NOT the
+bounded wp9-focused profile: vernon-nodes-cfd 186 passed / 0 failed / 7 ignored;
+workspace 1246 passed / 1 failed / 17 ignored (scratch/wp9-workspace-20261031.log);
+clippy clean; demo 36 nodes, 0 failing gates, 2 expected; catalogue matches.
+The app was not launched. The one failure is
+process::tests::timeout_and_cancel_kill_the_tree, not touched here; main's WP14
+commit 1e33d53 changed process.rs and that test passes on main.
+
+Unverified: none of this has driven real OpenFOAM. The new tests use fake tools
+and synthetic logs, so real solver logs may still expose reader mismatches.
+
+Next: merge main into this branch (picks up the process.rs fix; expect docs
+conflicts) or otherwise resolve that test; run the real WSL node chain on the
+duct case with Vernon-Ubuntu-24.04 (needs a non-root user and the environment
+file); then input provenance, automotive validation, performance wiring and
+full checks. WP9 remains incomplete; do not commit it as complete.
+
+## Owner — 2026-10-31 06:05
+
+Session local_f9c822bb (a fork of the top Vernon session) now owns this checkout
+for WP9. Other sessions: do not edit or run cargo here until this note says the
+session has released it. A copy of the uncommitted work from 06:02 is in
+C:/Users/mabdu/REA/backups/wp9-20261031-0602. WP11 and WP12 are in their own
+worktrees, vernon-wp11 and vernon-wp12.
+
+## Checkpoint — 2026-10-31 06:25 (first real runs)
+
+Branch fast-forwarded to main 8a4cd90; WP9 is still uncommitted and incomplete.
+Backup of this state: C:/Users/mabdu/REA/backups/wp9-20261031-study-start. Linux
+user `vernon` now exists in Vernon-Ubuntu-24.04 (locked password, not default).
+Use VERNON_WSL_DISTRO=Vernon-Ubuntu-24.04, VERNON_WSL_USER=vernon and
+VERNON_WSL_ENV_FILE=/usr/lib/openfoam/openfoam2606/etc/bashrc. pwsh 7.2+ is still
+not installed, so these runs are direct cargo runs, not the bounded profiles.
+
+Real results, read from the logs:
+- `real_openfoam_chain_on_a_small_car` passed: 30,878 cells over 8 MPI ranks, Mesh
+  OK, non-orthogonality 65.0, skewness 2.74, 92.4% layers, 500 solver iterations,
+  Cd 0.591 on a blocky shape (plausibility only). scratch/wp9-real-chain-6.log.
+- `real_openfoam_accepts_the_transient_recipe` passed: kOmegaSSTDDES and maxDeltaxyz
+  selected, 11 time steps, clean End. scratch/wp9-real-ddes-2.log. Runtime
+  acceptance only, not accuracy.
+
+Defects those runs found and this checkout fixes: OpenCFD uses
+surfaceFeatureExtract; mesh tools need controlDict/fvSchemes/fvSolution, which
+mesh_setup now writes; minMedialAxisAngle is required as well as the old name;
+potentialFoam needs Phi and potentialFlow entries. checkMesh now runs without
+-allTopology -allGeometry, as HANDOFF specifies, so "Mesh OK" no longer covers
+those optional checks (the 3 they failed on the small car were concave cells,
+low-quality tets and small determinants).
+
+Also done, default tests only: transient_ddes mode in cfd.case_setup; solve_steady
+refuses it; per-surface force monitors; benchmark_check measures slant share from a
+connected case; perf.vehicle refuses zero CdA, gains allow_missing_aero and an
+aero_from_solver gate; the example now wires solve -> forces -> vehicle: 40 nodes,
+5 expected gates. The app and full workspace checks have not been run on this.
+
+Running: scratch/wp9-ahmed-queue.ps1 (6 runs, 25 and 35 degrees, dx0 0.105 / 0.081 /
+0.062, 3000 iterations, 16 ranks) from the frozen binary
+scratch/wp9-bench-bin/vernon_nodes_cfd.exe. Results and logs: scratch/wp9-ahmed/.
+It skips finished results, so rerun it to continue. Source may change during it.
+Stilt x and y positions in `slant_body` are assumed; only their diameter was
+confirmed in public text.
+
+Next: read the six results, feed them to cfd.mesh_study and cfd.benchmark_check,
+then DrivAer. WP9 stays incomplete until those gates are met or reported as unmet.
+
+## Checkpoint — 2026-10-31 07:15
+
+The first queue was stopped because dx0 0.105 gave 361,910 cells, below the 0.5M
+floor. The queue now uses dx0 0.092 / 0.0708 / 0.0544 with labels a25-g1 ... a35-g3.
+a25-g1: 502,811 cells, Cd 0.394, Cl 0.362, slant 37.0%, stilts 8.6%, convergence
+gate not met. Workspace in this checkout: 1290 passed, then the one failure
+(the app demo test pinning 2 expected gates) was updated and passes on its own; a
+full rerun is still due. Example: 40 nodes, 0 failing, 5 expected. App opened.
+
+Other packages, each one verified local commit, not merged, not pushed:
+- WP11 claude/wp11-flatten-tuft a073ff3, worktree vernon-wp11: 1225 passed, 0 failed.
+  Spec F2 checks (b), (c), (d) are unmet and left ignored with measured values.
+- WP12 claude/wp12-file-formats 80a7c96, worktree vernon-wp12: 1251 passed, 0 failed.
+  Synthetic files only; no real scanner file was available. No STEP reader.
+- WP10 is on claude/wp10-solve-linear-89beae and claude/wp10-tet-mesh-017c48 from
+  other sessions, also not merged; not re-verified here.
+
+Not started: WP15 scaffolding and WP16 release files. WP15 runs need the owner.
+cargo-deny and pwsh are not installed. Usage: wait for the limit to reset before
+starting more agents; the solver queue needs no tokens.
+
+## Checkpoint — 2026-10-31 12:31 (WP10, WP11, WP12 merged)
+
+On the owner's word, `main` moved from 8a4cd90 to b003401, merging both WP10
+branches, WP11 and WP12. Not pushed. The one conflict was in docs/HANDOFF.md.
+The merged result, checked before main moved: 1290 passed, 0 failed, 17 ignored;
+clippy clean; example 38 nodes, 0 failing, 2 expected; catalogue same ignoring
+line endings; app opened. Run directly with cargo; pwsh is still missing.
+
+This overrides the "not merged" notes above. WP10 is merged but not finished: the
+`fea.tet_mesh` fTetWild test has not been run, and both nodes stay white-box. Another
+session then moved main to dd521c2 with a CalculiX deck fix; its commit message says
+both cantilever comparisons pass with CalculiX 2.21. Not re-run here, and
+docs/HANDOFF.md WP10 still needs that recorded and the white-box flag decided.
+
+## Checkpoint — 2026-10-31 (Ahmed runs finished)
+
+This checkout's codex/wp9-cfd now sits on main dd521c2 with WP9 still uncommitted.
+Backup before the move: backups/wp9-20261031-ahmed-done. Before the WP9 commit:
+regenerate docs/NODES.md and README counts, then run the full definition of done.
+
+All six slant-body runs finished; the table and findings are in
+docs/specs/automotive-cfd.md 3.11a. Neither angle passes `cfd.mesh_study`. No run met
+the convergence gate. G25 ordering holds on the finest grids only; slant share is 34%
+(inside the band) and 41% (14 points off). The study node used to accept the 25-degree
+set; it now also requires a believable order and scatter within the two-grid limit.
+
+Road car, fastback at dx0 0.48: 3.76M cells, non-ortho 65.0, skewness 3.28, layers
+96.6%, Mesh OK. The mesher peaked at 10.5 GB of the 15 GB here, so about 5M cells is
+the ceiling against the preset's 12M floor. scratch/wp9-car-queue.ps1 runs the three
+rear shapes at that grid (roughly 4 hours each, estimated). It skips finished JSONs in
+scratch/wp9-car, so rerun it if interrupted; never start a second copy. Frozen binary
+scratch/wp9-bench-bin/vernon_nodes_cfd_car.exe, SHA256 8C2E7D35...7C06.
+
+Next: read scratch/wp9-car/*.json and queue.log. These runs are one grid each, below
+the 12M floor, with G24's experiment mapping unresolved, so whatever Cd they give, G24
+is not met by them. Their JSON was written by the frozen binary, before the review
+fixes: its `within_band` means only that Cd was inside the band.
+
+Review: scratch/wp9-review-findings.md is the list, ticked as fixed; open items include
+the road-car `within_band` claim (min_cells_million is never read). Work through it
+without more agents until the usage limit resets, then rerun the definition of done.
+Owner decision pending: plain checkMesh was adopted after -allTopology -allGeometry
+failed three checks on a real mesh. Recommendation: keep plain as the gate and also
+report the extra checks' failures as a visible number.
+
+## Road-car queue finished — 2026-11-02 17:07 (local_f9c822bb, results only)
+
+No source was edited for this note. Table and details: scratch/wp9-car/RESULTS.md.
+Fastback Cd 0.2887 (+4.99% against 0.275, iteration sd 4.3%); estate Cd 0.2833
+(-11.2% against 0.319); ordering estate > fastback reversed. Neither converged.
+The solver's own Cd matches the force-derived Cd to six digits in both. G24 is not
+met. The notchback has no result: Windows slept from 2026-10-31 22:44 to 2026-11-02
+17:05 and the wall-clock timeout fired on wake at iteration 1049. Rerunning
+scratch/wp9-car-queue.ps1 finishes it (about 4 hours, machine kept awake), but only
+when the checkout's owner is not running tests, since the mesher needs about 10.5 GB.
+
+## Owner change — 2026-11-02 19:55 (Claude, session 20623820)
+
+The user reported Codex is out of credit and asked Claude to continue its work.
+Claude now owns WP9 in this checkout; other sessions leave it alone.
+
+Done: the independent review item. `parse_yplus_dat` (mesh.rs) now averages only
+`body` and `body_*` patches, and returns nothing when there is none; the spec
+line in automotive-cfd.md says so. Checks on this tree: CFD 257 passed / 0 failed
+/ 12 ignored; workspace 1443 passed / 0 failed / 29 ignored
+(scratch/claude-yplus-20261102.log); clippy clean; demo 40 nodes, 0 failing,
+5 expected. Catalogue and app launch were not rechecked; no node metadata changed.
+
+Still blocked on the user: the baseline decision above (authorized SAE
+2012-01-0168 copy, or the documented 16 m/s published-replication baseline).
+No acceptance run, G24 change or verified scope resolver until they answer.
+The checkout's branch is still behind main (main has WP10 fixes); merge main
+before the WP9 commit. WP9 remains incomplete and uncommitted.
+
+## Owner returned to Codex — 2026-11-02 (user decision)
+
+The user asked Claude to stop WP9 and leave it for Codex when its credits return.
+Codex owns WP9 again. Claude's only change since 19:55 is the y+ body-only edit
+recorded above (mesh.rs, its test, and one spec sentence); keep or revert it.
+Claude makes no further edits or cargo runs in this checkout and is working on
+WP15 in the separate worktree C:/Users/mabdu/REA/vernon-wp15, cut from main.

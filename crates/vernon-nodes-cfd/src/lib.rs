@@ -21,6 +21,8 @@ mod foam;
 mod loads;
 mod mesh;
 mod pressure;
+mod reference;
+mod reference_record;
 mod study;
 #[cfg(test)]
 mod tests;

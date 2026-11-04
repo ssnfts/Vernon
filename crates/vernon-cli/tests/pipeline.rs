@@ -11,6 +11,73 @@ fn repo() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
 
+/// The airflow results reach the performance stage through the registered
+/// nodes: the measured CdA, the lift sign flipped to downforce, and the same
+/// air state in the site loads. The histories are recorded, not solved here;
+/// the real solver chain is covered by the ignored tests in the airflow crate.
+#[test]
+fn airflow_force_report_reaches_the_vehicle_and_the_site_loads() {
+    use std::sync::Arc;
+    use vernon_graph::{CookContext, Data, ParamValue, Params};
+
+    let reg = vernon_cli::registry();
+    let work = std::env::temp_dir().join(format!("vernon-cli-handoff-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&work);
+    let cook = |id: &str, ins: Vec<Option<Data>>, set: &[(&str, ParamValue)]| -> Vec<Data> {
+        let mut p = Params::from_specs(&reg.info(id).unwrap().params);
+        for (k, v) in set {
+            p.set(k, v.clone());
+        }
+        let dir = work.join(id);
+        std::fs::create_dir_all(&dir).unwrap();
+        let ctx = CookContext { node_name: id.into(), work_dir: dir, frame: 0.0 };
+        reg.get(id).unwrap().cook(&ctx, &ins, &p).unwrap_or_else(|e| panic!("{id}: {e}"))
+    };
+    let j = |d: &Data| Some(Data::Json(Arc::clone(d.as_json().unwrap())));
+
+    let air = cook("cfd.air_state", vec![], &[("t_c", ParamValue::Float(45.0)), ("rh_pct", ParamValue::Float(30.0))]);
+    let case = cook("cfd.case_setup", vec![None, j(&air[0]), None, None, None, None], &[]);
+    let case_dir = case[0].as_file().unwrap().clone();
+    let manifest: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(case_dir.join("vernon_case.json")).unwrap()).unwrap();
+    let (a_ref, half) = (manifest["case_setup"]["aref_m2"].as_f64().unwrap(), manifest["case_setup"]["half_model"].as_bool().unwrap());
+    let reference = Some(Data::json(manifest["case_setup"]["reference"].clone()));
+
+    let mk = |sub: &str, file: &str, text: String| {
+        let d = case_dir.join("postProcessing").join(sub).join("0");
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join(file), text).unwrap();
+    };
+    let (cd, cl) = (0.32, -0.25);
+    let mut coeff = format!("# magUInf : 30\n# Aref : {a_ref}\n# Time Cd Cl\n");
+    let mut info = String::from("# Time Ux_initial p_initial k_initial omega_initial\n");
+    for i in 1..=1500 {
+        coeff += &format!("{i} {cd} {cl}\n");
+        info += &format!("{i} 1e-6 2e-6 1e-6 1e-6\n");
+    }
+    mk("forceCoeffs1", "coefficient.dat", coeff);
+    mk("solverInfo1", "solverInfo.dat", info);
+
+    let solve = cook("cfd.solve_steady", vec![Some(case[0].clone())], &[]);
+    let forces = cook("cfd.force_coeffs", vec![j(&solve[1]), reference, j(&air[0])], &[("half_model", ParamValue::Bool(half))]);
+    let report = forces[1].as_report().unwrap();
+    assert!(report.passes(), "{report:?}");
+    let (cda, cla) = (report.metrics["CdA"].value, report.metrics["ClA"].value);
+    assert!(cda > 0.0 && cla < 0.0, "{cda} {cla}");
+
+    // Manual values that must lose to the connected result.
+    let vehicle = cook("perf.vehicle", vec![Some(forces[1].clone())], &[("cda_m2", ParamValue::Float(2.5)), ("cla_m2", ParamValue::Float(3.0))]);
+    let v = vehicle[1].as_report().unwrap();
+    assert!((v.metrics["CdA"].value - cda).abs() < 1e-12, "{v:?}");
+    assert!((v.metrics["downforce_area"].value + cla).abs() < 1e-12, "{v:?}");
+    assert_eq!(v.metrics["aero_from_solver"].value, 1.0);
+
+    let loads = cook("perf.aero_loads", vec![j(&air[0]), j(&vehicle[0])], &[]);
+    let rho = air[0].as_json().unwrap()["rho"].as_f64().unwrap();
+    assert!((rho - 1.098).abs() < 0.002, "{rho}");
+    assert!(loads.iter().any(|d| d.as_report().is_some()));
+    let _ = std::fs::remove_dir_all(&work);
+}
+
 #[test]
 fn bodykit_pipeline_cooks_every_node_and_every_stage_reports() {
     let reg = vernon_cli::registry();
@@ -149,7 +216,16 @@ fn bodykit_pipeline_cooks_every_node_and_every_stage_reports() {
     let open: Vec<_> = gates.iter().filter(|g| g.expected.is_none()).collect();
     assert!(open.is_empty(), "unexpected gate failures: {open:#?}");
     let expected: BTreeSet<_> = gates.iter().map(|g| (g.node.as_str(), g.metric.as_deref().unwrap_or(""))).collect();
-    assert_eq!(expected, BTreeSet::from([("vehicle_prep", "wheels_found"), ("tet_mesh", "placeholder")]));
+    assert_eq!(
+        expected,
+        BTreeSet::from([
+            ("vehicle_prep", "wheels_found"),
+            ("tet_mesh", "placeholder"),
+            ("cfd_solve", "solve_done"),
+            ("cfd_forces", "data_available"),
+            ("vehicle", "aero_from_solver"),
+        ])
+    );
 
     // File hand-offs exist on disk.
     for node in ["package_3mf", "cfd_case", "fea_deck"] {
