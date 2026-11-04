@@ -5,6 +5,25 @@ catalogue in `NODES.md` counts them) or that depend on a program outside Vernon.
 node says so in its cook warning. The order is the order of value to the validation gates, because the gates are what
 stop a wrong number reaching the next stage.
 
+## Implemented as library modules, not yet wired into their nodes (2026-11-04)
+
+Merged batches added tested algorithms for most items below. Each one compiles
+and passes its own unit tests, but no node calls it yet, so the node keeps its
+placeholder behaviour and white-box warning until it is wired in and its
+report metrics are checked end to end:
+
+| Item | Module |
+|---|---|
+| 1 slicer dialects | `vernon-nodes-print/src/dialects.rs` |
+| 2 tuft detection from images | `vernon-nodes-perf/src/tuft_detect.rs` |
+| 3 preset key schema | `vernon-nodes-print/src/profile_schema.rs` |
+| 4 script bridge | `vernon-nodes-print/src/script_bridge.rs`, `script_template.rs` |
+| 5 snap-arm geometry | `vernon-nodes-print/src/snap_geometry.rs` |
+| 6 cut projection, split search, islands | `vernon-nodes-print/src/polyline_project.rs`, `partition_search.rs`, `island_select.rs` |
+| 7 stretch-aware constraints, ply shear | `vernon-nodes-solar/src/flatten_constraints.rs`, `ply_shear.rs` |
+| strict CFD convergence | `vernon-nodes-cfd/src/convergence.rs` (compare with `cfd.run_convergence` before adopting) |
+| mesh simplification, reconstruction | `vernon-nodes-clean/src/qem_simplify.rs`, `vernon-nodes-capture/src/ball_pivot.rs` |
+
 ## First: items that feed a validation gate
 
 1. **Slicer dialect tables** (`print.flavour_check`). Today it checks object-cancel markers, pressure advance and a few

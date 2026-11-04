@@ -7,7 +7,9 @@
 | [SETUP.md](SETUP.md) | A new Windows PC: toolchain, build, WSL/OpenFOAM, DrivAer data |
 | [CFD-RUNBOOK.md](CFD-RUNBOOK.md) | The next CFD validation stages (0–3) and their run commands |
 | [NODES.md](NODES.md) | Generated catalogue of every node (`vernon-cli list --markdown`) |
-| [ROADMAP.md](ROADMAP.md) | White-box nodes and external-program routes still open |
+| [ROADMAP.md](ROADMAP.md) | White-box nodes, external-program routes and library modules still to wire into nodes |
+| [VALIDATION.md](VALIDATION.md) | The benchmark suite: what each check proves and what is not validated |
+| [AGENT_GUIDE.md](AGENT_GUIDE.md) | Generated guide for AI agents driving Vernon through the MCP server (`vernon-cli agent-guide`) |
 
 ## Specifications (`specs/`)
 Clean-room behaviour contracts, the source of truth for each node group:

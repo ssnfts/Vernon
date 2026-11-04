@@ -2,7 +2,7 @@
 .SYNOPSIS
   Tests the packaging helpers and a real install cycle of the built zip.
 .DESCRIPTION
-  . .\scripts\dev-env.ps1; .\scripts\package.ps1; .\scripts\package-selftest.ps1
+  . .\scripts\dev-env.ps1; .\scripts\release\package.ps1; .\scripts\release\package-selftest.ps1
   1. Unit checks of the helper functions in packaging\installer\lib.ps1.
   2. Clean-room install test, run in a temp folder whose name contains
      spaces, and again on another fixed drive when one has room: unzip,
@@ -19,12 +19,12 @@ param(
     [int]$ProbeSeconds = 10
 )
 $ErrorActionPreference = 'Stop'
-$root = Split-Path -Parent $PSScriptRoot
+$root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 . (Join-Path $root 'packaging\installer\lib.ps1')
 if (-not $Zip) {
     $Zip = Get-ChildItem (Join-Path $root 'dist') -Filter 'Vernon-*-win64.zip' | Sort-Object LastWriteTime | Select-Object -Last 1 -ExpandProperty FullName
 }
-if (-not $Zip -or -not (Test-Path -LiteralPath $Zip)) { throw 'no package zip; run scripts\package.ps1 first' }
+if (-not $Zip -or -not (Test-Path -LiteralPath $Zip)) { throw 'no package zip; run scripts\release\package.ps1 first' }
 
 $script:fail = 0; $script:pass = 0
 function Check([string]$what, [bool]$ok, [string]$detail = '') {

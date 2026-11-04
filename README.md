@@ -144,14 +144,20 @@ plain `cargo` works.
 | `crates/vernon-io` | OBJ, STL, PLY, 3MF, XYZ, E57, LAS readers and writers |
 | `crates/vernon-render` | Offscreen wgpu viewport renderer |
 | `crates/vernon-nodes-*` | One crate per stage: geo, capture, clean, surface, print, cfd, fea, solar (+ flatten), perf |
-| `crates/vernon-cli` | `list`, `info`, `cook`; integration and clean-room tests |
-| `app/` | egui/eframe desktop app (binary `vernon`) |
+| `crates/vernon-cli` | `list`, `info`, `cook`, `mcp` (stdio MCP server), `agent-guide`; integration and clean-room tests |
+| `crates/vernon-agent-tools` | Typed tool layer over the graph (add, wire, set, cook, measure, undo) used by the agent and MCP server |
+| `crates/vernon-agent` | In-app agent: OpenAI-compatible client over plain HTTP and the tool loop |
+| `crates/vernon-bench` | Validation and benchmark suite (analytic checks, reference-tool comparisons, timings) |
+| `app/` | egui/eframe desktop app (binary `vernon`), including the agent chat panel |
 | `examples/` | End-to-end demo scene and its cooked outputs |
 | `tests/golden/` | Reference outputs recorded with external open-source tools |
+| `bench/` | Benchmark runner (`run.ps1`, `run.sh`), baseline timings and the latest report |
+| `packaging/` | Installer, uninstaller and notes shipped inside the Windows package |
 | `scripts/dev-env.ps1` | Puts cargo and MinGW on PATH (dot-source in each shell) |
 | `scripts/setup/` | New-PC setup: toolchain check, WSL, Ubuntu, OpenFOAM, DrivAer data |
 | `scripts/verification/` | Bounded background check runner (profiles, status, self-tests) |
 | `scripts/cfd/` | WSL environment, memory policy and cleanup for real CFD runs |
+| `scripts/release/` | Windows package (folder, zip, installer), its self-test, third-party licence list |
 | `scripts/golden/` | Scripts that record golden references |
 | `docs/` | Specs, plans, research and the hand-off logs, indexed in [docs/README.md](docs/README.md) |
 
@@ -174,6 +180,21 @@ under `scratch/continuation/runs/<run-id>/`:
 ```powershell
 .\scripts\verification\start-verification.ps1 -Profile full -RunId full-YYYYMMDD-a -JobTimeoutSeconds 2400
 .\scripts\verification\verification-status.ps1 -Json
+```
+
+Accuracy and speed are tracked separately by the benchmark suite. Every check
+ends as PASS, FAIL or SKIPPED(reason), and [docs/VALIDATION.md](docs/VALIDATION.md)
+lists what is and isn't validated:
+
+```powershell
+.\bench\run.ps1 -Quick          # writes bench/results/REPORT.md and results.json
+```
+
+To build a portable Windows package (folder, zip and installer):
+
+```powershell
+.\scripts\release\package.ps1
+.\scripts\release\package-selftest.ps1
 ```
 
 ## CFD validation (work package 9)
@@ -225,7 +246,7 @@ contributing, and [AGENTS.md](AGENTS.md) if you are a coding agent.
 Apache-2.0: see [LICENSE](LICENSE) and [NOTICE](NOTICE). Third-party crates and
 the user-interface fonts (OFL-1.1, Ubuntu Font Licence 1.0) are listed with
 their licence texts in [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md);
-regenerate it with `scripts/third-party-licenses.ps1` after changing
+regenerate it with `scripts/release/third-party-licenses.ps1` after changing
 dependencies, and ship it with every binary. External open-source solvers
 are run as separate processes under their own licences. Datasets such as the
 TUM DrivAer surfaces are not part of this repository and keep their own terms.

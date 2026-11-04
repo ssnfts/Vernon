@@ -6,6 +6,26 @@ Sections are newest first. Older sections use the original machine's paths
 (C:\Users\mabdu\REA\...) and the old flat scripts/ layout, and are kept as
 evidence. For current commands use docs/SETUP.md and docs/CFD-RUNBOOK.md.
 
+## Side branches merged into main, 2026-11-04
+
+The user asked to merge and push the work that was only on side branches.
+Merged into main (all were based on 2e01920): claude/agent-client (includes
+agent-tools), claude/batch-core, claude/batch-physics, claude/batch-print,
+qwen/t01-gcode-dialects, claude/packaging, claude/validation-bench.
+Not merged: qwen/t02–t06, which failed their own gates after 6 rounds each;
+the same tasks pass in claude/batch-physics and claude/batch-print.
+qwen/t07 and t08 had no commits.
+Conflicts were limited to README (kept the new README and added the MCP
+section), .gitignore (union with dist/) and Cargo.lock (kept main's and let
+cargo add only vernon-bench). The packaging scripts and the licence generator
+moved to scripts/release/. The merged modules are library code only: no new
+nodes (still 194 implemented / 3 white-box). docs/ROADMAP.md maps each module
+to the node it should be wired into.
+Verified with full queue merged-branches-full-20261104-a (run from
+E:\REAernon, the real folder behind the C:\ junction): build, tests
+1732 passed / 0 failed / 35 ignored, clippy -D warnings clean, demo 40 nodes
+0 failed, catalogue identical to docs/NODES.md.
+
 ## Repository organised for a second PC, 2026-11-04
 
 The user asked to connect https://github.com/ssnfts/Vernon.git, organise the

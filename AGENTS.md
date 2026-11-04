@@ -68,7 +68,7 @@ folder: the CFD input checks refuse junctions and links.
 Definition of done for **every** change:
 ```powershell
 cargo build --workspace
-cargo test --workspace                                   # currently 1543 passing, 0 failing, 35 ignored
+cargo test --workspace                                   # currently 1732 passing, 0 failing, 35 ignored
 cargo clippy --workspace --all-targets -- -D warnings    # must be clean
 cargo run -p vernon-cli -- cook examples/bodykit_pipeline.vrn   # 40 nodes, 0 failing gates, 5 expected
 cargo run -p vernon-cli -- list --markdown > docs/NODES.md      # regenerate after adding or changing nodes
@@ -139,6 +139,9 @@ Rules:
 | `scripts/setup/` | New-PC setup: toolchain check, WSL, Ubuntu, OpenFOAM, DrivAer data |
 | `scripts/verification/` | Bounded background check runner (`start-verification.ps1`, `verification-status.ps1`) |
 | `scripts/cfd/` | Fixed WSL environment, memory policy and Linux cleanup for real CFD runs |
+| `scripts/release/` | Windows package, its self-test, `THIRD_PARTY_LICENSES.md` generator |
+| `crates/vernon-agent`, `crates/vernon-agent-tools` | In-app agent and the typed tool layer behind `vernon-cli mcp` |
+| `crates/vernon-bench`, `bench/` | Validation and benchmark suite (`docs/VALIDATION.md`) |
 | `docs/SETUP.md`, `docs/CFD-RUNBOOK.md` | New machine setup; the next CFD validation stages |
 
 ## Commits

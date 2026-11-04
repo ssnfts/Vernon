@@ -2,7 +2,7 @@
 .SYNOPSIS
   Builds the distributable Vernon folder, zip and SHA-256 file.
 .DESCRIPTION
-  . .\scripts\dev-env.ps1; .\scripts\package.ps1
+  . .\scripts\dev-env.ps1; .\scripts\release\package.ps1
   Produces dist\Vernon-<version>-win64\, dist\Vernon-<version>-win64.zip and
   dist\Vernon-<version>-win64.zip.sha256. <version> comes from the workspace
   Cargo.toml; the git short SHA is stamped into VERSION.txt and MANIFEST.json.
@@ -23,7 +23,7 @@ param(
     [string]$TargetDir
 )
 $ErrorActionPreference = 'Stop'
-$root = Split-Path -Parent $PSScriptRoot
+$root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 . (Join-Path $root 'packaging\installer\lib.ps1')
 if (-not $OutDir) { $OutDir = Join-Path $root 'dist' }
 if ($TargetDir) { $env:CARGO_TARGET_DIR = $TargetDir }
