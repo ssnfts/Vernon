@@ -18,7 +18,14 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 
-function Get-Wp9C0GateFailures($Status, $Row) {
+# $ProbeErrorUtc: times of memory-sampler probe failures. A probe may time out
+# while the case is being copied (heavy file I/O); none may fail once the solver
+# runs, so solver memory is always observed.
+function ConvertTo-Wp9Utc($Value) {
+    if ($Value -is [DateTime]) { return $Value.ToUniversalTime() }
+    return [DateTime]::Parse([string]$Value, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind).ToUniversalTime()
+}
+function Get-Wp9C0GateFailures($Status, $Row, [object[]]$ProbeErrorUtc = @()) {
     $failures = [Collections.Generic.List[string]]::new()
     $number = { param($v) $v -is [ValueType] -and $v -isnot [bool] -and [double]::IsFinite([double]$v) }
     if ($Status.status -cne 'completed' -or $Status.exitCode -ne 0) { $failures.Add("run status $($Status.status), exit $($Status.exitCode)") }
@@ -37,7 +44,14 @@ function Get-Wp9C0GateFailures($Status, $Row) {
     $reference = $Row.stage2_seconds_per_iteration_same_window
     if (-not (& $number $spi) -or -not (& $number $reference) -or $spi -gt 1.10 * $reference) { $failures.Add("seconds per iteration $spi against Stage 2 $reference (limit +10%)") }
     $memory = $Status.memorySummary
-    if (-not $memory -or $memory.maxSwapUsedKiB -ne 0 -or $memory.minMemAvailableKiB -lt 1048576 -or $memory.probeFailures -ne 0) { $failures.Add('memory not bounded: swap used, under 1 GiB available, or sampler failures') }
+    if (-not $memory -or $memory.maxSwapUsedKiB -ne 0 -or $memory.minMemAvailableKiB -lt 1048576) { $failures.Add('memory not bounded: swap used or under 1 GiB available') }
+    $solverFrom = $memory.programs.simpleFoam.firstSeenUtc
+    if (-not $solverFrom) { $failures.Add('the sampler never observed the solver') }
+    else {
+        $from = ConvertTo-Wp9Utc $solverFrom
+        $late = @($ProbeErrorUtc | Where-Object { (ConvertTo-Wp9Utc $_) -ge $from })
+        if ($late.Count -gt 0 -or @($ProbeErrorUtc).Count -ne $memory.probeFailures) { $failures.Add("memory probe failed $($late.Count) time(s) while the solver ran") }
+    }
     foreach ($field in @('k', 'omega')) {
         if (-not $Row.counters.$field -or $Row.counters.$field.rows -ne 1000) { $failures.Add("counter for $field does not have 1000 rows") }
     }
@@ -49,7 +63,8 @@ $repo = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
 $run = Join-Path $repo "scratch/continuation/runs/$RunId"
 $status = Get-Content -Raw -LiteralPath (Join-Path $run 'status.json') | ConvertFrom-Json
 $row = Get-Content -Raw -LiteralPath (Join-Path $run 'diagnostic.json') | ConvertFrom-Json
-$failures = Get-Wp9C0GateFailures $status $row
+$probeErrors = @(Get-Content -LiteralPath (Join-Path $run 'memory-samples.jsonl') | ForEach-Object { $_ | ConvertFrom-Json } | Where-Object { $_.probeError } | ForEach-Object { $_.utc })
+$failures = Get-Wp9C0GateFailures $status $row $probeErrors
 if ($failures.Count -eq 0) { Write-Output "WP9_C0_GATE pass run=$RunId"; exit 0 }
 Write-Output "WP9_C0_GATE fail run=$RunId"
 foreach ($f in $failures) { Write-Output "  - $f" }

@@ -11,7 +11,7 @@ function New-Good {
     $status = [pscustomobject]@{
         status = 'completed'; exitCode = 0; profile = 'wp9-diagnostic'; diagnosticVariant = 'c0'
         linuxCleanup = [pscustomobject]@{ success = $true }; sourceBefore = 'abc'; sourceAfter = 'abc'
-        memorySummary = [pscustomobject]@{ maxSwapUsedKiB = 0; minMemAvailableKiB = 3940364; probeFailures = 0 }
+        memorySummary = [pscustomobject]@{ maxSwapUsedKiB = 0; minMemAvailableKiB = 3940364; probeFailures = 1; programs = [pscustomobject]@{ simpleFoam = [pscustomobject]@{ firstSeenUtc = '2026-11-08T15:40:00.0000000Z' } } }
     }
     $row = [pscustomobject]@{
         variant = 'c0'; iterations = 1000; diagnostic_only = $true; acceptance_evidence = $false
@@ -23,7 +23,11 @@ function New-Good {
     return @($status, $row)
 }
 $good = New-Good
-Assert-True ((Get-Wp9C0GateFailures $good[0] $good[1]).Count -eq 0) 'a reproduced, instrumented, normally progressing C0 passes'
+$copyFailure = @('2026-11-08T15:30:40.5149948Z')
+Assert-True ((Get-Wp9C0GateFailures $good[0] $good[1] $copyFailure).Count -eq 0) 'a reproduced, instrumented, normally progressing C0 passes (one probe timed out during the copy)'
+Assert-True ((Get-Wp9C0GateFailures $good[0] $good[1] @([datetime]::Parse('2026-11-08T15:30:40Z').ToUniversalTime())).Count -eq 0) 'probe times may arrive as DateTime objects'
+Assert-True ((Get-Wp9C0GateFailures $good[0] $good[1] @('2026-11-08T16:00:00Z')).Count -ge 1) 'a probe failure while the solver runs is refused'
+Assert-True ((Get-Wp9C0GateFailures $good[0] $good[1] @()).Count -ge 1) 'probe failures must match the summary count'
 $cases = @(
     @{ name = 'failed run'; edit = { param($s, $r) $s.status = 'failed'; $s.exitCode = 4 } },
     @{ name = 'd1 run'; edit = { param($s, $r) $s.diagnosticVariant = 'd1' } },
@@ -40,12 +44,13 @@ $cases = @(
     @{ name = 'slow'; edit = { param($s, $r) $r.phases[0].seconds_per_iteration = 18.7 } },
     @{ name = 'swap'; edit = { param($s, $r) $s.memorySummary.maxSwapUsedKiB = 10 } },
     @{ name = 'low memory'; edit = { param($s, $r) $s.memorySummary.minMemAvailableKiB = 500000 } },
-    @{ name = 'sampler failures'; edit = { param($s, $r) $s.memorySummary.probeFailures = 1 } },
+    @{ name = 'sampler failures miscounted'; edit = { param($s, $r) $s.memorySummary.probeFailures = 2 } },
+    @{ name = 'solver never sampled'; edit = { param($s, $r) $s.memorySummary.programs = [pscustomobject]@{} } },
     @{ name = 'counter rows'; edit = { param($s, $r) $r.counters.omega.rows = 999 } }
 )
 foreach ($case in $cases) {
     $pair = New-Good
     & $case.edit $pair[0] $pair[1]
-    Assert-True ((Get-Wp9C0GateFailures $pair[0] $pair[1]).Count -ge 1) "the gate refuses: $($case.name)"
+    Assert-True ((Get-Wp9C0GateFailures $pair[0] $pair[1] $copyFailure).Count -ge 1) "the gate refuses: $($case.name)"
 }
 Write-Output "WP9_C0_GATE_TESTS passed=$passed failed=0"
