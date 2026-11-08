@@ -6,6 +6,25 @@ Sections are newest first. Older sections use the original machine's paths
 (C:\Users\mabdu\REA\...) and the old flat scripts/ layout, and are kept as
 evidence. For current commands use docs/SETUP.md and docs/CFD-RUNBOOK.md.
 
+## WP9 Stage 2 launched (user approved "start stage 2"), 2026-11-08
+
+Run `wp9-solve-fastback-20261108-a`, profile `wp9-solve` (Fastback, dx0 0.32,
+serial mesh, 16 ranks, 7000 iterations, window 1000; mesh limit 100 min, solver
+2700 min, outer 172800 s). Started 2026-11-08T01:51:04Z from commit 160b280,
+clean tree, sourceBefore 1f8d03eb…a6f6 (same as the pilot). Launched as is: no
+automatic resume. Expected end ~2026-11-09 15:00–17:00 UTC (37–39 h); outer bound
+expires 2026-11-10 01:51 UTC.
+Pre-flight: on AC; Windows idle sleep and hibernate on AC are "never" (powercfg
+read only); host free 20.7 GB; ChatGPT, Codex and the AI-3D download closed; WSL
+freshly started (MemAvailable 24.6 GiB); E: 611 GB free.
+To check: `verification-status.ps1 -RunId wp9-solve-fastback-20261108-a` (shows
+the memory line). To stop: `stop-verification.ps1 -RunId … -Reason …`. If the
+worker dies without a final status, run the Linux cleanup in the runbook first.
+When it ends: verify from the artifacts (marker, replication-solve.json, solver
+log End and iteration count, force/convergence/benchmark reports), report Cd vs
+0.275 with the 5% band, convergence pass/fail and residuals exactly as the gates
+say; "not converged" is reported as such. Stage 3 only if Stage 2 passes its gates.
+
 ## WP9 Stage 1 pilot measured; Stage 2 awaiting the user's approval, 2026-11-04
 
 Run `wp9-solve-pilot-20261104-a` (profile wp9-solve-pilot, commit b2a5a31, clean
