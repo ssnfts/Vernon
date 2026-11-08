@@ -9,9 +9,17 @@ screen. `openfoam2606-dev` is installed, so the coded counter below is available
 These runs **screen** numerics. None of them can demonstrate the two-window
 acceptance, feed `cfd.benchmark_check` or `cfd.mesh_study`, or change a gate.
 Acceptance is evaluated only on a full protocol run with the intended production
-numerics. If a change passes only by adding numerical diffusion (for example
-upwind kept beyond the startup, or heavy relaxation that is still active at the
-end), it needs a separate accuracy assessment before it can be used.
+numerics. The two kinds of change are different:
+
+- **Upwind** changes the discretisation. It adds spatial numerical diffusion. If
+  it were kept beyond the specified startup, the result would need an accuracy
+  assessment.
+- **Under-relaxation** changes only the iteration process: the converged
+  solution of the same discretised equations is unchanged. A run that settles
+  only under heavy relaxation still has to show proper convergence with the
+  settings it ends on.
+
+Both need the same convergence assessment.
 
 ## Evidence so far (Stage 2 log, iterations 1–1902, read while the run continues)
 
@@ -65,7 +73,43 @@ the undershoots.
     the ground, underbody (below the body floor), inside the layer band (wall
     distance below the total layer thickness), near or far wake, or other.
 
-## Run matrix (one change per run; machine time at 17 s per iteration)
+## Revision after review (2026-11-08): C0 and D1 first
+
+Only C0 and D1 are committed now. The rest of the matrix is chosen from their
+results.
+
+- **C0** runs production numerics for iterations 0–1000.
+- **D1** runs upwind k/omega for 1–500 as one solver process. A second process
+  restarts from the written time 500 and runs 501–1000 with the production
+  `limitedLinear 1`. Neither process edits its schemes file while running, and
+  `runTimeModifiable` is false.
+- Both are compared over iterations 501–1000.
+- C0 is also compared, iteration by iteration, with the original Stage 2 log
+  over 1–1000. D1 is queued only if C0's instrumentation checks pass and C0
+  reproduces Stage 2.
+
+The counter was proven on a 4000-cell fixture before the large case
+(`diagnostic::tests::fixture_*`):
+
+- Known injected values: 104 negative cells and 120 below the floor, with exact
+  volumes, regions, wall-distance bands and worst-cell locations. Identical in
+  serial and on 4 ranks.
+- The floor is the model's own `kMin`/`omegaMin` (1e-15), read at run time.
+- The counter's minimum equals OpenFOAM's printed pre-clip minimum in every
+  iteration.
+- Fields and residuals are byte-identical with and without the counter.
+- A restart from a written time reproduces a continuous run exactly. A switched
+  run equals pure upwind up to the switch and differs from it afterwards.
+
+The counter is compiled on the fixture before a timed solve. The large case
+must load that library without compiling. Writes use `purgeWrite 0`, and
+clipping maps are kept at iterations 1, 10, 50, 100, 250, 500, 501, 510, 550,
+750 and 1000. Per-iteration summaries go to
+`postProcessing/wp9ClipCounter/clip_{k,omega}.dat` and are never purged.
+Machine time is about 9.4 solver-hours for both runs, plus copying, compiling
+and startup.
+
+## Original run matrix (one change per run; machine time at 17 s per iteration)
 
 | Id | Start | Change | Iterations | Est. |
 |---|---|---|---|---|

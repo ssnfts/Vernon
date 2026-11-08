@@ -82,7 +82,7 @@ fn history_comparison_reports_the_largest_relative_difference() {
 }
 
 fn counter_text(rows: &[&str]) -> String {
-    let mut t = String::from("# iter lowerBound min nBelow nNegative nZero volumeBelow volumeNegative region_boxA region_boxC region_other band_lt_0.002 band_lt_0.01 band_lt_0.05 band_ge_0.05 hookSeconds\n");
+    let mut t = String::from("# iter lowerBound min nBelow nNegative nZero volumeBelow volumeNegative region_boxA region_boxC region_other band_lt_0.002 band_lt_0.01 band_lt_0.05 band_ge_0.05 hookLocalMaxSeconds hookSeconds\n");
     for r in rows {
         t += r;
         t += "\n";
@@ -92,26 +92,26 @@ fn counter_text(rows: &[&str]) -> String {
 
 #[test]
 fn counter_rows_must_agree_with_openfoam_bounding() {
-    let text = counter_text(&["1 1e-15 -0.0031536787 120 104 0 0.015 0.013 96 8 16 0 0 8 112 0.001", "2 1e-15 -0.5 3 3 0 1 1 0 0 3 0 0 0 3 0.001"]);
+    let text = counter_text(&["1 1e-15 -0.0031536787 120 104 0 0.015 0.013 96 8 16 0 0 8 112 0.001 0.001", "2 1e-15 -0.5 3 3 0 1 1 0 0 3 0 0 0 3 0.001 0.001"]);
     let (regions, rows) = parse_counter(&text).unwrap();
     assert_eq!(regions, ["boxA", "boxC", "other"]);
     assert_eq!(rows[0].bands, [0, 0, 8, 112]);
     let b = parse_bounding(LOG).unwrap();
     check_counter("k", &rows, &b, 1, 2).unwrap();
     // omega bounded at 1 only: rows that count nothing at 2 must match that.
-    let omega = counter_text(&["1 1e-15 -12221.702 5 5 0 1 1 0 0 5 0 0 0 5 0", "2 1e-15 3 0 0 0 0 0 0 0 0 0 0 0 0 0"]);
+    let omega = counter_text(&["1 1e-15 -12221.702 5 5 0 1 1 0 0 5 0 0 0 5 0 0", "2 1e-15 3 0 0 0 0 0 0 0 0 0 0 0 0 0 0"]);
     check_counter("omega", &parse_counter(&omega).unwrap().1, &b, 1, 2).unwrap();
-    let wrong_min = counter_text(&["1 1e-15 -0.004 120 104 0 0.015 0.013 96 8 16 0 0 8 112 0", "2 1e-15 -0.5 3 3 0 1 1 0 0 3 0 0 0 3 0"]);
+    let wrong_min = counter_text(&["1 1e-15 -0.004 120 104 0 0.015 0.013 96 8 16 0 0 8 112 0 0", "2 1e-15 -0.5 3 3 0 1 1 0 0 3 0 0 0 3 0 0"]);
     assert!(check_counter("k", &parse_counter(&wrong_min).unwrap().1, &b, 1, 2).unwrap_err().contains("log min"));
-    let missed = counter_text(&["1 1e-15 -0.0031536787 120 104 0 0.015 0.013 96 8 16 0 0 8 112 0", "2 1e-15 3 0 0 0 0 0 0 0 0 0 0 0 0 0"]);
+    let missed = counter_text(&["1 1e-15 -0.0031536787 120 104 0 0.015 0.013 96 8 16 0 0 8 112 0 0", "2 1e-15 3 0 0 0 0 0 0 0 0 0 0 0 0 0 0"]);
     assert!(check_counter("k", &parse_counter(&missed).unwrap().1, &b, 1, 2).unwrap_err().contains("counter saw nothing"));
-    let extra = counter_text(&["1 1e-15 -12221.702 5 5 0 1 1 0 0 5 0 0 0 5 0", "2 1e-15 -1 1 1 0 0 0 0 0 1 0 0 0 1 0"]);
+    let extra = counter_text(&["1 1e-15 -12221.702 5 5 0 1 1 0 0 5 0 0 0 5 0 0", "2 1e-15 -1 1 1 0 0 0 0 0 1 0 0 0 1 0 0"]);
     assert!(check_counter("omega", &parse_counter(&extra).unwrap().1, &b, 1, 2).unwrap_err().contains("did not bound"));
-    let gap = counter_text(&["2 1e-15 -0.5 3 3 0 1 1 0 0 3 0 0 0 3 0"]);
+    let gap = counter_text(&["2 1e-15 -0.5 3 3 0 1 1 0 0 3 0 0 0 3 0 0"]);
     assert!(check_counter("k", &parse_counter(&gap).unwrap().1, &b, 1, 2).is_err());
-    let unbalanced = counter_text(&["1 1e-15 -0.0031536787 120 104 0 0.015 0.013 96 8 15 0 0 8 112 0", "2 1e-15 -0.5 3 3 0 1 1 0 0 3 0 0 0 3 0"]);
+    let unbalanced = counter_text(&["1 1e-15 -0.0031536787 120 104 0 0.015 0.013 96 8 15 0 0 8 112 0 0", "2 1e-15 -0.5 3 3 0 1 1 0 0 3 0 0 0 3 0 0"]);
     assert!(check_counter("k", &parse_counter(&unbalanced).unwrap().1, &b, 1, 2).unwrap_err().contains("add up"));
-    let zero_floor = counter_text(&["1 0 -0.0031536787 120 104 0 0.015 0.013 96 8 16 0 0 8 112 0", "2 1e-15 -0.5 3 3 0 1 1 0 0 3 0 0 0 3 0"]);
+    let zero_floor = counter_text(&["1 0 -0.0031536787 120 104 0 0.015 0.013 96 8 16 0 0 8 112 0 0", "2 1e-15 -0.5 3 3 0 1 1 0 0 3 0 0 0 3 0 0"]);
     assert!(check_counter("k", &parse_counter(&zero_floor).unwrap().1, &b, 1, 2).is_err());
     assert!(parse_counter(&(text.clone() + "# iter other header\n")).is_err(), "a different header mid-file is refused");
 }
@@ -575,6 +575,7 @@ fn wp9_turbulence_diagnostic() {
         counters.insert(field.into(), serde_json::json!({
             "floor": rows[0].lower_bound, "rows": rows.len(), "windows": w,
             "mean_hook_seconds": window_mean(&rows, 1, last, |r| r.hook_seconds),
+            "mean_hook_local_max_seconds": window_mean(&rows, 1, last, |r| r.hook_local_max_seconds),
             "file": case.join(format!("postProcessing/wp9ClipCounter/clip_{field}.dat")),
             "worst_cells": case.join(format!("postProcessing/wp9ClipCounter/clip_{field}_worst.dat")),
         }));
@@ -638,5 +639,6 @@ fn wp9_turbulence_diagnostic() {
     let back: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&out_path).unwrap()).unwrap();
     assert_eq!(back["variant"], variant.id());
     assert_eq!(back["iterations"], last);
-    println!("WP9_DIAGNOSTIC_COMPLETE variant={} iterations={} phases={} np=16 instrumentation=checked acceptance_evidence=0", variant.id(), last, phases.len());
+    // Own line: --nocapture output follows cargo's "test name ... " prefix.
+    println!("\nWP9_DIAGNOSTIC_COMPLETE variant={} iterations={} phases={} np=16 instrumentation=checked acceptance_evidence=0", variant.id(), last, phases.len());
 }

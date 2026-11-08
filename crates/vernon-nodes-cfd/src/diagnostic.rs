@@ -273,6 +273,9 @@ pub struct CounterRow {
     pub volume_negative: f64,
     pub regions: Vec<u64>,
     pub bands: [u64; 4],
+    /// The counter's own work, before communication; maximum over ranks.
+    pub hook_local_max_seconds: f64,
+    /// Master's wall time in the hook, including waits in its reductions.
     pub hook_seconds: f64,
 }
 
@@ -282,14 +285,14 @@ pub fn parse_counter(text: &str) -> Result<(Vec<String>, Vec<CounterRow>), Strin
     let header = lines.next().ok_or("empty counter file")?;
     let names: Vec<&str> = header.strip_prefix("# ").ok_or("counter header missing")?.split_whitespace().collect();
     let fixed = ["iter", "lowerBound", "min", "nBelow", "nNegative", "nZero", "volumeBelow", "volumeNegative"];
-    if names.len() < fixed.len() + 6 || names[..fixed.len()] != fixed {
+    if names.len() < fixed.len() + 7 || names[..fixed.len()] != fixed {
         return Err(format!("unexpected counter header: {header}"));
     }
-    let regions: Vec<String> = names[fixed.len()..names.len() - 5]
+    let regions: Vec<String> = names[fixed.len()..names.len() - 6]
         .iter()
         .map(|n| n.strip_prefix("region_").map(str::to_string).ok_or_else(|| format!("bad region column {n}")))
         .collect::<Result<_, _>>()?;
-    if names[names.len() - 5..] != ["band_lt_0.002", "band_lt_0.01", "band_lt_0.05", "band_ge_0.05", "hookSeconds"] {
+    if names[names.len() - 6..] != ["band_lt_0.002", "band_lt_0.01", "band_lt_0.05", "band_ge_0.05", "hookLocalMaxSeconds", "hookSeconds"] {
         return Err(format!("unexpected counter tail: {header}"));
     }
     let mut rows = Vec::new();
@@ -318,7 +321,8 @@ pub fn parse_counter(text: &str) -> Result<(Vec<String>, Vec<CounterRow>), Strin
             volume_negative: f(v[7])?,
             regions: v[8..8 + n].iter().map(|s| u(s)).collect::<Result<_, _>>()?,
             bands: [u(v[8 + n])?, u(v[9 + n])?, u(v[10 + n])?, u(v[11 + n])?],
-            hook_seconds: f(v[12 + n])?,
+            hook_local_max_seconds: f(v[12 + n])?,
+            hook_seconds: f(v[13 + n])?,
         });
     }
     Ok((regions, rows))
@@ -575,6 +579,11 @@ const COUNTER_CORRECT: &str = r##"
                     wp9ClippedRegion.push_back(region);
                 }
             }
+            // Local work only, before any communication (a reduction would
+            // also wait for the slowest rank's solve); the maximum over ranks.
+            scalar wp9LocalSeconds =
+                std::chrono::duration<double>(std::chrono::steady_clock::now() - wp9Start).count();
+            reduce(wp9LocalSeconds, maxOp<scalar>());
             reduce(wp9Below, sumOp<label>());
             reduce(wp9Negative, sumOp<label>());
             reduce(wp9Zero, sumOp<label>());
@@ -646,13 +655,13 @@ const COUNTER_CORRECT: &str = r##"
                 {
                     os << "# iter lowerBound min nBelow nNegative nZero volumeBelow volumeNegative";
                     forAll(wp9Order, r) { os << " region_" << wp9Order[r].c_str(); }
-                    os << " region_other band_lt_0.002 band_lt_0.01 band_lt_0.05 band_ge_0.05 hookSeconds\n";
+                    os << " region_other band_lt_0.002 band_lt_0.01 band_lt_0.05 band_ge_0.05 hookLocalMaxSeconds hookSeconds\n";
                 }
                 os << wp9Iter << ' ' << wp9Floor << ' ' << wp9Lowest << ' ' << wp9Below << ' ' << wp9Negative << ' '
                    << wp9Zero << ' ' << wp9VolBelow << ' ' << wp9VolNegative;
                 forAll(wp9RegionCounts, r) { os << ' ' << wp9RegionCounts[r]; }
                 forAll(wp9BandCounts, b) { os << ' ' << wp9BandCounts[b]; }
-                os << ' ' << wp9Seconds << '\n';
+                os << ' ' << wp9LocalSeconds << ' ' << wp9Seconds << '\n';
 
                 if (wp9IsMap)
                 {
