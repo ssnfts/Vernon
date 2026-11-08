@@ -1,0 +1,72 @@
+{
+  "schema": "vernon.domino_warmstart_scaling.v1",
+  "purpose": "Per-channel conversion audit for AI initial fields. A channel may reach CFD import only when its status is 'verified'; scripts/ai/domino_warmstart_scaling.py::verified_convention enforces this.",
+  "updated_utc": "2026-11-09",
+  "plan": "docs/superpowers/plans/2026-11-09-domino-cfd-warm-start.md, sections 6 and 19.1",
+  "model": {
+    "repository": "nvidia/domino_drivaerml",
+    "revision": "35b1bf1edafdaa2600d16182825890cd51c07427",
+    "checkpoint": "0.501",
+    "framework": "PhysicsNeMo 1.3.0",
+    "install_root": "E:/AI-3D/DoMINO/weights",
+    "sha256": {
+      "volume/DoMINO.0.501.mdlus": "faf54e217ca7855fa085122fb3a77b3aeae39f0a09a9b14c1652f1a6c9902882",
+      "surface/DoMINO.0.501.mdlus": "ad45e9477a7c0336c07a039ba70db7ddc9a2254d4ff94104d9c297ae7d7b662b",
+      "volume/scaling_factors.pkl": "895b876ab7a2f32b4c714e4eafc7b2e7d94029e037bfc2950cf8c6cb2a818c2d",
+      "surface/scaling_factors.pkl": "895b876ab7a2f32b4c714e4eafc7b2e7d94029e037bfc2950cf8c6cb2a818c2d",
+      "volume/config.yaml": "2c9670c7c3139e9c4e12799e66efdd94a7793e4516c0bfbb4fc98d592e209f73",
+      "surface/config.yaml": "43a3e7360e319b239d3d946aa04e3ac310dde1b20f7eb71be38943dd3bb27202",
+      "volume/global_stats.json": "f926a7346138f334ebf23c8da7073198ef4835ade955c121a6bd54771aee6ff3",
+      "surface/global_stats.json": "6cea892d398a2d2ee3a0e87c67d5f2587fba7825a9b2d38505081a27e448d41c",
+      "download-manifest.json": "099e403434405d262356b33068dcb93ebdffd8f7a128db931428e12eb2296941",
+      "scripts/ai/domino_bridge.py@e3d55d4": "38b39cb6f58f6e92ce17f4630afd03f2b3194b34ac50dec25a55aa143b88400c"
+    },
+    "hashes_rechecked_utc": "2026-11-09; the three model hashes recorded in the plan match"
+  },
+  "normalization": {
+    "config_value": "min_max_scaling",
+    "statistical_inverse": "f_hat = (y + 1) / 2 * (max - min) + min, unclamped",
+    "encode_parameters": false,
+    "global_parameters_note": "30 m/s and 1.205 kg/m^3 are reference constants, not learned Reynolds conditioning",
+    "scaler_source_used_by_bridge": "scaling_factors.pkl min_val/max_val['volume_fields']",
+    "pkl_vs_global_stats_compared": false,
+    "pkl_vs_global_stats_note": "Not yet compared: the pickle needs NumPy, which the Windows Python lacks; compare inside the AI environment."
+  },
+  "evidence_leads": [
+    {
+      "source": "volume/global_stats.json",
+      "observation": "pressure_volume min -2.3051293, max 0.85082501, mean -0.17798688; velocity mean (0.50533861, -0.0011122959, 0.011512947), max |component| about 2.4",
+      "reading": "Velocity is already nondimensional. A stagnation maximum of 0.851 fits p/(0.5 rho U^2) with gauge about -0.15 better than p/(rho U^2), which needs gauge +0.35. Hypothesis only; it does not verify any channel.",
+      "resolves_by": "Bernoulli fit on upstream inviscid probes (fit_bernoulli / classify_pressure_scale), stagnation probe and far-field U_hat -> (1,0,0), plus same-checkpoint reference parity (plan 6.4)"
+    }
+  ],
+  "channels": [
+    {
+      "index": 0, "name": "Ux", "status": "unresolved", "convention": "u_ref",
+      "upstream_definition": "candidate U_x / U_ref", "reference": {"value": 30.0, "unit": "m/s", "provenance": "checkpoint global_parameters"},
+      "openfoam_target": "U.x, [0 1 -1 0 0 0 0]", "source": null, "verification_artifact": null, "tolerance": null
+    },
+    {
+      "index": 1, "name": "Uy", "status": "unresolved", "convention": "u_ref",
+      "upstream_definition": "candidate U_y / U_ref", "reference": {"value": 30.0, "unit": "m/s", "provenance": "checkpoint global_parameters"},
+      "openfoam_target": "U.y, [0 1 -1 0 0 0 0]", "source": null, "verification_artifact": null, "tolerance": null
+    },
+    {
+      "index": 2, "name": "Uz", "status": "unresolved", "convention": "u_ref",
+      "upstream_definition": "candidate U_z / U_ref", "reference": {"value": 30.0, "unit": "m/s", "provenance": "checkpoint global_parameters"},
+      "openfoam_target": "U.z, [0 1 -1 0 0 0 0]", "source": null, "verification_artifact": null, "tolerance": null
+    },
+    {
+      "index": 3, "name": "pressure", "status": "unresolved", "convention": null,
+      "upstream_definition": "unresolved: rho_u_squared or half_rho_u_squared, gauge unknown",
+      "reference": {"value": [30.0, 1.205], "unit": ["m/s", "kg/m^3"], "provenance": "checkpoint global_parameters"},
+      "gauge": "unresolved; align additively to the control case by far-field least squares",
+      "openfoam_target": "p (kinematic gauge), [0 2 -2 0 0 0 0]", "source": null, "verification_artifact": null, "tolerance": null
+    },
+    {
+      "index": 4, "name": "nut", "status": "unresolved", "convention": null,
+      "upstream_definition": "unknown; not imported in the first delivery",
+      "reference": null, "openfoam_target": "not used", "source": null, "verification_artifact": null, "tolerance": null
+    }
+  ]
+}
