@@ -6,6 +6,51 @@ Sections are newest first. Older sections use the original machine's paths
 (C:\Users\mabdu\REA\...) and the old flat scripts/ layout, and are kept as
 evidence. For current commands use docs/SETUP.md and docs/CFD-RUNBOOK.md.
 
+## WP9 Stage 2 stopped for turbulence diagnostics (user decision), 2026-11-08
+
+Run `wp9-solve-fastback-20261108-a` was **stopped by the user's decision** at
+iteration 2546 of 7000. Status `cancelled`, exit 130, finished 14:42:02Z, Linux
+cleanup success (attempted 1, marker `VERNON_WSL_GROUP_STOPPED`), no OpenFOAM
+process left. **There is no gate verdict.** It is not a converged or a failed
+protocol run. It is a cancelled one and cannot be resumed or certified.
+
+What the history showed when it was stopped:
+
+- k and omega were clipped (`bounding k`, `bounding omega`) in **every**
+  iteration. The mean per-iteration k minimum was about -0.7 m²/s² (worst
+  -2.5), with k maximum 36–50 against a freestream 0.0024. Omega minima stayed
+  around -6e3 to -2e4, and omega reached 4.5e22 in iterations 1–200.
+- RMS initial residuals over iterations 1546–2545: p 1.58e-3, U 2.03e-2,
+  k 2.18e-4, omega 4.14e-4. They had been flat since about iteration 400, and
+  the gate is 1e-5.
+- Cd (screening only): 0.2736 over 1046–1545 and 0.2760 over 1546–2546, a
+  change of 0.85% (gate 0.2%), sd 0.0080.
+- y+ at 2000: body 0.32–802 (mean 24), ground 0.36–1795, wheels 0.97–423.
+  Spalding nut, omega and kqR wall functions.
+- Throughput: 17.0 s per iteration (pilot 18.7). Rank peak 1.64 GiB, solver
+  total RSS peak 22.4 GB, WSL MemAvailable min 3.9 GiB, no swap, run folder
+  peak 10.8 GB.
+- **Recipe deviation:** `docs/specs/automotive-cfd.md` specifies upwind k/omega
+  for the first 500 iterations. `fv_schemes` (`crates/vernon-nodes-cfd/src/foam.rs`)
+  writes `limitedLinear 1` from iteration 1. The pilot and Stage 2 both lacked
+  the specified startup.
+
+Kept for diagnostics: the decomposed 12M case with times 0, 1000 and 2000 in
+`scratch\continuation\runs\wp9-solve-fastback-20261108-a\temp\vernon-cfd-98196-cfd.solve_steady-8\native\case\`,
+plus logs, `memory-summary.json` and `status.json`. The pilot's case is also
+kept, under its own run folder.
+
+Environment change, approved by the user: `openfoam2606-dev` 2606.0~rc2-1
+(with `-tools` and `-source`, 79 packages, 64 MB) is installed in
+`Vernon-Ubuntu-24.04` so that coded fvOptions compile. The v2606 source confirms
+`solve → fvOptions.correct → bound` for both k and omega (`kOmegaSSTBase.C`
+593–595 and 618–620), so a `codeCorrect` hook sees fields before clipping.
+
+Next: the diagnostic screen in
+[docs/superpowers/plans/2026-11-08-wp9-turbulence-diagnostics.md](superpowers/plans/2026-11-08-wp9-turbulence-diagnostics.md).
+Stage 3 stays blocked. Another full protocol run waits until the screen shows
+stable k/omega with the intended production numerics.
+
 ## WP9 Stage 2 launched (user approved "start stage 2"), 2026-11-08
 
 Run `wp9-solve-fastback-20261108-a`, profile `wp9-solve` (Fastback, dx0 0.32,
