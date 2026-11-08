@@ -19,7 +19,9 @@ function Wait-State([string]$Id, [string]$Step = '', [int]$Seconds = 20) {
         if (Test-Path -LiteralPath $path) {
             $state = Read-State $Id
             if ($Step -and $state.activeStep -eq $Step -and $state.childPid) { return $state }
-            if (-not $Step -and $state.status -notin @('starting', 'running')) { return $state }
+            # The worker publishes a terminal status before cleanup; exit code
+            # and finish time arrive only with its final write.
+            if (-not $Step -and $state.status -notin @('starting', 'running') -and $state.finishedUtc) { return $state }
         }
         Start-Sleep -Milliseconds 100
     } while ([DateTime]::UtcNow -lt $deadline)
@@ -304,6 +306,71 @@ foreach ($badOutput in @($solvePassed.Replace('1 passed; 0 failed; 0 ignored;', 
 }
 Remove-Item -LiteralPath $solvePath
 Assert-True (-not (Test-VerificationWp9SolveOutput $solvePassed $protocolMarker $solvePath 'protocol')) 'a missing saved row fails closed'
+
+# ---- WP9 turbulence diagnostic profile: screening runs, never acceptance.
+$diagSteps = @(Get-VerificationSteps 'wp9-diagnostic')
+Assert-True ($diagSteps.Count -eq 1 -and $diagSteps[0].name -eq 'wp9-diagnostic' -and $diagSteps[0].executable -eq 'cargo' -and ($diagSteps[0].arguments -join ' ') -ceq 'test --release -p vernon-nodes-cfd diagnostic::tests::wp9_turbulence_diagnostic -- --exact --ignored --nocapture --test-threads=1') 'the diagnostic profile runs only the exact ignored diagnostic test'
+foreach ($scriptPath in @($worker, $launcher)) {
+    $profileAttribute = (Get-Command $scriptPath).Parameters['Profile'].Attributes | Where-Object { $_ -is [System.Management.Automation.ValidateSetAttribute] }
+    Assert-True ('wp9-diagnostic' -in $profileAttribute.ValidValues) 'worker and launcher explicitly accept wp9-diagnostic'
+}
+$rejected = $false
+try { Assert-VerificationResumeInput 'wp9-diagnostic' 'old-run' } catch { $rejected = $true }
+Assert-True $rejected 'wp9-diagnostic always executes afresh'
+Assert-True ((Get-VerificationDefaultJobTimeout 'wp9-diagnostic') -eq 28800) 'a diagnostic has an eight-hour outer bound'
+Assert-VerificationJobTimeout 'wp9-diagnostic' 28800
+$rejected = $false
+try { Assert-VerificationJobTimeout 'wp9-diagnostic' 28801 } catch { $rejected = $true }
+Assert-True $rejected 'a diagnostic refuses an outer bound above eight hours'
+Assert-True ('wp9-diagnostic' -in $script:Wp9LinuxProfiles -and 'wp9-diagnostic' -in $script:Wp9SampledProfiles) 'a diagnostic is sampled and its Linux processes are cleaned up'
+$fixtureEnvironment = Get-VerificationWp9FixtureEnvironmentFile
+Assert-True ($fixtureEnvironment -cmatch '^/mnt/[a-z]/.+/scripts/cfd/wp9-diagnostic-fixture-env\.sh$') 'the fixture environment is this checkout''s script as seen from WSL'
+Assert-True ((Get-VerificationWp9DiagnosticSource) -like '*scratch*continuation*runs*wp9-solve-fastback-20261108-a*temp*vernon-cfd-98196-cfd.solve_steady-8*native*case') 'the diagnostic source is the stopped Stage 2 case'
+foreach ($variant in @('smoke', 'c0', 'd1')) { Assert-VerificationWp9Input 'wp9-diagnostic' $sizingDistribution $sizingUser $solveEnvironment '' $variant }
+foreach ($inputCase in @(
+    @($sizingDistribution, $sizingUser, $solveEnvironment, 'd2'),
+    @($sizingDistribution, $sizingUser, $solveEnvironment, ''),
+    @($sizingDistribution, $sizingUser, $sizingEnvironment, 'c0'),
+    @('Ubuntu', $sizingUser, $solveEnvironment, 'c0'),
+    @($sizingDistribution, 'root', $solveEnvironment, 'c0')
+)) {
+    $rejected = $false
+    try { Assert-VerificationWp9Input 'wp9-diagnostic' $inputCase[0] $inputCase[1] $inputCase[2] '' $inputCase[3] } catch { $rejected = $true }
+    Assert-True $rejected "wp9-diagnostic refuses variant '$($inputCase[3])' with $($inputCase[0])/$($inputCase[1])/$($inputCase[2])"
+}
+$diagDirectory = Join-Path $repo ('scratch/continuation/library-checks/diagnostic-' + [guid]::NewGuid().ToString('N'))
+[void][IO.Directory]::CreateDirectory($diagDirectory)
+$diagPath = Join-Path $diagDirectory 'diagnostic.json'
+$diagKeys = @('VERNON_WSL_DISTRO','VERNON_WSL_USER','VERNON_WSL_ENV_FILE','VERNON_DIAG_FIXTURE_ENV','VERNON_DIAG_SOURCE','VERNON_DIAG_OUT','VERNON_DIAG_VARIANT')
+$diagSaved = @{}
+foreach ($key in $diagKeys) { $diagSaved[$key] = [Environment]::GetEnvironmentVariable($key, 'Process') }
+try {
+    foreach ($key in $diagKeys) { [Environment]::SetEnvironmentVariable($key, 'inherited', 'Process') }
+    Set-VerificationWp9DiagnosticEnvironment $diagDirectory 'd1'
+    $expected = [ordered]@{ VERNON_WSL_DISTRO = $sizingDistribution; VERNON_WSL_USER = $sizingUser; VERNON_WSL_ENV_FILE = $solveEnvironment; VERNON_DIAG_FIXTURE_ENV = $fixtureEnvironment; VERNON_DIAG_SOURCE = (Get-VerificationWp9DiagnosticSource); VERNON_DIAG_OUT = $diagPath; VERNON_DIAG_VARIANT = 'd1' }
+    foreach ($key in $expected.Keys) { Assert-True ([Environment]::GetEnvironmentVariable($key, 'Process') -ceq $expected[$key]) "diagnostic fixes $key over an inherited value" }
+} finally { foreach ($key in $diagSaved.Keys) { [Environment]::SetEnvironmentVariable($key, $diagSaved[$key], 'Process') } }
+$diagPassed = "running 1 test`ntest diagnostic::tests::wp9_turbulence_diagnostic ... ok`ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 384 filtered out;"
+$diagMarker = 'WP9_DIAGNOSTIC_COMPLETE variant=d1 iterations=1000 phases=2 np=16 instrumentation=checked acceptance_evidence=0'
+$validDiagRow = [ordered]@{ scope = 'turbulence_diagnostic'; variant = 'd1'; diagnostic_only = $true; acceptance_evidence = $false; physical_validation = $false; np = 16; iterations = 1000; phases = @(@{ phase = 1 }, @{ phase = 2 }) }
+Write-VerificationJson $diagPath $validDiagRow
+Assert-True (Test-VerificationWp9DiagnosticOutput $diagPassed $diagMarker $diagPath 'd1') 'a diagnostic accepts one executed test, its marker and a matching reloaded row'
+Assert-True (-not (Test-VerificationWp9DiagnosticOutput $diagPassed $diagMarker $diagPath 'c0')) 'a d1 row never completes a c0 run'
+foreach ($badMarker in @('', $diagMarker.Replace('acceptance_evidence=0', 'acceptance_evidence=1'), $diagMarker.Replace('iterations=1000', 'iterations=999'), $diagMarker.Replace('phases=2', 'phases=1'), $diagMarker.Replace('instrumentation=checked', 'instrumentation=skipped'), ($diagMarker + "`n" + $diagMarker), ($diagMarker + "`nWP9_REPLICATION_SOLVE_COMPLETE x"), ('note ' + $diagMarker))) {
+    Assert-True (-not (Test-VerificationWp9DiagnosticOutput $diagPassed $badMarker $diagPath 'd1')) 'only one exact diagnostic marker matching the variant qualifies'
+}
+foreach ($badField in @(@('scope', 'published_replication'), @('variant', 'c0'), @('diagnostic_only', $false), @('acceptance_evidence', $true), @('physical_validation', $true), @('np', 8), @('iterations', 500), @('cd', 0.27), @('converged', $true))) {
+    $badRow = [ordered]@{}
+    foreach ($key in $validDiagRow.Keys) { $badRow[$key] = $validDiagRow[$key] }
+    $badRow[$badField[0]] = $badField[1]
+    Write-VerificationJson $diagPath $badRow
+    Assert-True (-not (Test-VerificationWp9DiagnosticOutput $diagPassed $diagMarker $diagPath 'd1')) "diagnostic reload rejects $($badField[0]) = $($badField[1])"
+}
+Write-VerificationJson $diagPath $validDiagRow
+Assert-True (-not (Test-VerificationWp9DiagnosticOutput $diagPassed.Replace('1 passed; 0 failed; 0 ignored;', '0 passed; 0 failed; 1 ignored;') $diagMarker $diagPath 'd1')) 'an ignored diagnostic test cannot complete the profile'
+Remove-Item -LiteralPath $diagPath
+Assert-True (-not (Test-VerificationWp9DiagnosticOutput $diagPassed $diagMarker $diagPath 'd1')) 'a missing diagnostic row fails closed'
+Remove-Item -LiteralPath $diagDirectory -Recurse
 # Graceful cancellation is requested through a file the worker polls.
 $cancelRun = Join-Path $repo ('scratch/continuation/library-checks/cancel-' + [guid]::NewGuid().ToString('N'))
 [void][IO.Directory]::CreateDirectory($cancelRun)

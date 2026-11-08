@@ -17,6 +17,8 @@ mod air;
 mod case;
 mod coeffs;
 pub mod convergence;
+#[cfg(test)]
+mod diagnostic;
 mod extproc;
 mod foam;
 mod loads;
