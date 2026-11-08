@@ -6,6 +6,64 @@ Sections are newest first. Older sections use the original machine's paths
 (C:\Users\mabdu\REA\...) and the old flat scripts/ layout, and are kept as
 evidence. For current commands use docs/SETUP.md and docs/CFD-RUNBOOK.md.
 
+## WP9 turbulence diagnostics: harness proven, C0 running, D1 queued, 2026-11-08
+
+What exists: profile `wp9-diagnostic` (variants `smoke`, `c0`, `d1`), module
+`crates/vernon-nodes-cfd/src/diagnostic.rs`, fixture env
+`scripts/cfd/wp9-diagnostic-fixture-env.sh`, gate
+`scripts/cfd/wp9-diagnostic-c0-gate.ps1`. Commits 6d50694, 29080d7, 9cce32d and
+91d4789 on `claude/wp9-solve-stages`, not pushed. The plan and its revision are in
+[docs/superpowers/plans/2026-11-08-wp9-turbulence-diagnostics.md](superpowers/plans/2026-11-08-wp9-turbulence-diagnostics.md).
+
+Proven before the large case:
+- **Fixture tests:** the three `diagnostic::tests::fixture_*` tests, run with
+  `VERNON_DIAG_FIXTURE_ENV` set, pass. Logs are in `scratch/wp9-diagnostics/`.
+  - Injected values give 104 negative and 120 below-floor cells, with exact
+    volumes, regions, wall bands and worst-cell locations, in serial and on 4
+    ranks.
+  - The floor is 1e-15 from the model, and the counter minimum equals
+    OpenFOAM's bounding minimum.
+  - Fields are byte-identical with and without the counter.
+  - A restart is exact. A switched run equals pure upwind through the switch
+    and differs after it.
+- **Other checks:**
+  - Unit tests pass 7/0, crate tests 368/0, clippy clean.
+  - Fixture policy 21/0, C0 gate tests 22/0.
+  - Runner self-test passes, including its 8 durable scenarios. A race in its
+    `Wait-State` helper was fixed.
+- **Large-case smoke:** `wp9-diag-smoke-20261108-a` passed its test, but the
+  runner rejected the marker, which shared cargo's line; that is fixed.
+  `wp9-diag-smoke-20261108-b` completed with exit 0 and cleanup confirmed.
+  - Both phases loaded the precompiled counter, with no compile in a timed
+    solve.
+  - Upwind iterations 1–2 clipped 0 k cells. Production iterations 3–4 clipped
+    1,756 and then 4,475, mostly within 1 cm of walls, in the underbody band,
+    at the wheels and near the body. This is four iterations only.
+  - The counter's own work is 3–6 ms per field per iteration.
+  - The one memory-probe timeout happened during the case copy, not while the
+    solver ran.
+
+Running: `wp9-diag-c0-20261108-a` (production numerics, iterations 0–1000),
+started about 15:45Z from 91d4789. A background chain then runs the C0 gate.
+If the gate passes, it launches `wp9-diag-d1-20261109-a`: upwind 1–500, then a
+restart with production for 501–1000.
+
+The gate requires:
+- completed, exit 0, cleanup confirmed and unchanged source;
+- C0 reproducing the Stage 2 log over 1–1000, initial residuals and bounding
+  minima within 1e-6;
+- seconds per iteration within 10% of Stage 2;
+- no swap, at least 1 GiB available, and no probe loss while the solver runs.
+
+If the chain is lost, run the gate by hand:
+`pwsh scripts/cfd/wp9-diagnostic-c0-gate.ps1 -RunId wp9-diag-c0-20261108-a`.
+If it passes, launch with VERNON_WSL_DISTRO, VERNON_WSL_USER, VERNON_WSL_ENV_FILE
+(the solve env) and `VERNON_DIAG_VARIANT=d1` set, using
+`start-verification.ps1 -Profile wp9-diagnostic -RunId <new id>`.
+
+Do not edit `scripts/`, `crates/`, `Cargo.*`, `AGENTS.md` or `CLEAN_ROOM.md`
+while these runs are going: that marks the run `source-changed`.
+
 ## WP9 Stage 2 stopped for turbulence diagnostics (user decision), 2026-11-08
 
 Run `wp9-solve-fastback-20261108-a` was **stopped by the user's decision** at
