@@ -23,7 +23,7 @@ never relabel a failed run.
 |---|---|
 | Fine Fastback mesh (dx0 0.32, 5 layers, serial) | 12,056,197 cells, non-ortho 64.996°, skewness 3.452, 0 failed checks, layers 97.3%; 41 min, 20.7 GB peak |
 | Full check queue | 1732 passed / 0 failed / 35 ignored; clippy, demo, catalogue clean |
-| Solver on the 12M mesh | Stage 2 (2026-11-08) stopped by the user at iteration 2546, `cancelled`, no gate verdict: k/omega clipped every iteration, residuals flat 1e-4..2e-2. Diagnostics 2026-11-09: C0 reproduces Stage 2 exactly; D1 (upwind 1–500) clips nothing until the switch, then clips like C0 (586 vs 611 k cells per iteration) in the same near-wall cells. Upwind startup is not the remedy; location analysis next (see CONTINUATION.md) |
+| Solver on the 12M mesh | Stage 2 (2026-11-08) stopped by the user at iteration 2546, `cancelled`, no gate verdict: k/omega clipped every iteration, residuals flat 1e-4..2e-2. Diagnostics 2026-11-09: C0 reproduces Stage 2 exactly; D1 (upwind 1–500) clips nothing until the switch, then clips like C0 (586 vs 611 k cells per iteration) in the same near-wall cells. Upwind startup is not the remedy. Location analysis: the same few hundred non-hex/transition cells in prism layers 2–4 at the mirror, front wheel contact and nose; next candidates are limited non-orthogonal correction or limited k/omega gradients (see CONTINUATION.md) |
 | Stage 1 pilot, 200 iterations, 16 ranks (2026-11-04) | 18.7 s/it (17.2–19.5), solver RSS ~18–21 GiB flat, rank peak 1.5 GiB, 1.0 GB per write; Stage 2 estimate 37–39 h. Details in CONTINUATION.md |
 
 Earlier 3.76M-cell runs (old 30 m/s setup, 16 ranks) took 4.44 s per iteration

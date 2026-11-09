@@ -6,6 +6,105 @@ Sections are newest first. Older sections use the original machine's paths
 (C:\Users\mabdu\REA\...) and the old flat scripts/ layout, and are kept as
 evidence. For current commands use docs/SETUP.md and docs/CFD-RUNBOOK.md.
 
+## WP9 location analysis of the clipped cells (user chose it), 2026-11-09
+
+How it was run:
+- The tool is `scripts/cfd/wp9-location-analysis.sh` with the read-only coded
+  function object `scripts/cfd/wp9-location/wp9LocationDict`.
+- It runs postProcess on 16 ranks, in WSL, outside the runner. It is not a
+  solve.
+- It works on a separate copy, `scratch/wp9-diagnostics/location-20261109-a/case`,
+  holding the mesh, D1's fields at 1000 and the clip maps of both runs. The D1
+  and C0 cases are untouched. The processor meshes were checked to be
+  identical between the two runs, so processor-local cell indices match.
+- Total time 525 s, mostly the copy.
+- **Outputs:** `postProcessing/wp9Location/summary.txt` (histograms),
+  `cells_proc*.tsv` (persistent and named cells) and `neighbours_proc*.txt`
+  (the named cells' faces).
+- A second pass added clip-count histograms. Its other sections are identical
+  to the first pass, which is kept as `wp9Location.run1`.
+
+How many cells, over iterations 751–1000:
+- **k:** D1 clipped 2,765 distinct cells and C0 2,674. 1,909 are common; the
+  union is 3,530.
+- **omega:** 938 and 925, with 568 common.
+- **Persistent:** 154 k cells and 17 omega cells were clipped in all 250
+  iterations in both runs.
+- **Every other iteration:** 177 k cells (6.4%) were clipped exactly 125 times,
+  a strict alternation (period 2), with the same per-cell counts in both runs.
+  The forces oscillate with a different, slow period.
+- These are 0.02% of the 12.06M cells.
+
+What the clipped cells look like (persistent k; reference values are all cells
+within 5 cm of a wall):
+- **Inside the prism-layer stack, but not at the wall:** wall-layer index 2–4
+  for 91% (omega: index 2–3 for 94%). They are almost never wall-adjacent, so
+  the wall-function cells themselves are not where clipping happens. The median
+  wall distance is 7.9 mm (omega 3.4 mm). The layer settings are 5 layers,
+  expansion 1.2, final layer 0.5 of the local cell size.
+- **Non-hex cells are over-represented:** 40% are not hexahedra, against 5%
+  near walls. For omega it is 62% of the omega cells clipped at least once in
+  751–1000 (the 938 D1 cells). 4- and 5-face cells are 18–28% against 1.4%.
+- **Volume jumps to a neighbour:**
+  - jumps of 1.5× or more: 81% against 22%;
+  - jumps of 6× or more, which mark refinement-level interfaces, among cells
+    clipped at least once: 28% of the 2,765 k cells.
+- **Moderate non-orthogonality, never extreme:** 20–40° for 51–54% of the
+  clipped cells against 8%. The maximum is 64°, and none is over 65°.
+- **Skewness of 0.5 or more:** 40% against 3%. The face-weight minimum is lower
+  than near-wall cells in general.
+- **Wall-adjacent cells clipped at least once:** they lean towards the buffer
+  layer, y+ 1–11, at 6.1% of clipped cells against 1.0% of near-wall cells.
+
+Where the 154 persistent k cells are (0.2 m clusters):
+- **Side mirror / A-pillar, about x 1.8, y 0.8–1.0, z 1.0:** 49 cells.
+  - It includes processor 4 cell 52986, a level-4 cell 6.7 cm from the wall
+    with a 7.7× volume jump at a refinement interface. It was clipped in all
+    250 iterations in both runs.
+- **Front wheel, lower front and ground contact, x about 0.6, z 0–0.2:** 37
+  cells. The contact cells at z 0.012–0.014 are 4-face cells with
+  non-orthogonality of 48–55° and volume jumps of 3.7–7.4×.
+- **Nose, lower lip and front face, x about 0:** about 57 cells. 12 of the 17
+  persistent omega cells are here.
+- **Underbody floor:** for example processor 6 cell 7463, wall-adjacent with
+  y+ 17.
+
+Mesh context, from the Stage 2 mesh build log:
+- **Layer coverage** averaged 4.64 of 5 layers on the body (89% of the
+  thickness). On wheel_fr it was 3.07 (66%) and on wheel_rr 3.26 (69%).
+- 97.3% of wall faces were extruded.
+- checkMesh: OK, non-orthogonality maximum 65.0° (average 5.8), skewness
+  maximum 3.45.
+
+Production numerics relevant to these cells:
+- `laplacianSchemes Gauss linear corrected` and `snGradSchemes corrected`:
+  full explicit non-orthogonal correction.
+- `gradSchemes default Gauss linear`: k and omega gradients are unlimited.
+- `div(phi,k|omega) bounded Gauss limitedLinear 1`.
+
+Reading:
+- The persistent clipping is a local discretisation defect at a fixed set of
+  cells: non-hex and transition cells inside the layer stack, at three
+  geometric features.
+- It is identical in C0 and D1. Part of it is a strict two-iteration limit
+  cycle, which points to numerics, not to physics.
+- The force oscillation is a separate, slower behaviour that this analysis does
+  not explain.
+
+Candidate experiments, each one change, a diagnostic restart from C0's
+iteration 500 (the user decides):
+- **D4:** `limited corrected 0.33` for the laplacian and snGrad terms, the usual
+  treatment for meshes with non-orthogonality near 65°.
+- **D5:** `cellLimited Gauss linear 1` for grad(k) and grad(omega).
+- **Mesh changes**, costlier because they need a re-mesh and a new Stage 1:
+  - layer coverage on the wheels;
+  - mirror-area refinement;
+  - the treatment of the wheel contact patch.
+- **D2 and D3** remain open, but neither targets these cells.
+
+Any production change needs its own justification and an accuracy assessment
+before it is used for acceptance.
+
 ## WP9 turbulence diagnostics: C0 and D1 done, upwind startup does not fix clipping, 2026-11-09
 
 Both runs completed under the runner with exit 0, cleanup confirmed and source

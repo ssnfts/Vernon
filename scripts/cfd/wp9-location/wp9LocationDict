@@ -1,0 +1,359 @@
+/*--------------------------------*- C++ -*----------------------------------*\
+  WP9 turbulence diagnostics: location analysis of clipped k/omega cells.
+  Read-only analysis of a copied case (see ../wp9-location-analysis.sh). It
+  reads the clip-count maps written by the diagnostic counter (D1 at 1000 and
+  750, C0 at instances c0_1000 and c0_750), computes per-cell mesh quality,
+  wall distance, topological wall-layer index and wall y+, and writes
+  histograms per cell group plus per-cell rows for persistent and named cells.
+  Nothing is written into field files.
+\*---------------------------------------------------------------------------*/
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       dictionary;
+    object      wp9LocationDict;
+}
+
+functions
+{
+    wp9Location
+    {
+        type            coded;
+        libs            (utilityFunctionObjects turbulenceModels incompressibleTurbulenceModels);
+        name            wp9Location;
+        executeControl  timeStep;
+        writeControl    timeStep;
+
+        codeOptions
+        #{
+            -I$(LIB_SRC)/finiteVolume/lnInclude \
+            -I$(LIB_SRC)/meshTools/lnInclude
+        #};
+        codeLibs
+        #{
+            -lfiniteVolume \
+            -lmeshTools
+        #};
+        codeInclude
+        #{
+            #include "fvCFD.H"
+            #include "wallDist.H"
+            #include "wallPolyPatch.H"
+            #include "polyMeshTools.H"
+            #include "primitiveMeshTools.H"
+            #include "hexMatcher.H"
+            #include "labelIOList.H"
+            #include "syncTools.H"
+            #include "OFstream.H"
+            #include <vector>
+            #include <string>
+        #};
+
+        codeExecute
+        #{
+            const fvMesh& m = mesh();
+            const Time& rt = m.time();
+            const label nC = m.nCells();
+            const label nF = m.nFaces();
+            const label nIF = m.nInternalFaces();
+            const labelUList& own = m.faceOwner();
+            const labelUList& nei = m.faceNeighbour();
+            const polyBoundaryMesh& pbm = m.boundaryMesh();
+            const label me = Pstream::myProcNo();
+
+            auto rd = [&](const word& n, const word& inst)
+            {
+                return autoPtr<volScalarField>::New
+                (
+                    IOobject(n, inst, m, IOobject::MUST_READ, IOobject::NO_WRITE, IOobject::NO_REGISTER),
+                    m
+                );
+            };
+            const word now = rt.timeName();
+            const scalarField d1k(rd("clipCount_k", now)().primitiveField());
+            const scalarField d1o(rd("clipCount_omega", now)().primitiveField());
+            const scalarField d1k750(rd("clipCount_k", "750")().primitiveField());
+            const scalarField d1o750(rd("clipCount_omega", "750")().primitiveField());
+            const scalarField c0k(rd("clipCount_k", "c0_1000")().primitiveField());
+            const scalarField c0o(rd("clipCount_omega", "c0_1000")().primitiveField());
+            const scalarField c0k750(rd("clipCount_k", "c0_750")().primitiveField());
+            const scalarField c0o750(rd("clipCount_omega", "c0_750")().primitiveField());
+            const scalarField minK(rd("clipMin_k", now)().primitiveField());
+            const scalarField minO(rd("clipMin_omega", now)().primitiveField());
+            const scalarField kF(rd("k", now)().primitiveField());
+            const scalarField oF(rd("omega", now)().primitiveField());
+            autoPtr<volScalarField> yPlusPtr = rd("yPlus", now);
+            const volScalarField& yPlusF = yPlusPtr();
+            const volVectorField U
+            (
+                IOobject("U", now, m, IOobject::MUST_READ, IOobject::NO_WRITE, IOobject::NO_REGISTER),
+                m
+            );
+            const surfaceScalarField phi
+            (
+                IOobject("phi", now, m, IOobject::MUST_READ, IOobject::NO_WRITE, IOobject::NO_REGISTER),
+                m
+            );
+            const labelIOList cellLevel
+            (
+                IOobject("cellLevel", m.facesInstance(), polyMesh::meshSubDir, m,
+                         IOobject::MUST_READ, IOobject::NO_WRITE, IOobject::NO_REGISTER)
+            );
+
+            // Face metrics (as checkMesh -writeFields), reduced to cells.
+            boolList usable(nF, true);   // internal or coupled
+            for (label f = nIF; f < nF; ++f)
+            {
+                usable[f] = pbm[pbm.whichPatch(f)].coupled();
+            }
+            const scalarField ortho(polyMeshTools::faceOrthogonality(m, m.faceAreas(), m.cellCentres()));
+            const scalarField skew(polyMeshTools::faceSkewness(m, m.points(), m.faceCentres(), m.faceAreas(), m.cellCentres()));
+            const scalarField wts(polyMeshTools::faceWeights(m, m.faceCentres(), m.faceAreas(), m.cellCentres()));
+            const scalarField vrat(polyMeshTools::volRatio(m, m.cellVolumes()));
+            auto angle = [](scalar o)
+            {
+                return radToDeg(Foam::acos(Foam::min(scalar(1), Foam::max(scalar(-1), o))));
+            };
+            scalarField nonO(nC, 0), skw(nC, 0), vjump(nC, 1), wmin(nC, 0.5);
+            for (label f = 0; f < nF; ++f)
+            {
+                const label faceCells2[2] = {own[f], f < nIF ? nei[f] : -1};
+                for (const label c : faceCells2)
+                {
+                    if (c < 0) continue;
+                    if (usable[f])
+                    {
+                        nonO[c] = Foam::max(nonO[c], angle(ortho[f]));
+                        skw[c] = Foam::max(skw[c], skew[f]);
+                        vjump[c] = Foam::max(vjump[c], 1.0/Foam::max(vrat[f], VSMALL));
+                        wmin[c] = Foam::min(wmin[c], Foam::min(wts[f], 1 - wts[f]));
+                    }
+                }
+            }
+            scalarField openness(nC), aratio(nC);
+            primitiveMeshTools::cellClosedness(m, m.geometricD(), m.faceAreas(), m.cellVolumes(), openness, aratio);
+
+            // Wall distance, wall-adjacent y+ and patch, topological wall-layer index.
+            const scalarField yW(wallDist::New(m).y().primitiveField());
+            scalarField layer(nC, GREAT), yPw(nC, -1);
+            labelList wallPatch(nC, -1);
+            wordList wallNames;
+            labelList wallIds;
+            forAll(pbm, pi)
+            {
+                if (!isA<wallPolyPatch>(pbm[pi])) continue;
+                wallNames.append(pbm[pi].name());
+                wallIds.append(pi);
+                const labelUList& fc = pbm[pi].faceCells();
+                const scalarField& yp = yPlusF.boundaryField()[pi];
+                forAll(fc, i)
+                {
+                    layer[fc[i]] = 1;
+                    if (yp[i] > yPw[fc[i]]) { yPw[fc[i]] = yp[i]; wallPatch[fc[i]] = wallNames.size() - 1; }
+                }
+            }
+            for (int it = 0; it < 16; ++it)
+            {
+                scalarField nbr;
+                syncTools::swapBoundaryCellList(m, layer, nbr);
+                for (label f = 0; f < nIF; ++f)
+                {
+                    layer[own[f]] = Foam::min(layer[own[f]], layer[nei[f]] + 1);
+                    layer[nei[f]] = Foam::min(layer[nei[f]], layer[own[f]] + 1);
+                }
+                for (label f = nIF; f < nF; ++f)
+                {
+                    if (usable[f]) layer[own[f]] = Foam::min(layer[own[f]], nbr[f - nIF] + 1);
+                }
+            }
+
+            hexMatcher hex;
+            scalarField nFacesF(nC), isHex(nC), levelF(nC), patchF(nC);
+            forAll(m.cells(), c)
+            {
+                nFacesF[c] = m.cells()[c].size();
+                isHex[c] = hex.isA(m, c) ? 1 : 0;
+                levelF[c] = cellLevel[c];
+                patchF[c] = wallPatch[c];
+            }
+
+            // Groups.
+            const wordList groups
+            ({
+                "all", "nearWall_y<0.05",
+                "k_D1_any_751-1000", "k_all250_D1andC0",
+                "omega_D1_any_751-1000", "omega_all250_D1andC0"
+            });
+            const label G = groups.size();
+            auto inGroup = [&](label g, label c) -> bool
+            {
+                switch (g)
+                {
+                    case 0: return true;
+                    case 1: return yW[c] < 0.05;
+                    case 2: return d1k[c] > 0;
+                    case 3: return d1k[c] >= 250 && c0k[c] >= 250;
+                    case 4: return d1o[c] > 0;
+                    case 5: return d1o[c] >= 250 && c0o[c] >= 250;
+                }
+                return false;
+            };
+
+            struct Metric { std::string name; const scalarField* v; std::vector<double> edges; };
+            const std::vector<Metric> metrics
+            ({
+                {"nonOrthoAngle_deg_max", &nonO, {0, 20, 40, 50, 60, 65, 70, 75, 80, 85}},
+                {"skewness_max", &skw, {0, 0.5, 1, 2, 3, 4, 6, 10}},
+                {"neighbourVolumeJump_max", &vjump, {1, 1.5, 2, 3, 4, 6, 10, 20}},
+                {"faceWeight_min", &wmin, {0, 0.05, 0.1, 0.2, 0.3, 0.4}},
+                {"cellAspectRatio", &aratio, {1, 2, 5, 10, 20, 50, 100, 1000}},
+                {"nFaces", &nFacesF, {4, 6, 7, 8, 10, 12, 16, 24}},
+                {"isHex", &isHex, {0, 1}},
+                {"cellLevel", &levelF, {0, 1, 2, 3, 4, 5, 6, 7}},
+                {"wallDistance_m", &yW, {0, 0.001, 0.002, 0.005, 0.01, 0.02, 0.05, 0.1}},
+                {"wallLayerIndex", &layer, {1, 2, 3, 4, 5, 6, 7, 8, 10, 13, 17}},
+                {"wallAdjacentYPlus(-1=not_adjacent)", &yPw, {-1, 0, 1, 5, 11, 30, 100, 300}},
+                {"wallAdjacentPatch(-1=none)", &patchF, {-1, 0, 1, 2, 3}},
+                // Iterations clipped out of 250 (751-1000); 125 = every other iteration.
+                {"clipCount_k_D1_751-1000", &d1k, {0, 1, 2, 50, 100, 124, 125, 126, 200, 249, 250}},
+                {"clipCount_omega_D1_751-1000", &d1o, {0, 1, 2, 50, 100, 124, 125, 126, 200, 249, 250}},
+                {"clipCount_k_C0_751-1000", &c0k, {0, 1, 2, 50, 100, 124, 125, 126, 200, 249, 250}},
+                {"clipCount_omega_C0_751-1000", &c0o, {0, 1, 2, 50, 100, 124, 125, 126, 200, 249, 250}}
+            });
+            labelList offsets(metrics.size() + 1, Zero);
+            for (std::size_t i = 0; i < metrics.size(); ++i) offsets[i + 1] = offsets[i] + label(metrics[i].edges.size());
+            labelList hist(G*offsets.last() + G, Zero);   // last G entries: group sizes
+            for (label c = 0; c < nC; ++c)
+            {
+                for (label g = 0; g < G; ++g)
+                {
+                    if (!inGroup(g, c)) continue;
+                    ++hist[G*offsets.last() + g];
+                    for (std::size_t i = 0; i < metrics.size(); ++i)
+                    {
+                        const double v = (*metrics[i].v)[c];
+                        const auto& e = metrics[i].edges;
+                        label b = 0;
+                        while (b + 1 < label(e.size()) && v >= e[b + 1]) ++b;
+                        ++hist[g*offsets.last() + offsets[i] + b];
+                    }
+                }
+            }
+            Pstream::listCombineReduce(hist, plusEqOp<label>());
+
+            // Overlaps between runs and windows.
+            labelList ov(12, Zero);
+            for (label c = 0; c < nC; ++c)
+            {
+                const bool a = d1k[c] > 0, b = c0k[c] > 0, a7 = d1k750[c] > 0, b7 = c0k750[c] > 0;
+                const bool p = d1o[c] > 0, q = c0o[c] > 0, p7 = d1o750[c] > 0;
+                ov[0] += a; ov[1] += b; ov[2] += (a && b); ov[3] += (a || b);
+                ov[4] += (a && a7); ov[5] += (b && b7);
+                ov[6] += p; ov[7] += q; ov[8] += (p && q); ov[9] += (p || q);
+                ov[10] += (p && p7); ov[11] += (a && p);
+            }
+            Pstream::listCombineReduce(ov, plusEqOp<label>());
+
+            const fileName outDir = rt.globalPath()/"postProcessing"/"wp9Location";
+            mkDir(outDir);
+            if (Pstream::master())
+            {
+                OFstream os(outDir/"summary.txt");
+                os  << "# WP9 location analysis at time " << now
+                    << ". Columns: percent of each group's cells per bin (bin = [edge, next edge)).\n";
+                os  << "# walls:";
+                forAll(wallNames, i) os << ' ' << i << '=' << wallNames[i];
+                os  << "\n\ngroup_sizes";
+                for (label g = 0; g < G; ++g) os << ' ' << groups[g] << '=' << hist[G*offsets.last() + g];
+                os  << "\n\noverlaps k: D1=" << ov[0] << " C0=" << ov[1] << " both=" << ov[2] << " union=" << ov[3]
+                    << " D1_also_551-750=" << ov[4] << " C0_also_551-750=" << ov[5]
+                    << "\noverlaps omega: D1=" << ov[6] << " C0=" << ov[7] << " both=" << ov[8] << " union=" << ov[9]
+                    << " D1_also_551-750=" << ov[10] << "\noverlap k_and_omega_D1=" << ov[11] << "\n";
+                for (std::size_t i = 0; i < metrics.size(); ++i)
+                {
+                    os << "\n" << metrics[i].name << "\nbin";
+                    for (label g = 0; g < G; ++g) os << '\t' << groups[g];
+                    os << '\n';
+                    for (std::size_t b = 0; b < metrics[i].edges.size(); ++b)
+                    {
+                        os << ">=" << metrics[i].edges[b];
+                        for (label g = 0; g < G; ++g)
+                        {
+                            const label n = hist[G*offsets.last() + g];
+                            const label h = hist[g*offsets.last() + offsets[i] + label(b)];
+                            os << '\t' << (n ? 100.0*h/n : 0.0);
+                        }
+                        os << '\n';
+                    }
+                }
+            }
+
+            // Per-cell rows: persistent in both runs, or named recurring worst cells
+            // (processor, local cell) from clip_*_worst.dat of C0 and D1.
+            const label named[][2] =
+            {
+                {4, 52986}, {4, 640618}, {4, 693410}, {4, 129644}, {4, 692832},
+                {3, 13176}, {3, 737837}, {3, 14639}, {3, 14858}, {1, 675193}, {6, 7463}
+            };
+            OFstream cs(outDir/("cells_proc" + Foam::name(me) + ".tsv"));
+            cs  << "proc\tcell\tnamed\tx\ty\tz\tV\tlevel\tnFaces\thex\tnonOrtho\tskew\tvolJump\twMin\taspect"
+                << "\twallDist\tlayer\twallYPlus\twallPatch\td1k\tc0k\td1k750\tc0k750\td1o\tc0o\td1o750\tc0o750"
+                << "\tclipMinK\tclipMinO\tk\tomega\tmagU\n";
+            OFstream ns(outDir/("neighbours_proc" + Foam::name(me) + ".txt"));
+            for (label c = 0; c < nC; ++c)
+            {
+                bool isNamed = false;
+                for (const auto& n : named) { if (n[0] == me && n[1] == c) isNamed = true; }
+                const bool persist = (d1k[c] >= 250 && c0k[c] >= 250) || (d1o[c] >= 250 && c0o[c] >= 250);
+                if (!isNamed && !persist) continue;
+                const vector& x = m.cellCentres()[c];
+                cs  << me << '\t' << c << '\t' << isNamed << '\t' << x.x() << '\t' << x.y() << '\t' << x.z()
+                    << '\t' << m.cellVolumes()[c] << '\t' << cellLevel[c] << '\t' << nFacesF[c] << '\t' << isHex[c]
+                    << '\t' << nonO[c] << '\t' << skw[c] << '\t' << vjump[c] << '\t' << wmin[c] << '\t' << aratio[c]
+                    << '\t' << yW[c] << '\t' << layer[c] << '\t' << yPw[c]
+                    << '\t' << (wallPatch[c] >= 0 ? wallNames[wallPatch[c]] : word("-"))
+                    << '\t' << d1k[c] << '\t' << c0k[c] << '\t' << d1k750[c] << '\t' << c0k750[c]
+                    << '\t' << d1o[c] << '\t' << c0o[c] << '\t' << d1o750[c] << '\t' << c0o750[c]
+                    << '\t' << minK[c] << '\t' << minO[c] << '\t' << kF[c] << '\t' << oF[c] << '\t' << mag(U[c]) << '\n';
+                if (!isNamed) continue;
+                ns  << "cell " << me << '/' << c << " at " << x << " V=" << m.cellVolumes()[c]
+                    << " level=" << cellLevel[c] << " layer=" << layer[c] << " y=" << yW[c]
+                    << " k=" << kF[c] << " omega=" << oF[c] << " U=" << U[c] << '\n';
+                ns  << "  face\tkind\tother\tVratio\tlevel\tnFaces\tlayer\td1k\td1o\tk\tomega\tnonOrtho\tskew\tweight\tphiOut\tarea\n";
+                for (const label f : m.cells()[c])
+                {
+                    const bool mine = own[f] == c;
+                    word kind = "internal";
+                    label o = -1;
+                    scalar phiOut = 0;
+                    if (f < nIF)
+                    {
+                        o = mine ? nei[f] : own[f];
+                        phiOut = mine ? phi[f] : -phi[f];
+                    }
+                    else
+                    {
+                        const label pi = pbm.whichPatch(f);
+                        kind = pbm[pi].name();
+                        phiOut = phi.boundaryField()[pi][f - pbm[pi].start()];
+                    }
+                    ns  << "  " << f << '\t' << kind << '\t' << o;
+                    if (o >= 0)
+                    {
+                        ns  << '\t' << m.cellVolumes()[o]/m.cellVolumes()[c] << '\t' << cellLevel[o] << '\t' << nFacesF[o]
+                            << '\t' << layer[o] << '\t' << d1k[o] << '\t' << d1o[o] << '\t' << kF[o] << '\t' << oF[o];
+                    }
+                    else
+                    {
+                        ns  << "\t-\t-\t-\t-\t-\t-\t-\t-";
+                    }
+                    ns  << '\t' << angle(ortho[f]) << '\t' << skew[f] << '\t' << wts[f] << '\t' << phiOut
+                        << '\t' << mag(m.faceAreas()[f]) << '\n';
+                }
+                ns << '\n';
+            }
+            Info<< "WP9_LOCATION_DONE time=" << now << endl;
+        #};
+    }
+}

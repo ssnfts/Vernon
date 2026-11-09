@@ -158,6 +158,24 @@ near the body, in the underbody and at the front wheel. Decision 4, the
 location analysis, is the strongest next lead. D2 and D3 are still open for the
 user to choose.
 
+## Location analysis (2026-11-09)
+
+Done with `scripts/cfd/wp9-location-analysis.sh` on a copy of the cases (details
+in docs/CONTINUATION.md).
+
+- **Which cells:** the same small set of cells is clipped in C0 and D1. 154 k cells
+  are clipped in every iteration of 751–1000 in both runs, and 177 alternate
+  strictly every other iteration.
+- **Their mesh:** they sit in prism-layer cells 2–4, not at the wall. Non-hex
+  cells, neighbour volume jumps and moderate non-orthogonality (20–55°) are
+  strongly over-represented.
+- **Where:** at the side mirror and A-pillar, the front wheel's lower front and
+  ground contact, and the nose and lower lip.
+- **Suggested next experiments:** limited non-orthogonal correction (D4) or
+  limited k/omega gradients (D5) as one-change restarts from C0's iteration 500.
+  Mesh fixes to the wheel layers, the mirror refinement or the contact patch are
+  the costlier alternative.
+
 ## Decisions after the screen
 
 1. If D1 removes the startup blow-up and clipping stays rare after the switch
