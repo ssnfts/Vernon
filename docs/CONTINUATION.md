@@ -6,6 +6,55 @@ Sections are newest first. Older sections use the original machine's paths
 (C:\Users\mabdu\REA\...) and the old flat scripts/ layout, and are kept as
 evidence. For current commands use docs/SETUP.md and docs/CFD-RUNBOOK.md.
 
+## WP9 D4 prepared; R0 restart check failed its exactness gate, D4 not launched, 2026-11-09
+
+The user chose D4 (limited non-orthogonal correction).
+
+Tooling, commit 751f09f, not pushed:
+- New variants `r0` and `d4` in `crates/vernon-nodes-cfd/src/diagnostic.rs`.
+  Both restart from C0's written iteration 500. `VERNON_DIAG_START_SOURCE` is
+  set by the runner to the C0 case; the mesh is checked to be identical.
+- **D4:** 501–1000 with `laplacianSchemes default Gauss linear limited
+  corrected 0.33` and `snGradSchemes default limited corrected 0.33`. Nothing
+  else in fvSchemes changes, which a unit test checks.
+- **R0:** 501–510 with production schemes. It must reproduce C0's log within
+  1e-6, so that D4's differences can be attributed to its schemes.
+- **Tests:** unit tests 9/0; crate 370 passed, 0 failed, 17 ignored; clippy
+  clean; C0 gate tests 22/0.
+- **Runner self-test:** passes, 8 durable scenarios, twice in a row. Before that
+  it failed three times, at different places: twice when reading status.json
+  while the worker replaced it atomically (a sharing violation, once in the
+  launcher itself), and once when a 3 s timeout fired early. The status-reader
+  race is fixed with `Read-VerificationJson` (a 5 s retry) in the launcher,
+  status, stop and self-test scripts. The early timeout was not changed.
+- **AGENTS.md's test count was not updated.** It needs a full workspace run.
+
+R0 `wp9-diag-r0-20261109-a`:
+- The runner recorded `failed`, exit 101 (the test's own assertion), cleanup
+  confirmed, source unchanged.
+- The restart ran iterations 501–510 exactly, and it loaded the precompiled
+  counter.
+- **It is not bit-exact with C0:**
+  - most initial residuals differ by 1e-8 to 5e-6 relative;
+  - omega at 508 differs by 1.8e-3;
+  - bounding minima differ by up to 2.8e-3 (k at 501: −0.72077 against
+    −0.71872).
+  - The gate is 1e-6.
+- **Likely cause, inferred from the code and not proven:** the
+  nutUSpaldingWallFunction solves for uTau with Newton iterations, tolerance
+  0.01 and at most 10 iterations, starting from the current wall nut. A restart
+  evaluates the wall function once more at startup than a continuous run does,
+  so wall nut moves within that 1% tolerance. The fixture restart test was exact
+  because the fixture does not use this wall function.
+
+Not launched: D4, waiting for the user's decision on its control. Options:
+- **Use C0 as the statistical control over 751–1000.** D1 reached C0's per-cell
+  clip counts from a completely different history, so these statistics do not
+  depend on small differences in state. A 1e-6–3e-3 perturbation at 501 should
+  not change them, but this is an argument, not a measurement.
+- **Run a production restart from 500 to 1000 (R0 extended) as an exact
+  control** alongside D4. This costs about 2.5 h more.
+
 ## WP9 location analysis of the clipped cells (user chose it), 2026-11-09
 
 How it was run:
