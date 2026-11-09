@@ -6,6 +6,81 @@ Sections are newest first. Older sections use the original machine's paths
 (C:\Users\mabdu\REA\...) and the old flat scripts/ layout, and are kept as
 evidence. For current commands use docs/SETUP.md and docs/CFD-RUNBOOK.md.
 
+## WP9 turbulence diagnostics: C0 and D1 done, upwind startup does not fix clipping, 2026-11-09
+
+Both runs completed under the runner with exit 0, cleanup confirmed and source
+fingerprint c263f467…8779 unchanged. The diagnostics are not acceptance evidence
+and have no gate verdict. Forces below are screening numbers only.
+
+**C0** `wp9-diag-c0-20261108-a`: production numerics, iterations 0–1000.
+- It passed the C0 gate (`WP9_C0_GATE pass`).
+- It reproduces the Stage 2 log exactly over 1–1000: 6,000 initial residuals and
+  2,000 bounding minima, maximum relative difference 0.0, nothing missing.
+- 17.05 s per iteration against Stage 2's 16.83. No swap, at least 3.1 GB free.
+
+**D1** `wp9-diag-d1-20261109-a`: upwind k/omega for 1–500, then a restart with
+`limitedLinear 1` for 501–1000.
+- 17.17 and then 17.49 s per iteration.
+- No swap, no probe loss, at least 2.9 GB free.
+
+Clipping, mean cells per iteration (every clipped cell was negative):
+
+| | C0 1–100 | C0 501–1000 | D1 1–500 | D1 501–600 | D1 901–1000 | D1 501–1000 |
+|---|---|---|---|---|---|---|
+| k | 2,808 | 611 | 0 (min +2.5e-6) | 501 | 609 | 586 |
+| omega | 672 | 90 | 0 (min +1.05) | 87 | 87 | 88 |
+
+- **Frequency:** C0 clipped k and omega in every iteration. D1 clipped in none
+  of 1–500, then in every one of 501–1000.
+- **Where clipped k cells are, 501–1000, C0 / D1:**
+  - near the body 222 / 218;
+  - underbody band 158 / 156;
+  - front wheel 137 / 124;
+  - rear wheel 6 / 5.
+  - **By wall distance:** 2 mm–1 cm holds 337 / 326, under 2 mm 67 / 67.
+- **Clipped omega cells, both runs:** front wheel about 21, rear wheel 17,
+  underbody 35, near the body 15. By wall distance, about 66 are 2 mm–1 cm from
+  a wall and 20 are under 2 mm.
+- **The same cells recur in both runs.** Cell indices are processor-local, and
+  both runs use the same decomposition.
+  - k: processor 4 cell 52986 (near the body, 6.7 cm from a wall, the worst
+    cell at 501 and 1000 in D1); processor 3 cell 13176 (front wheel).
+  - omega: processor 3 cells 13176, 14639, 14858 (front wheel, about 1 mm from
+    a wall).
+  - Worst-cell lists are in `postProcessing/wp9ClipCounter/clip_*_worst.dat` in
+    each run's `temp/.../case`.
+- **Residual RMS, 501–1000, C0 / D1:**
+  - U 0.0203 / 0.0201;
+  - p 1.65e-3 / 1.58e-3;
+  - k 2.24e-4 / 2.18e-4;
+  - omega 8.8e-5 / 4.3e-4, raised by D1's 501–600 transient; 901–1000 is
+    1.5e-4 / 5.6e-5.
+- **Screening forces, C0 / D1:**
+  - Cd over 501–1000: 0.2753 ± 0.0097 / 0.2763 ± 0.0090 (one standard deviation).
+  - Cd over 751–1000: 0.2737 ± 0.0101 / 0.2741 ± 0.0094.
+  - Cl over 501–1000: 0.018 ± 0.028 / 0.001 ± 0.027.
+
+Reading:
+- The missing upwind startup is a real deviation from the spec. It is not the
+  cause of the persistent clipping: under `limitedLinear 1`, clipping returns
+  within one iteration from an unclipped upwind state. It reaches C0's count,
+  in the same regions and the same cells, within about 100 iterations for omega
+  and about 400 for k.
+- Implementing the startup in `fv_schemes` alone would therefore not make
+  Stage 2 pass.
+
+Next choices (the user decides):
+- the location analysis of the recurring cells: mesh quality, layer structure,
+  y+ and the wall functions there;
+- D2, stronger turbulence relaxation;
+- D3, relTol 0.01.
+
+Stage 3 stays blocked.
+
+Run cases are kept in each run's `temp/` until cleanup is decided, about 9.6 GB
+each. `docs/superpowers/plans/2026-11-09-domino-cfd-warm-start.md` is an
+untracked file that this work did not create; it was left alone.
+
 ## WP9 turbulence diagnostics: harness proven, C0 running, D1 queued, 2026-11-08
 
 What exists: profile `wp9-diagnostic` (variants `smoke`, `c0`, `d1`), module

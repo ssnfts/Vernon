@@ -141,6 +141,23 @@ time.
   `fieldMinMax` extreme locations, checked against wheels, ground contact,
   underbody details and layer transitions. Check y+ in the same regions.
 
+## Results: C0 and D1 (2026-11-09)
+
+Both runs completed (exit 0, cleanup confirmed, source unchanged). C0 passed its
+gate and reproduces Stage 2 exactly over 1–1000. Under upwind, D1 clipped
+nothing in 1–500. After the switch to `limitedLinear 1` it clipped in every
+iteration of 501–1000, averaging 586 k and 88 omega cells, against C0's 611 and
+90. The regions, wall bands and recurring worst cells are the same as C0's.
+Residuals and screening forces over 501–1000 are indistinguishable from C0's.
+Numbers are in docs/CONTINUATION.md.
+
+Outcome: decision 2 below applies. Clipping returns after the switch, so the
+specified upwind startup is not the remedy. The persistent undershoots belong
+to `limitedLinear 1` on specific near-wall cells, mostly 2 mm–1 cm from walls,
+near the body, in the underbody and at the front wheel. Decision 4, the
+location analysis, is the strongest next lead. D2 and D3 are still open for the
+user to choose.
+
 ## Decisions after the screen
 
 1. If D1 removes the startup blow-up and clipping stays rare after the switch
