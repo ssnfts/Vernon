@@ -9,13 +9,14 @@ const PROD_SOLUTION: &str = "FoamFile\n{\n    version     2.0;\n    format      
 
 #[test]
 fn variants_keep_c0_and_d1_comparable_over_501_to_1000() {
+    use Schemes::*;
     let c0 = Variant::C0.phases();
     let d1 = Variant::D1.phases();
-    assert_eq!(c0, vec![Phase { start: 0, end: 1000, upwind_turbulence: false }]);
-    assert_eq!(d1, vec![Phase { start: 0, end: 500, upwind_turbulence: true }, Phase { start: 500, end: 1000, upwind_turbulence: false }]);
+    assert_eq!(c0, vec![Phase { start: 0, end: 1000, schemes: Production }]);
+    assert_eq!(d1, vec![Phase { start: 0, end: 500, schemes: UpwindTurbulence }, Phase { start: 500, end: 1000, schemes: Production }]);
     assert_eq!(c0.last().unwrap().end, d1.last().unwrap().end);
     let smoke = Variant::Smoke.phases();
-    assert!(smoke[0].upwind_turbulence && !smoke[1].upwind_turbulence && smoke[0].end == smoke[1].start);
+    assert!(smoke[0].schemes == UpwindTurbulence && smoke[1].schemes == Production && smoke[0].end == smoke[1].start);
     for v in [Variant::C0, Variant::D1] {
         let maps = v.map_iterations();
         for i in [1, 500, 501, 1000] {
@@ -27,6 +28,52 @@ fn variants_keep_c0_and_d1_comparable_over_501_to_1000() {
     }
     assert!(Variant::parse("d2").is_err());
     assert_eq!(Variant::parse("d1").unwrap(), Variant::D1);
+}
+
+#[test]
+fn d4_restarts_from_c0_at_500_and_compares_over_501_to_1000() {
+    use Schemes::*;
+    assert_eq!(Variant::D4.phases(), vec![Phase { start: 500, end: 1000, schemes: LimitedCorrection }]);
+    assert_eq!(Variant::R0.phases(), vec![Phase { start: 500, end: 510, schemes: Production }]);
+    for v in [Variant::R0, Variant::D4] {
+        assert!(v.restarts_from_c0());
+        assert_eq!(Variant::parse(v.id()).unwrap(), v);
+        for p in v.phases() {
+            assert_eq!(p.end % v.write_interval(), 0);
+        }
+        assert!(v.map_iterations().iter().all(|i| *i > 500), "no map before the restart");
+    }
+    assert!(!Variant::C0.restarts_from_c0() && !Variant::D1.restarts_from_c0());
+    // The D4 window and its maps match C0/D1 over 501–1000, including 751–1000.
+    assert_eq!(Variant::D4.windows(), vec![(501, 600), (901, 1000), (501, 1000)]);
+    assert!(Variant::C0.windows().contains(&(501, 1000)) && Variant::D1.windows().contains(&(501, 1000)));
+    for i in [501, 750, 1000] {
+        assert!(Variant::D4.map_iterations().contains(&i));
+    }
+    assert_eq!(Variant::D4.force_windows(), Variant::C0.force_windows());
+    assert_eq!(Variant::R0.windows(), vec![(501, 510)]);
+    assert_eq!((Variant::C0.reference(), Variant::R0.reference(), Variant::D4.reference()), (Some(Reference::Stage2), Some(Reference::C0), None));
+}
+
+#[test]
+fn limited_correction_changes_only_the_laplacian_and_sngrad_defaults() {
+    let lim = limited_correction_schemes(PROD_SCHEMES).unwrap();
+    let a: Vec<&str> = PROD_SCHEMES.lines().collect();
+    let b: Vec<&str> = lim.lines().collect();
+    assert_eq!(a.len(), b.len());
+    let changed: Vec<(&str, &str)> = a.iter().zip(&b).filter(|(x, y)| x != y).map(|(x, y)| (*x, *y)).collect();
+    assert_eq!(changed, vec![(PRODUCTION_LAPLACIAN, LIMITED_LAPLACIAN), (PRODUCTION_SNGRAD, LIMITED_SNGRAD)]);
+    assert!(limited_correction_schemes(&lim).is_err(), "already-limited text is refused");
+    // The same default line in another block is not touched.
+    let moved = PROD_SCHEMES.replace("interpolationSchemes\n{\n    default         linear;", "interpolationSchemes\n{\n    default         corrected;");
+    let out = limited_correction_schemes(&moved).unwrap();
+    assert!(out.contains("interpolationSchemes\n{\n    default         corrected;"));
+    assert!(limited_correction_schemes(&PROD_SCHEMES.replace(PRODUCTION_SNGRAD, "    default         uncorrected;")).is_err());
+    assert_eq!(Schemes::Production.apply(PROD_SCHEMES).unwrap(), PROD_SCHEMES);
+    assert_eq!(Schemes::LimitedCorrection.apply(PROD_SCHEMES).unwrap(), lim);
+    // CRLF text keeps its line endings.
+    let crlf = PROD_SCHEMES.replace('\n', "\r\n");
+    assert_eq!(limited_correction_schemes(&crlf).unwrap(), lim.replace('\n', "\r\n"));
 }
 
 #[test]
@@ -458,6 +505,9 @@ fn wp9_turbulence_diagnostic() {
     let fixture_env = var("VERNON_DIAG_FIXTURE_ENV");
     assert_eq!((var("VERNON_WSL_DISTRO").as_str(), var("VERNON_WSL_USER").as_str()), (DISTRO, USER));
     let phases = variant.phases();
+    // R0 and D4 start from C0's written iteration 500 on the same mesh.
+    let start_source = if variant.restarts_from_c0() { PathBuf::from(var("VERNON_DIAG_START_SOURCE")) } else { source.clone() };
+    let first = phases[0].start + 1;
     let work = std::env::temp_dir().join(format!("vernon-wp9-diag-{}-{}", variant.id(), std::process::id()));
     let case = work.join("case");
     std::fs::create_dir_all(&case).unwrap();
@@ -481,19 +531,21 @@ fn wp9_turbulence_diagnostic() {
     for p in &processors {
         let target = case.join(p.file_name().unwrap());
         let (f, b) = copy_tree(&p.join("constant/polyMesh"), &target.join("constant/polyMesh")).unwrap();
-        let (f2, b2) = copy_tree(&p.join(&start_time), &target.join(&start_time)).unwrap();
+        let state = start_source.join(p.file_name().unwrap());
+        let (f2, b2) = copy_tree(&state.join(&start_time), &target.join(&start_time)).unwrap();
+        assert!(target.join(&start_time).join("U").is_file() && target.join(&start_time).join("phi").is_file(), "start fields at {start_time}");
         files += f + f2;
         bytes += b + b2;
         for name in ["points", "faces", "owner", "neighbour", "boundary"] {
             let h = fnv1a_file(&target.join("constant/polyMesh").join(name)).unwrap();
             assert_eq!(h, fnv1a_file(&p.join("constant/polyMesh").join(name)).unwrap(), "copied {name} matches the source");
+            assert_eq!(h, fnv1a_file(&state.join("constant/polyMesh").join(name)).unwrap(), "the start state was computed on the same {name}");
             mesh_hash = mesh_hash.rotate_left(7) ^ h;
         }
     }
     let copy_seconds = started.elapsed().as_secs_f64();
     let production_schemes = std::fs::read_to_string(source.join("system/fvSchemes")).unwrap();
     let source_control = std::fs::read_to_string(source.join("system/controlDict")).unwrap();
-    let upwind_schemes = upwind_turbulence_schemes(&production_schemes).unwrap();
 
     // 2. Classification boxes from the case's own surfaces; counter options.
     let bounds = |name: &str| stl_bounds(&std::fs::read_to_string(source.join(format!("constant/triSurface/{name}.stl"))).unwrap()).unwrap_or_else(|| panic!("{name}.stl bounds"));
@@ -517,7 +569,7 @@ fn wp9_turbulence_diagnostic() {
     let mut phase_rows = Vec::new();
     let mut full_log = String::new();
     for (n, phase) in phases.iter().enumerate() {
-        let schemes = if phase.upwind_turbulence { &upwind_schemes } else { &production_schemes };
+        let schemes = &phase.schemes.apply(&production_schemes).unwrap();
         std::fs::write(case.join("system/fvSchemes"), schemes).unwrap();
         std::fs::write(case.join("system/controlDict"), diagnostic_control_dict(&source_control, phase.start, phase.end, variant.write_interval()).unwrap()).unwrap();
         let step = format!("solver_phase{}", n + 1);
@@ -544,7 +596,10 @@ fn wp9_turbulence_diagnostic() {
         };
         phase_rows.push(serde_json::json!({
             "phase": n + 1, "start": phase.start, "end": phase.end,
-            "turbulence_convection": if phase.upwind_turbulence { "bounded Gauss upwind" } else { "bounded Gauss limitedLinear 1" },
+            "schemes": phase.schemes.label(),
+            "turbulence_convection": if phase.schemes == Schemes::UpwindTurbulence { "bounded Gauss upwind" } else { "bounded Gauss limitedLinear 1" },
+            "laplacian_default": if phase.schemes == Schemes::LimitedCorrection { "Gauss linear limited corrected 0.33" } else { "Gauss linear corrected" },
+            "sngrad_default": if phase.schemes == Schemes::LimitedCorrection { "limited corrected 0.33" } else { "corrected" },
             "fvSchemes_fnv1a64": format!("{:016x}", { let mut h: u64 = 0xcbf2_9ce4_8422_2325; for b in schemes.bytes() { h ^= u64::from(b); h = h.wrapping_mul(0x0100_0000_01b3); } h }),
             "wall_seconds": wall, "seconds_per_iteration": spi, "log": case.join("logs").join(format!("{step}.log")),
         }));
@@ -557,10 +612,9 @@ fn wp9_turbulence_diagnostic() {
     let mut counters = serde_json::Map::new();
     for field in ["k", "omega"] {
         let (names, rows) = counter_rows(&case, field);
-        check_counter(field, &rows, &bounding, 1, last).unwrap_or_else(|e| panic!("instrumentation: {e}"));
-        let windows: Vec<(u32, u32)> = if last >= 1000 { vec![(1, 100), (401, 500), (501, 600), (901, 1000), (501, 1000)] } else { vec![(1, last)] };
+        check_counter(field, &rows, &bounding, first, last).unwrap_or_else(|e| panic!("instrumentation: {e}"));
         let mut w = Vec::new();
-        for (a, b) in windows {
+        for (a, b) in variant.windows() {
             w.push(serde_json::json!({
                 "first": a, "last": b,
                 "iterations_with_clipping": rows.iter().filter(|r| r.iteration >= a && r.iteration <= b && r.below > 0).count(),
@@ -574,8 +628,8 @@ fn wp9_turbulence_diagnostic() {
         }
         counters.insert(field.into(), serde_json::json!({
             "floor": rows[0].lower_bound, "rows": rows.len(), "windows": w,
-            "mean_hook_seconds": window_mean(&rows, 1, last, |r| r.hook_seconds),
-            "mean_hook_local_max_seconds": window_mean(&rows, 1, last, |r| r.hook_local_max_seconds),
+            "mean_hook_seconds": window_mean(&rows, first, last, |r| r.hook_seconds),
+            "mean_hook_local_max_seconds": window_mean(&rows, first, last, |r| r.hook_local_max_seconds),
             "file": case.join(format!("postProcessing/wp9ClipCounter/clip_{field}.dat")),
             "worst_cells": case.join(format!("postProcessing/wp9ClipCounter/clip_{field}_worst.dat")),
         }));
@@ -586,18 +640,23 @@ fn wp9_turbulence_diagnostic() {
         }
     }
 
-    // 6. Residuals and screening forces; for C0, reproduction of Stage 2.
+    // 6. Residuals and screening forces; reproduction of the reference run
+    //    (Stage 2 for C0, C0 for the R0 restart check).
     let residuals = parse_initial_residuals(&full_log);
-    let windows: Vec<(u32, u32)> = if last >= 1000 { vec![(1, 100), (401, 500), (501, 600), (901, 1000), (501, 1000)] } else { vec![(1, last)] };
-    let residual_rms: Vec<serde_json::Value> = windows.iter().map(|(a, b)| serde_json::json!({
+    let residual_rms: Vec<serde_json::Value> = variant.windows().iter().map(|(a, b)| serde_json::json!({
         "first": a, "last": b, "p": rms_initial(&residuals, "p", *a, *b), "U": rms_initial(&residuals, "U", *a, *b),
         "k": rms_initial(&residuals, "k", *a, *b), "omega": rms_initial(&residuals, "omega", *a, *b),
     })).collect();
     let source_log = std::fs::read_to_string(source.join("logs/solver.log")).unwrap_or_default();
-    let source_residuals = parse_initial_residuals(&source_log);
-    let reproduction = if phases.iter().all(|p| !p.upwind_turbulence) {
-        let c = compare_histories(&source_residuals, &residuals, 1, last);
-        let sb = parse_bounding(&source_log).unwrap_or_default();
+    let reference_log_path = match variant.reference() {
+        Some(Reference::C0) => Some(start_source.join("logs/solver_phase1.log")),
+        Some(Reference::Stage2) => Some(source.join("logs/solver.log")),
+        None => None,
+    };
+    let reproduction = if let Some(reference_path) = &reference_log_path {
+        let reference_log = std::fs::read_to_string(reference_path).unwrap_or_default();
+        let c = compare_histories(&parse_initial_residuals(&reference_log), &residuals, first, last);
+        let sb = parse_bounding(&reference_log).unwrap_or_default();
         let mut bounding_max_rel = 0.0f64;
         let mut bounding_compared = 0usize;
         for ((i, f), (min, _, _)) in bounding.iter() {
@@ -610,7 +669,7 @@ fn wp9_turbulence_diagnostic() {
             }
         }
         serde_json::json!({
-            "against": source.join("logs/solver.log"), "compared_iterations": c.compared_iterations, "compared_values": c.compared_values,
+            "against": reference_path, "compared_iterations": c.compared_iterations, "compared_values": c.compared_values,
             "missing_iterations": c.missing_iterations, "max_rel_diff_initial_residuals": c.max_rel_diff,
             "first_iteration_over_1e_6": c.first_iteration_over_1e_6, "bounding_lines_compared": bounding_compared,
             "max_rel_diff_bounding_min": bounding_max_rel,
@@ -619,11 +678,20 @@ fn wp9_turbulence_diagnostic() {
         serde_json::Value::Null
     };
     let source_clock = parse_clock(&source_log);
-    let source_spi = match (source_clock.get(&2), source_clock.get(&last)) {
-        (Some(a), Some(b)) if last > 2 => Some((b - a) / f64::from(last - 2)),
+    if variant == Variant::R0 {
+        // The restart from C0's written 500 must continue C0 exactly, so any
+        // D4 difference comes from its schemes, not from the restart.
+        let r = &reproduction;
+        assert_eq!((r["compared_iterations"].as_u64(), r["missing_iterations"].as_u64()), (Some(u64::from(last - first + 1)), Some(0)), "R0 compares every iteration: {r}");
+        assert!(r["max_rel_diff_initial_residuals"].as_f64().is_some_and(|d| d <= 1e-6), "R0 reproduces C0's residuals: {r}");
+        assert!(r["max_rel_diff_bounding_min"].as_f64().is_some_and(|d| d <= 1e-6) && r["bounding_lines_compared"].as_u64() > Some(0), "R0 reproduces C0's bounding: {r}");
+    }
+    // Same iterations as the phase's own measurement (first+1 .. last).
+    let source_spi = match (source_clock.get(&(first + 1)), source_clock.get(&last)) {
+        (Some(a), Some(b)) if last > first + 1 => Some((b - a) / f64::from(last - first - 1)),
         _ => None,
     };
-    let forces = if last >= 1000 { vec![force_window(&case, 501, 1000), force_window(&case, 751, 1000)] } else { vec![force_window(&case, 1, last)] };
+    let forces: Vec<serde_json::Value> = variant.force_windows().iter().map(|(a, b)| force_window(&case, *a, *b)).collect();
 
     let row = serde_json::json!({
         "scope": "turbulence_diagnostic", "variant": variant.id(), "diagnostic_only": true,
@@ -631,7 +699,10 @@ fn wp9_turbulence_diagnostic() {
         "source_case": source, "mesh_fingerprint_fnv": format!("{mesh_hash:016x}"), "copied_files": files, "copied_bytes": bytes,
         "copy_seconds": copy_seconds, "compile_seconds_on_fixture": compile_seconds, "compile_links_removed": links_removed, "np": 16,
         "phases": phase_rows, "iterations": last, "regions": regions.iter().map(|r| serde_json::json!({"name": r.0, "min": r.1, "max": r.2})).collect::<Vec<_>>(),
-        "counters": counters, "residual_rms": residual_rms, "reproduction_of_stage2": reproduction,
+        "start_source_case": start_source, "start_time": phases[0].start,
+        "counters": counters, "residual_rms": residual_rms,
+        "reproduction_of_stage2": if variant.reference() == Some(Reference::Stage2) { reproduction.clone() } else { serde_json::Value::Null },
+        "reproduction_of_c0": if variant.reference() == Some(Reference::C0) { reproduction } else { serde_json::Value::Null },
         "stage2_seconds_per_iteration_same_window": source_spi,
         "screening_forces_not_results": forces, "case_bytes": bytes_of(&case), "case": case,
     });

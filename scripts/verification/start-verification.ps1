@@ -37,7 +37,7 @@ $statusPath = Join-Path $directory 'status.json'
 $deadline = [DateTime]::UtcNow.AddSeconds(30)
 do {
     if (Test-Path -LiteralPath $statusPath) {
-        $initial = Get-Content -Raw -LiteralPath $statusPath | ConvertFrom-Json
+        $initial = Read-VerificationJson $statusPath
         if ($initial.status -eq 'failed') { throw "Worker failed: $($initial.message). See $statusPath" }
         Write-Output "Launched $RunId (PID $($process.Id)); status: $statusPath"
         exit 0

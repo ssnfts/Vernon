@@ -17,7 +17,47 @@ use std::path::{Path, PathBuf};
 pub struct Phase {
     pub start: u32,
     pub end: u32,
-    pub upwind_turbulence: bool,
+    pub schemes: Schemes,
+}
+
+/// The fvSchemes a phase runs with. Each is the production file with only the
+/// named lines changed.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Schemes {
+    /// The production file unchanged.
+    Production,
+    /// k/omega convection switched to `bounded Gauss upwind`.
+    UpwindTurbulence,
+    /// Laplacian and surface-normal-gradient defaults with the explicit
+    /// non-orthogonal correction limited to 0.33 (`limited corrected 0.33`).
+    LimitedCorrection,
+}
+
+impl Schemes {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Production => "production",
+            Self::UpwindTurbulence => "upwind k/omega convection",
+            Self::LimitedCorrection => "limited corrected 0.33 (laplacian, snGrad)",
+        }
+    }
+
+    pub fn apply(self, production: &str) -> Result<String, String> {
+        match self {
+            Self::Production => Ok(production.to_string()),
+            Self::UpwindTurbulence => upwind_turbulence_schemes(production),
+            Self::LimitedCorrection => limited_correction_schemes(production),
+        }
+    }
+}
+
+/// Which earlier log a variant must reproduce iteration by iteration.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Reference {
+    /// The stopped Stage 2 run (`logs/solver.log` of the source case).
+    Stage2,
+    /// The C0 diagnostic (`logs/solver_phase1.log` of the start-source case).
+    C0,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -28,6 +68,11 @@ pub enum Variant {
     C0,
     /// Spec startup: upwind k/omega 1–500, then production 501–1000.
     D1,
+    /// Restart check: production schemes from C0's written iteration 500 for
+    /// 501–510, which must reproduce C0's log exactly.
+    R0,
+    /// Limited non-orthogonal correction from C0's iteration 500, 501–1000.
+    D4,
 }
 
 impl Variant {
@@ -36,7 +81,9 @@ impl Variant {
             "smoke" => Ok(Self::Smoke),
             "c0" => Ok(Self::C0),
             "d1" => Ok(Self::D1),
-            other => Err(format!("unknown diagnostic variant '{other}' (smoke, c0, d1)")),
+            "r0" => Ok(Self::R0),
+            "d4" => Ok(Self::D4),
+            other => Err(format!("unknown diagnostic variant '{other}' (smoke, c0, d1, r0, d4)")),
         }
     }
 
@@ -45,22 +92,28 @@ impl Variant {
             Self::Smoke => "smoke",
             Self::C0 => "c0",
             Self::D1 => "d1",
+            Self::R0 => "r0",
+            Self::D4 => "d4",
         }
     }
 
     pub fn phases(self) -> Vec<Phase> {
-        let p = |start, end, upwind_turbulence| Phase { start, end, upwind_turbulence };
+        use Schemes::*;
+        let p = |start, end, schemes| Phase { start, end, schemes };
         match self {
-            Self::Smoke => vec![p(0, 2, true), p(2, 4, false)],
-            Self::C0 => vec![p(0, 1000, false)],
-            Self::D1 => vec![p(0, 500, true), p(500, 1000, false)],
+            Self::Smoke => vec![p(0, 2, UpwindTurbulence), p(2, 4, Production)],
+            Self::C0 => vec![p(0, 1000, Production)],
+            Self::D1 => vec![p(0, 500, UpwindTurbulence), p(500, 1000, Production)],
+            Self::R0 => vec![p(500, 510, Production)],
+            Self::D4 => vec![p(500, 1000, LimitedCorrection)],
         }
     }
 
     pub fn write_interval(self) -> u32 {
         match self {
             Self::Smoke => 2,
-            Self::C0 | Self::D1 => 250,
+            Self::R0 => 10,
+            Self::C0 | Self::D1 | Self::D4 => 250,
         }
     }
 
@@ -69,7 +122,41 @@ impl Variant {
         match self {
             Self::Smoke => vec![1, 2, 3, 4],
             Self::C0 | Self::D1 => vec![1, 10, 50, 100, 250, 500, 501, 510, 550, 750, 1000],
+            Self::R0 => vec![501, 505, 510],
+            Self::D4 => vec![501, 510, 550, 750, 1000],
         }
+    }
+
+    /// Variants that start from C0's written iteration 500 instead of the
+    /// Stage 2 case's initial fields.
+    pub fn restarts_from_c0(self) -> bool {
+        matches!(self, Self::R0 | Self::D4)
+    }
+
+    pub fn reference(self) -> Option<Reference> {
+        match self {
+            Self::C0 => Some(Reference::Stage2),
+            Self::R0 => Some(Reference::C0),
+            _ => None,
+        }
+    }
+
+    /// Reporting windows for counters and residuals.
+    pub fn windows(self) -> Vec<(u32, u32)> {
+        let phases = self.phases();
+        let (first, last) = (phases[0].start + 1, phases.last().unwrap().end);
+        match (first, last) {
+            (1, 1000) => vec![(1, 100), (401, 500), (501, 600), (901, 1000), (501, 1000)],
+            (501, 1000) => vec![(501, 600), (901, 1000), (501, 1000)],
+            _ => vec![(first, last)],
+        }
+    }
+
+    /// Screening-force windows (never results).
+    pub fn force_windows(self) -> Vec<(u32, u32)> {
+        let phases = self.phases();
+        let (first, last) = (phases[0].start + 1, phases.last().unwrap().end);
+        if last == 1000 && first <= 501 { vec![(501, 1000), (751, 1000)] } else { vec![(first, last)] }
     }
 
     /// Solver-process limit: 40 s per iteration (measured 17) plus 30 minutes
@@ -106,6 +193,44 @@ pub fn upwind_turbulence_schemes(production: &str) -> Result<String, String> {
     }
     if k != 1 || omega != 1 {
         return Err(format!("expected exactly one production k and omega convection line, found {k} and {omega}"));
+    }
+    Ok(out)
+}
+
+pub const PRODUCTION_LAPLACIAN: &str = "    default         Gauss linear corrected;";
+pub const PRODUCTION_SNGRAD: &str = "    default         corrected;";
+pub const LIMITED_LAPLACIAN: &str = "    default         Gauss linear limited corrected 0.33;";
+pub const LIMITED_SNGRAD: &str = "    default         limited corrected 0.33;";
+
+/// The production fvSchemes with only the `default` lines of
+/// `laplacianSchemes` and `snGradSchemes` limited to 0.33. The replacement is
+/// made only inside those two blocks; anything else stays byte-identical.
+pub fn limited_correction_schemes(production: &str) -> Result<String, String> {
+    let mut out = String::with_capacity(production.len() + 32);
+    let (mut lap, mut sn) = (0, 0);
+    let mut block = String::new();
+    let mut depth = 0i32;
+    for line in production.split_inclusive('\n') {
+        let body = line.trim_end_matches(['\r', '\n']);
+        let ending = &line[body.len()..];
+        if depth == 0 && !body.trim().is_empty() && !body.contains('{') && !body.contains('}') {
+            block = body.trim().to_string();
+        }
+        if depth == 1 && block == "laplacianSchemes" && body == PRODUCTION_LAPLACIAN {
+            lap += 1;
+            out.push_str(LIMITED_LAPLACIAN);
+            out.push_str(ending);
+        } else if depth == 1 && block == "snGradSchemes" && body == PRODUCTION_SNGRAD {
+            sn += 1;
+            out.push_str(LIMITED_SNGRAD);
+            out.push_str(ending);
+        } else {
+            out.push_str(line);
+        }
+        depth += body.matches('{').count() as i32 - body.matches('}').count() as i32;
+    }
+    if lap != 1 || sn != 1 {
+        return Err(format!("expected exactly one production laplacian and snGrad default, found {lap} and {sn}"));
     }
     Ok(out)
 }

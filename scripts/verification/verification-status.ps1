@@ -13,7 +13,7 @@ if (-not $RunId) {
     $RunId = $latest.runId
 }
 $path = Join-Path (Get-VerificationPath $RunId) 'status.json'
-$state = Get-Content -Raw -LiteralPath $path | ConvertFrom-Json
+$state = Read-VerificationJson $path
 $alive = Test-VerificationProcess $state.workerPid $state.workerStartedUtc
 $childAlive = Test-VerificationProcess $state.childPid $state.childStartedUtc
 $lockState = Get-VerificationLockState

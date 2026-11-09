@@ -17,7 +17,7 @@ $RunId = $requestedRunId
 $directory = Get-VerificationPath $RunId
 $statusPath = Join-Path $directory 'status.json'
 if (-not (Test-Path -LiteralPath $statusPath)) { Write-Error "No such run: $RunId"; exit 2 }
-$state = Get-Content -Raw -LiteralPath $statusPath | ConvertFrom-Json
+$state = Read-VerificationJson $statusPath
 if ($state.status -ne 'running' -or $state.finishedUtc) { Write-Error "Run $RunId is $($state.status); only a running worker can be stopped."; exit 3 }
 if (-not (Test-VerificationProcess $state.workerPid $state.workerStartedUtc)) {
     Write-Error "The worker of $RunId is not alive. Check verification-status.ps1 and clean up any Linux processes as docs/CFD-RUNBOOK.md describes."

@@ -10,7 +10,9 @@ function Assert-True($Condition, [string]$Message) {
     if (-not $Condition) { throw "ASSERTION FAILED: $Message" }
 }
 function Read-State([string]$Id) {
-    Get-Content -Raw -LiteralPath (Join-Path $repo "scratch/continuation/runs/$Id/status.json") | ConvertFrom-Json
+    # The worker rewrites status.json while this test polls it; a read that
+    # meets the write's exclusive open is retried briefly, never ignored.
+    Read-VerificationJson (Join-Path $repo "scratch/continuation/runs/$Id/status.json")
 }
 function Wait-State([string]$Id, [string]$Step = '', [int]$Seconds = 20) {
     $deadline = [DateTime]::UtcNow.AddSeconds($Seconds)
@@ -326,7 +328,7 @@ Assert-True ('wp9-diagnostic' -in $script:Wp9LinuxProfiles -and 'wp9-diagnostic'
 $fixtureEnvironment = Get-VerificationWp9FixtureEnvironmentFile
 Assert-True ($fixtureEnvironment -cmatch '^/mnt/[a-z]/.+/scripts/cfd/wp9-diagnostic-fixture-env\.sh$') 'the fixture environment is this checkout''s script as seen from WSL'
 Assert-True ((Get-VerificationWp9DiagnosticSource) -like '*scratch*continuation*runs*wp9-solve-fastback-20261108-a*temp*vernon-cfd-98196-cfd.solve_steady-8*native*case') 'the diagnostic source is the stopped Stage 2 case'
-foreach ($variant in @('smoke', 'c0', 'd1')) { Assert-VerificationWp9Input 'wp9-diagnostic' $sizingDistribution $sizingUser $solveEnvironment '' $variant }
+foreach ($variant in @('smoke', 'c0', 'd1', 'r0', 'd4')) { Assert-VerificationWp9Input 'wp9-diagnostic' $sizingDistribution $sizingUser $solveEnvironment '' $variant }
 foreach ($inputCase in @(
     @($sizingDistribution, $sizingUser, $solveEnvironment, 'd2'),
     @($sizingDistribution, $sizingUser, $solveEnvironment, ''),
@@ -341,7 +343,7 @@ foreach ($inputCase in @(
 $diagDirectory = Join-Path $repo ('scratch/continuation/library-checks/diagnostic-' + [guid]::NewGuid().ToString('N'))
 [void][IO.Directory]::CreateDirectory($diagDirectory)
 $diagPath = Join-Path $diagDirectory 'diagnostic.json'
-$diagKeys = @('VERNON_WSL_DISTRO','VERNON_WSL_USER','VERNON_WSL_ENV_FILE','VERNON_DIAG_FIXTURE_ENV','VERNON_DIAG_SOURCE','VERNON_DIAG_OUT','VERNON_DIAG_VARIANT')
+$diagKeys = @('VERNON_WSL_DISTRO','VERNON_WSL_USER','VERNON_WSL_ENV_FILE','VERNON_DIAG_FIXTURE_ENV','VERNON_DIAG_SOURCE','VERNON_DIAG_OUT','VERNON_DIAG_VARIANT','VERNON_DIAG_START_SOURCE')
 $diagSaved = @{}
 foreach ($key in $diagKeys) { $diagSaved[$key] = [Environment]::GetEnvironmentVariable($key, 'Process') }
 try {
@@ -349,6 +351,14 @@ try {
     Set-VerificationWp9DiagnosticEnvironment $diagDirectory 'd1'
     $expected = [ordered]@{ VERNON_WSL_DISTRO = $sizingDistribution; VERNON_WSL_USER = $sizingUser; VERNON_WSL_ENV_FILE = $solveEnvironment; VERNON_DIAG_FIXTURE_ENV = $fixtureEnvironment; VERNON_DIAG_SOURCE = (Get-VerificationWp9DiagnosticSource); VERNON_DIAG_OUT = $diagPath; VERNON_DIAG_VARIANT = 'd1' }
     foreach ($key in $expected.Keys) { Assert-True ([Environment]::GetEnvironmentVariable($key, 'Process') -ceq $expected[$key]) "diagnostic fixes $key over an inherited value" }
+    Assert-True ($null -eq [Environment]::GetEnvironmentVariable('VERNON_DIAG_START_SOURCE', 'Process')) 'd1 starts from the Stage 2 case: no inherited start source survives'
+    $c0Case = Get-VerificationWp9DiagnosticStartSource 'd4'
+    Assert-True ($c0Case -like '*scratch*continuation*runs*wp9-diag-c0-20261108-a*temp*vernon-wp9-diag-c0-1891740*case') 'd4 restarts from the C0 diagnostic case'
+    foreach ($restart in @('r0', 'd4')) {
+        Set-VerificationWp9DiagnosticEnvironment $diagDirectory $restart
+        Assert-True ([Environment]::GetEnvironmentVariable('VERNON_DIAG_START_SOURCE', 'Process') -ceq $c0Case -and $env:VERNON_DIAG_VARIANT -ceq $restart) "$restart is given the C0 start source"
+    }
+    Assert-True ($null -eq (Get-VerificationWp9DiagnosticStartSource 'c0')) 'c0 has no start source'
 } finally { foreach ($key in $diagSaved.Keys) { [Environment]::SetEnvironmentVariable($key, $diagSaved[$key], 'Process') } }
 $diagPassed = "running 1 test`ntest diagnostic::tests::wp9_turbulence_diagnostic ... ok`ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 384 filtered out;"
 $diagMarker = 'WP9_DIAGNOSTIC_COMPLETE variant=d1 iterations=1000 phases=2 np=16 instrumentation=checked acceptance_evidence=0'
@@ -356,6 +366,17 @@ $validDiagRow = [ordered]@{ scope = 'turbulence_diagnostic'; variant = 'd1'; dia
 Write-VerificationJson $diagPath $validDiagRow
 Assert-True (Test-VerificationWp9DiagnosticOutput $diagPassed $diagMarker $diagPath 'd1') 'a diagnostic accepts one executed test, its marker and a matching reloaded row'
 Assert-True (-not (Test-VerificationWp9DiagnosticOutput $diagPassed $diagMarker $diagPath 'c0')) 'a d1 row never completes a c0 run'
+$d4Marker = 'WP9_DIAGNOSTIC_COMPLETE variant=d4 iterations=1000 phases=1 np=16 instrumentation=checked acceptance_evidence=0'
+$d4Row = [ordered]@{}
+foreach ($key in $validDiagRow.Keys) { $d4Row[$key] = $validDiagRow[$key] }
+$d4Row['variant'] = 'd4'; $d4Row['phases'] = @(@{ phase = 1 })
+Write-VerificationJson $diagPath $d4Row
+Assert-True (Test-VerificationWp9DiagnosticOutput $diagPassed $d4Marker $diagPath 'd4') 'a d4 run completes with one 501-1000 phase'
+Assert-True (-not (Test-VerificationWp9DiagnosticOutput $diagPassed $d4Marker.Replace('iterations=1000', 'iterations=510') $diagPath 'd4')) 'a d4 marker must reach 1000'
+$d4Row['variant'] = 'r0'; $d4Row['iterations'] = 510
+Write-VerificationJson $diagPath $d4Row
+Assert-True (Test-VerificationWp9DiagnosticOutput $diagPassed $d4Marker.Replace('variant=d4', 'variant=r0').Replace('iterations=1000', 'iterations=510') $diagPath 'r0') 'an r0 restart check ends at 510'
+Write-VerificationJson $diagPath $validDiagRow
 foreach ($badMarker in @('', $diagMarker.Replace('acceptance_evidence=0', 'acceptance_evidence=1'), $diagMarker.Replace('iterations=1000', 'iterations=999'), $diagMarker.Replace('phases=2', 'phases=1'), $diagMarker.Replace('instrumentation=checked', 'instrumentation=skipped'), ($diagMarker + "`n" + $diagMarker), ($diagMarker + "`nWP9_REPLICATION_SOLVE_COMPLETE x"), ('note ' + $diagMarker))) {
     Assert-True (-not (Test-VerificationWp9DiagnosticOutput $diagPassed $badMarker $diagPath 'd1')) 'only one exact diagnostic marker matching the variant qualifies'
 }

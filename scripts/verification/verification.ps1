@@ -32,7 +32,7 @@ $script:Wp9SolveProfiles = @('wp9-solve-pilot', 'wp9-solve')
 $script:Wp9LinuxProfiles = @('wp9-sizing', 'wp9-sizing-serial', 'wp9-solve-pilot', 'wp9-solve', 'wp9-diagnostic')
 # Profiles whose worker runs the read-only memory sampler.
 $script:Wp9SampledProfiles = @('wp9-solve-pilot', 'wp9-solve', 'wp9-diagnostic')
-$script:Wp9DiagnosticVariants = @('smoke', 'c0', 'd1')
+$script:Wp9DiagnosticVariants = @('smoke', 'c0', 'd1', 'r0', 'd4')
 $script:VerificationScripts = Split-Path $PSScriptRoot -Parent
 $script:VerificationRepo = [IO.Path]::GetFullPath((Split-Path $script:VerificationScripts -Parent))
 # The fixed sizing environment is this checkout's own script, seen from WSL (C:\x -> /mnt/c/x).
@@ -58,6 +58,11 @@ $script:VerificationRoot = Join-Path $script:VerificationRepo 'scratch/continuat
 function Get-VerificationWp9DiagnosticSource {
     [IO.Path]::GetFullPath((Join-Path $script:VerificationRoot 'runs/wp9-solve-fastback-20261108-a/temp/vernon-cfd-98196-cfd.solve_steady-8/native/case'))
 }
+# R0 and D4 restart from the C0 diagnostic's written iteration 500 (same mesh).
+function Get-VerificationWp9DiagnosticStartSource([string]$Variant) {
+    if ($Variant -cnotin @('r0', 'd4')) { return $null }
+    [IO.Path]::GetFullPath((Join-Path $script:VerificationRoot 'runs/wp9-diag-c0-20261108-a/temp/vernon-wp9-diag-c0-1891740/case'))
+}
 function Get-VerificationPath([string]$Id) {
     if ($Id -notmatch '^[A-Za-z0-9][A-Za-z0-9_-]{0,95}$') { throw 'Invalid run id.' }
     Join-Path $script:VerificationRoot "runs/$Id"
@@ -71,6 +76,21 @@ function Assert-VerificationOutputPath([string]$Path) {
             if ((Get-Item -LiteralPath $cursor -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) { throw "Output path cannot use a reparse point: $cursor" }
         }
         $cursor = Split-Path $cursor -Parent
+    }
+}
+# Status files are replaced atomically (temp file, then move). A reader that
+# meets the replacement gets a sharing violation for a moment; it retries for
+# up to five seconds and then fails with the original error.
+function Read-VerificationJson([string]$Path) {
+    $deadline = [DateTime]::UtcNow.AddSeconds(5)
+    while ($true) {
+        try { return [IO.File]::ReadAllText($Path) | ConvertFrom-Json }
+        catch {
+            $cause = $_.Exception
+            while ($cause.InnerException) { $cause = $cause.InnerException }
+            if ($cause -isnot [IO.IOException] -or $cause -is [IO.FileNotFoundException] -or $cause -is [IO.DirectoryNotFoundException] -or [DateTime]::UtcNow -ge $deadline) { throw }
+            Start-Sleep -Milliseconds 50
+        }
     }
 }
 function Write-VerificationJson([string]$Path, $Value) {
@@ -267,7 +287,7 @@ function Set-VerificationWp9SolveEnvironment([string]$OutputDirectory, [Validate
     foreach ($key in $fixed.Keys) { [Environment]::SetEnvironmentVariable($key, $fixed[$key], 'Process') }
 }
 # Fixed settings of a turbulence diagnostic; the variant is the only choice.
-function Set-VerificationWp9DiagnosticEnvironment([string]$OutputDirectory, [ValidateSet('smoke', 'c0', 'd1')][string]$Variant) {
+function Set-VerificationWp9DiagnosticEnvironment([string]$OutputDirectory, [ValidateSet('smoke', 'c0', 'd1', 'r0', 'd4')][string]$Variant) {
     $outputPath = Join-Path $OutputDirectory 'diagnostic.json'
     Assert-VerificationOutputPath $outputPath
     $fixed = [ordered]@{
@@ -276,13 +296,18 @@ function Set-VerificationWp9DiagnosticEnvironment([string]$OutputDirectory, [Val
         VERNON_DIAG_FIXTURE_ENV = Get-VerificationWp9FixtureEnvironmentFile
         VERNON_DIAG_SOURCE = Get-VerificationWp9DiagnosticSource
         VERNON_DIAG_OUT = $outputPath; VERNON_DIAG_VARIANT = $Variant
+        VERNON_DIAG_START_SOURCE = Get-VerificationWp9DiagnosticStartSource $Variant
     }
-    foreach ($key in $fixed.Keys) { [Environment]::SetEnvironmentVariable($key, $fixed[$key], 'Process') }
+    # A null value removes the variable ([NullString]; a PowerShell $null would set '').
+    foreach ($key in $fixed.Keys) {
+        $value = if ($null -eq $fixed[$key]) { [NullString]::Value } else { $fixed[$key] }
+        [Environment]::SetEnvironmentVariable($key, $value, 'Process')
+    }
 }
 # A diagnostic completes with one executed test, one marker of its variant and a
 # matching row. It is screening evidence: never acceptance, never coefficients.
 function Test-VerificationWp9DiagnosticOutput([string]$Output, [string]$ErrorOutput = '', [string]$RowPath = '', [string]$Variant = '') {
-    $shape = @{ smoke = @(4, 2); c0 = @(1000, 1); d1 = @(1000, 2) }
+    $shape = @{ smoke = @(4, 2); c0 = @(1000, 1); d1 = @(1000, 2); r0 = @(510, 1); d4 = @(1000, 1) }
     if (-not $shape.ContainsKey($Variant)) { return $false }
     $combined = $Output + "`n" + $ErrorOutput
     if ($combined -match '(?im)^\s*SKIPPED\b' -or
@@ -603,7 +628,7 @@ try {
         sourceBefore = $source; sourceAfter = $null; resumedFrom = $ResumeRunId; recoveredStaleLock = $staleLock
         steps = @(); message = ''; runDirectory = $runDirectory; cataloguePath = $null
     }
-    if ($Profile -eq 'wp9-diagnostic') { $state['diagnosticVariant'] = $env:VERNON_DIAG_VARIANT; $state['diagnosticSource'] = Get-VerificationWp9DiagnosticSource }
+    if ($Profile -eq 'wp9-diagnostic') { $state['diagnosticVariant'] = $env:VERNON_DIAG_VARIANT; $state['diagnosticSource'] = Get-VerificationWp9DiagnosticSource; $state['diagnosticStartSource'] = Get-VerificationWp9DiagnosticStartSource $env:VERNON_DIAG_VARIANT }
     Write-VerificationJson $statePath $state
     Write-VerificationJson (Join-Path $script:VerificationRoot 'latest.json') @{ runId = $RunId; statusPath = $statePath }
     $reuse = @()
