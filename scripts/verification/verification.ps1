@@ -32,7 +32,7 @@ $script:Wp9SolveProfiles = @('wp9-solve-pilot', 'wp9-solve')
 $script:Wp9LinuxProfiles = @('wp9-sizing', 'wp9-sizing-serial', 'wp9-solve-pilot', 'wp9-solve', 'wp9-diagnostic')
 # Profiles whose worker runs the read-only memory sampler.
 $script:Wp9SampledProfiles = @('wp9-solve-pilot', 'wp9-solve', 'wp9-diagnostic')
-$script:Wp9DiagnosticVariants = @('smoke', 'c0', 'd1', 'r0', 'd4')
+$script:Wp9DiagnosticVariants = @('smoke', 'c0', 'd1', 'r0', 'r1', 'd4')
 $script:VerificationScripts = Split-Path $PSScriptRoot -Parent
 $script:VerificationRepo = [IO.Path]::GetFullPath((Split-Path $script:VerificationScripts -Parent))
 # The fixed sizing environment is this checkout's own script, seen from WSL (C:\x -> /mnt/c/x).
@@ -58,9 +58,9 @@ $script:VerificationRoot = Join-Path $script:VerificationRepo 'scratch/continuat
 function Get-VerificationWp9DiagnosticSource {
     [IO.Path]::GetFullPath((Join-Path $script:VerificationRoot 'runs/wp9-solve-fastback-20261108-a/temp/vernon-cfd-98196-cfd.solve_steady-8/native/case'))
 }
-# R0 and D4 restart from the C0 diagnostic's written iteration 500 (same mesh).
+# R0, R1 and D4 restart from the C0 diagnostic's written iteration 500 (same mesh).
 function Get-VerificationWp9DiagnosticStartSource([string]$Variant) {
-    if ($Variant -cnotin @('r0', 'd4')) { return $null }
+    if ($Variant -cnotin @('r0', 'r1', 'd4')) { return $null }
     [IO.Path]::GetFullPath((Join-Path $script:VerificationRoot 'runs/wp9-diag-c0-20261108-a/temp/vernon-wp9-diag-c0-1891740/case'))
 }
 function Get-VerificationPath([string]$Id) {
@@ -287,7 +287,7 @@ function Set-VerificationWp9SolveEnvironment([string]$OutputDirectory, [Validate
     foreach ($key in $fixed.Keys) { [Environment]::SetEnvironmentVariable($key, $fixed[$key], 'Process') }
 }
 # Fixed settings of a turbulence diagnostic; the variant is the only choice.
-function Set-VerificationWp9DiagnosticEnvironment([string]$OutputDirectory, [ValidateSet('smoke', 'c0', 'd1', 'r0', 'd4')][string]$Variant) {
+function Set-VerificationWp9DiagnosticEnvironment([string]$OutputDirectory, [ValidateSet('smoke', 'c0', 'd1', 'r0', 'r1', 'd4')][string]$Variant) {
     $outputPath = Join-Path $OutputDirectory 'diagnostic.json'
     Assert-VerificationOutputPath $outputPath
     $fixed = [ordered]@{
@@ -307,7 +307,7 @@ function Set-VerificationWp9DiagnosticEnvironment([string]$OutputDirectory, [Val
 # A diagnostic completes with one executed test, one marker of its variant and a
 # matching row. It is screening evidence: never acceptance, never coefficients.
 function Test-VerificationWp9DiagnosticOutput([string]$Output, [string]$ErrorOutput = '', [string]$RowPath = '', [string]$Variant = '') {
-    $shape = @{ smoke = @(4, 2); c0 = @(1000, 1); d1 = @(1000, 2); r0 = @(510, 1); d4 = @(1000, 1) }
+    $shape = @{ smoke = @(4, 2); c0 = @(1000, 1); d1 = @(1000, 2); r0 = @(510, 1); r1 = @(1000, 1); d4 = @(1000, 1) }
     if (-not $shape.ContainsKey($Variant)) { return $false }
     $combined = $Output + "`n" + $ErrorOutput
     if ($combined -match '(?im)^\s*SKIPPED\b' -or

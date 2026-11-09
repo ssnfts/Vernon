@@ -35,7 +35,12 @@ fn d4_restarts_from_c0_at_500_and_compares_over_501_to_1000() {
     use Schemes::*;
     assert_eq!(Variant::D4.phases(), vec![Phase { start: 500, end: 1000, schemes: LimitedCorrection }]);
     assert_eq!(Variant::R0.phases(), vec![Phase { start: 500, end: 510, schemes: Production }]);
-    for v in [Variant::R0, Variant::D4] {
+    // R1 is D4's restart control: identical restart, production schemes.
+    assert_eq!(Variant::R1.phases(), vec![Phase { start: 500, end: 1000, schemes: Production }]);
+    assert_eq!((Variant::R1.windows(), Variant::R1.map_iterations(), Variant::R1.force_windows(), Variant::R1.write_interval()),
+               (Variant::D4.windows(), Variant::D4.map_iterations(), Variant::D4.force_windows(), Variant::D4.write_interval()));
+    assert_eq!(Variant::R1.reference(), Some(Reference::C0), "R1 records its departure from C0 (not asserted)");
+    for v in [Variant::R0, Variant::R1, Variant::D4] {
         assert!(v.restarts_from_c0());
         assert_eq!(Variant::parse(v.id()).unwrap(), v);
         for p in v.phases() {

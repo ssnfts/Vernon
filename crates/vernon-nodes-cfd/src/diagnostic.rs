@@ -71,6 +71,9 @@ pub enum Variant {
     /// Restart check: production schemes from C0's written iteration 500 for
     /// 501–510, which must reproduce C0's log exactly.
     R0,
+    /// D4's restart control: production schemes from C0's iteration 500,
+    /// 501–1000. Its departure from C0 is recorded, not asserted.
+    R1,
     /// Limited non-orthogonal correction from C0's iteration 500, 501–1000.
     D4,
 }
@@ -82,8 +85,9 @@ impl Variant {
             "c0" => Ok(Self::C0),
             "d1" => Ok(Self::D1),
             "r0" => Ok(Self::R0),
+            "r1" => Ok(Self::R1),
             "d4" => Ok(Self::D4),
-            other => Err(format!("unknown diagnostic variant '{other}' (smoke, c0, d1, r0, d4)")),
+            other => Err(format!("unknown diagnostic variant '{other}' (smoke, c0, d1, r0, r1, d4)")),
         }
     }
 
@@ -93,6 +97,7 @@ impl Variant {
             Self::C0 => "c0",
             Self::D1 => "d1",
             Self::R0 => "r0",
+            Self::R1 => "r1",
             Self::D4 => "d4",
         }
     }
@@ -105,6 +110,7 @@ impl Variant {
             Self::C0 => vec![p(0, 1000, Production)],
             Self::D1 => vec![p(0, 500, UpwindTurbulence), p(500, 1000, Production)],
             Self::R0 => vec![p(500, 510, Production)],
+            Self::R1 => vec![p(500, 1000, Production)],
             Self::D4 => vec![p(500, 1000, LimitedCorrection)],
         }
     }
@@ -113,7 +119,7 @@ impl Variant {
         match self {
             Self::Smoke => 2,
             Self::R0 => 10,
-            Self::C0 | Self::D1 | Self::D4 => 250,
+            Self::C0 | Self::D1 | Self::R1 | Self::D4 => 250,
         }
     }
 
@@ -123,20 +129,20 @@ impl Variant {
             Self::Smoke => vec![1, 2, 3, 4],
             Self::C0 | Self::D1 => vec![1, 10, 50, 100, 250, 500, 501, 510, 550, 750, 1000],
             Self::R0 => vec![501, 505, 510],
-            Self::D4 => vec![501, 510, 550, 750, 1000],
+            Self::R1 | Self::D4 => vec![501, 510, 550, 750, 1000],
         }
     }
 
     /// Variants that start from C0's written iteration 500 instead of the
     /// Stage 2 case's initial fields.
     pub fn restarts_from_c0(self) -> bool {
-        matches!(self, Self::R0 | Self::D4)
+        matches!(self, Self::R0 | Self::R1 | Self::D4)
     }
 
     pub fn reference(self) -> Option<Reference> {
         match self {
             Self::C0 => Some(Reference::Stage2),
-            Self::R0 => Some(Reference::C0),
+            Self::R0 | Self::R1 => Some(Reference::C0),
             _ => None,
         }
     }
