@@ -6,6 +6,25 @@ Sections are newest first. Older sections use the original machine's paths
 (C:\Users\mabdu\REA\...) and the old flat scripts/ layout, and are kept as
 evidence. For current commands use docs/SETUP.md and docs/CFD-RUNBOOK.md.
 
+## WP9 D4 running, R1 restart control queued (user chose the control), 2026-11-09
+
+- **R1** (commit 9e27d78): production schemes from C0's iteration 500 for
+  501–1000. It is the same restart as D4, so D4 is compared with R1. R1 against
+  C0 measures the restart perturbation; that comparison is recorded, not
+  asserted.
+- **Tests:** crate 370/0, clippy clean, runner self-test 8/8.
+- **D4** `wp9-diag-d4-20261109-a` started about 05:20Z. The case's fvSchemes
+  shows the two limited lines. There was no compile in the timed solve, and it
+  runs at about 18 s per iteration.
+- **The chain:** a background script waits for D4's final status. If D4's
+  cleanup is confirmed and the source is unchanged, it launches
+  `wp9-diag-r1-20261109-a`. Expect D4 at about 08:00Z and R1 at about 10:40Z.
+- **If the chain is lost:** launch R1 with VERNON_DIAG_VARIANT=r1 and
+  `start-verification.ps1 -Profile wp9-diagnostic -RunId wp9-diag-r1-20261109-a`,
+  with the same WSL variables as before.
+- Do not edit `scripts/`, `crates/`, `Cargo.*`, `AGENTS.md` or `CLEAN_ROOM.md`
+  while these runs are going.
+
 ## WP9 D4 prepared; R0 restart check failed its exactness gate, D4 not launched, 2026-11-09
 
 The user chose D4 (limited non-orthogonal correction).
