@@ -31,6 +31,10 @@ pub enum Schemes {
     /// Laplacian and surface-normal-gradient defaults with the explicit
     /// non-orthogonal correction limited to 0.33 (`limited corrected 0.33`).
     LimitedCorrection,
+    /// `grad(k)` and `grad(omega)` added to gradSchemes as
+    /// `cellLimited Gauss linear 1` (the production `grad(U)` limiter). They
+    /// feed the SST cross-diffusion term and the limitedLinear limiter.
+    LimitedTurbulenceGradients,
 }
 
 impl Schemes {
@@ -39,6 +43,7 @@ impl Schemes {
             Self::Production => "production",
             Self::UpwindTurbulence => "upwind k/omega convection",
             Self::LimitedCorrection => "limited corrected 0.33 (laplacian, snGrad)",
+            Self::LimitedTurbulenceGradients => "cellLimited Gauss linear 1 (grad(k), grad(omega))",
         }
     }
 
@@ -47,6 +52,7 @@ impl Schemes {
             Self::Production => Ok(production.to_string()),
             Self::UpwindTurbulence => upwind_turbulence_schemes(production),
             Self::LimitedCorrection => limited_correction_schemes(production),
+            Self::LimitedTurbulenceGradients => limited_turbulence_gradient_schemes(production),
         }
     }
 }
@@ -76,6 +82,14 @@ pub enum Variant {
     R1,
     /// Limited non-orthogonal correction from C0's iteration 500, 501–1000.
     D4,
+    /// Limited k/omega gradients from C0's iteration 500, 501–1000; compared
+    /// with R1 (same restart, production schemes).
+    D5,
+    /// Mesh fix: production numerics from iteration 0 to 1000 on a remeshed
+    /// case whose only change is the layer controls (built by
+    /// `scripts/cfd/wp9-mesh-fix.sh`, described by its `vernon_mesh_fix.json`).
+    /// Compared with C0, which is the same run on the Stage 2 mesh.
+    M1,
 }
 
 impl Variant {
@@ -87,7 +101,9 @@ impl Variant {
             "r0" => Ok(Self::R0),
             "r1" => Ok(Self::R1),
             "d4" => Ok(Self::D4),
-            other => Err(format!("unknown diagnostic variant '{other}' (smoke, c0, d1, r0, r1, d4)")),
+            "d5" => Ok(Self::D5),
+            "m1" => Ok(Self::M1),
+            other => Err(format!("unknown diagnostic variant '{other}' (smoke, c0, d1, r0, r1, d4, d5, m1)")),
         }
     }
 
@@ -99,6 +115,8 @@ impl Variant {
             Self::R0 => "r0",
             Self::R1 => "r1",
             Self::D4 => "d4",
+            Self::D5 => "d5",
+            Self::M1 => "m1",
         }
     }
 
@@ -107,11 +125,12 @@ impl Variant {
         let p = |start, end, schemes| Phase { start, end, schemes };
         match self {
             Self::Smoke => vec![p(0, 2, UpwindTurbulence), p(2, 4, Production)],
-            Self::C0 => vec![p(0, 1000, Production)],
+            Self::C0 | Self::M1 => vec![p(0, 1000, Production)],
             Self::D1 => vec![p(0, 500, UpwindTurbulence), p(500, 1000, Production)],
             Self::R0 => vec![p(500, 510, Production)],
             Self::R1 => vec![p(500, 1000, Production)],
             Self::D4 => vec![p(500, 1000, LimitedCorrection)],
+            Self::D5 => vec![p(500, 1000, LimitedTurbulenceGradients)],
         }
     }
 
@@ -119,7 +138,7 @@ impl Variant {
         match self {
             Self::Smoke => 2,
             Self::R0 => 10,
-            Self::C0 | Self::D1 | Self::R1 | Self::D4 => 250,
+            Self::C0 | Self::D1 | Self::R1 | Self::D4 | Self::D5 | Self::M1 => 250,
         }
     }
 
@@ -127,16 +146,16 @@ impl Variant {
     pub fn map_iterations(self) -> Vec<u32> {
         match self {
             Self::Smoke => vec![1, 2, 3, 4],
-            Self::C0 | Self::D1 => vec![1, 10, 50, 100, 250, 500, 501, 510, 550, 750, 1000],
+            Self::C0 | Self::D1 | Self::M1 => vec![1, 10, 50, 100, 250, 500, 501, 510, 550, 750, 1000],
             Self::R0 => vec![501, 505, 510],
-            Self::R1 | Self::D4 => vec![501, 510, 550, 750, 1000],
+            Self::R1 | Self::D4 | Self::D5 => vec![501, 510, 550, 750, 1000],
         }
     }
 
     /// Variants that start from C0's written iteration 500 instead of the
     /// Stage 2 case's initial fields.
     pub fn restarts_from_c0(self) -> bool {
-        matches!(self, Self::R0 | Self::R1 | Self::D4)
+        matches!(self, Self::R0 | Self::R1 | Self::D4 | Self::D5)
     }
 
     pub fn reference(self) -> Option<Reference> {
@@ -237,6 +256,46 @@ pub fn limited_correction_schemes(production: &str) -> Result<String, String> {
     }
     if lap != 1 || sn != 1 {
         return Err(format!("expected exactly one production laplacian and snGrad default, found {lap} and {sn}"));
+    }
+    Ok(out)
+}
+
+pub const PRODUCTION_GRAD_U: &str = "    grad(U)         cellLimited Gauss linear 1;";
+pub const LIMITED_GRAD_K: &str = "    grad(k)         cellLimited Gauss linear 1;";
+pub const LIMITED_GRAD_OMEGA: &str = "    grad(omega)     cellLimited Gauss linear 1;";
+
+/// The production fvSchemes with `grad(k)` and `grad(omega)` entries added
+/// directly after the production `grad(U)` line inside gradSchemes. Text that
+/// already names a k or omega gradient anywhere is refused; anything else
+/// stays byte-identical.
+pub fn limited_turbulence_gradient_schemes(production: &str) -> Result<String, String> {
+    let mut out = String::with_capacity(production.len() + 128);
+    let mut grad_u = 0;
+    let mut block = String::new();
+    let mut depth = 0i32;
+    for line in production.split_inclusive('\n') {
+        let body = line.trim_end_matches(['\r', '\n']);
+        let ending = &line[body.len()..];
+        let entry = body.trim_start();
+        if entry.starts_with("grad(k)") || entry.starts_with("grad(omega)") {
+            return Err(format!("the schemes already name a turbulence gradient: '{}'", body.trim()));
+        }
+        if depth == 0 && !body.trim().is_empty() && !body.contains('{') && !body.contains('}') {
+            block = body.trim().to_string();
+        }
+        out.push_str(line);
+        if depth == 1 && block == "gradSchemes" && body == PRODUCTION_GRAD_U {
+            grad_u += 1;
+            let ending = if ending.is_empty() { "\n" } else { ending };
+            out.push_str(LIMITED_GRAD_K);
+            out.push_str(ending);
+            out.push_str(LIMITED_GRAD_OMEGA);
+            out.push_str(ending);
+        }
+        depth += body.matches('{').count() as i32 - body.matches('}').count() as i32;
+    }
+    if grad_u != 1 {
+        return Err(format!("expected exactly one production grad(U) line in gradSchemes, found {grad_u}"));
     }
     Ok(out)
 }

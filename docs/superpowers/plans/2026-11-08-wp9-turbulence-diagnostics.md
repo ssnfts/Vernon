@@ -194,6 +194,67 @@ Details are in docs/CONTINUATION.md.
   The remaining candidates are D5 (limited k/omega gradients) and mesh fixes
   at the recurring cells.
 
+## Plan: mesh fix (M1), then D5 (user's choice, 2026-11-09)
+
+Written before any candidate mesh was built.
+
+**M1: layer controls only.** Remesh serially, like Stage 2. The surfaces,
+refinement, 5 layers, expansion 1.2, final thickness 0.5, minThickness 0.1 and
+the quality limits are all unchanged. Only `addLayersControls` lines change
+(`scripts/cfd/wp9-mesh-fix.sh`):
+
+- **A (smoothing):** nSmoothSurfaceNormals 1 → 3, nSmoothNormals 3 → 5,
+  nSmoothThickness 10 → 20, and a new nSmoothDisplacement 90.
+  - Why: the Stage 2 snappy log shows 35,131 nodes thinned by the
+    medial-axis limit, and layer displacement scaled back to as low as 0.32
+    to fix bad faces.
+  - The persistently clipped k cells sit in layers 2–4 and are much rougher
+    than near-wall cells in general:
+    - volume jump ≥ 1.5: 81% vs 22%;
+    - skewness ≥ 0.5: 40% vs 2.7%;
+    - non-orthogonality ≥ 20°: 64% vs 9%.
+- **B:** A plus nBufferCellsNoExtrude 0 → 1, for graded layer terminations.
+- **C:** A plus nOuterIter 5, which adds the layers in five passes.
+
+All keywords were checked in the installed v2606 source and annotated
+dictionary.
+
+**Scoring:** `wp9MeshMetricDict` runs on each mesh and on the Stage 2 baseline.
+- It counts cells within six layers of the vehicle walls, and "rough" cells
+  among them: volume jump ≥ 1.5 together with skewness ≥ 0.5 or
+  non-orthogonality ≥ 20°.
+- Counts are taken over all those cells, over layers 2–4, and inside three
+  boxes around the clusters of persistently clipped cells:
+  - front wheel: x 0.45–0.65, y 0.65–0.90, z 0–0.25;
+  - nose: x −0.05–0.12, y 0–0.45, z 0.15–0.70;
+  - mirror/A-pillar: x 1.38–1.95, y 0.68–1.10, z 0.88–1.15.
+
+**Selection (fixed before results):**
+1. A candidate is eligible only if:
+   - snappy finishes without errors;
+   - checkMesh reports `Mesh OK.`;
+   - it has at least 12.0M cells (the protocol floor);
+   - body layer coverage (thickness %) is at least the baseline's 89.2% minus
+     2 points.
+2. Among eligible candidates, the one with the fewest rough cells summed over
+   the three boxes wins. Ties go to the fewest rough cells in layers 2–4.
+3. The winner is solved only if that box total is at least 20% below the
+   baseline's. Otherwise there is no M1 solve, and the result is reported.
+
+**M1 solve:** production numerics from 0 to 1000 on the winning mesh,
+initialised as Stage 2 was (setup `0/`, potentialFoam, decomposePar 16).
+It is compared with C0 over 501–1000 and 751–1000:
+- clip counts and regions;
+- residual RMS;
+- screening forces;
+- whether the hotspot cells stop clipping, which the clip maps will show.
+
+The cells are new, so the comparison is by region and box, not by cell index.
+
+**D5 after M1:** `grad(k)` and `grad(omega)` set to
+`cellLimited Gauss linear 1`, restarted from C0's iteration 500, 501–1000,
+compared with R1. It runs on the Stage 2 mesh, independent of M1's outcome.
+
 ## Decisions after the screen
 
 1. If D1 removes the startup blow-up and clipping stays rare after the switch

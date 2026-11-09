@@ -61,6 +61,38 @@ fn d4_restarts_from_c0_at_500_and_compares_over_501_to_1000() {
 }
 
 #[test]
+fn d5_matches_d4_and_r1_except_for_its_schemes_and_m1_matches_c0() {
+    use Schemes::*;
+    assert_eq!(Variant::D5.phases(), vec![Phase { start: 500, end: 1000, schemes: LimitedTurbulenceGradients }]);
+    let shape = |v: Variant| (v.windows(), v.map_iterations(), v.force_windows(), v.write_interval(), v.restarts_from_c0());
+    assert_eq!(shape(Variant::D5), shape(Variant::R1), "D5 is compared with R1 over the same restart");
+    assert_eq!(Variant::D5.reference(), None);
+    // M1 is C0 on the remeshed case: same phases, windows, maps and forces.
+    assert_eq!(Variant::M1.phases(), Variant::C0.phases());
+    assert_eq!(shape(Variant::M1), shape(Variant::C0));
+    assert_eq!(Variant::M1.reference(), None, "a different mesh cannot reproduce Stage 2");
+    for v in [Variant::D5, Variant::M1] {
+        assert_eq!(Variant::parse(v.id()).unwrap(), v);
+    }
+}
+
+#[test]
+fn limited_turbulence_gradients_add_only_the_k_and_omega_entries() {
+    let lim = limited_turbulence_gradient_schemes(PROD_SCHEMES).unwrap();
+    let added: Vec<&str> = lim.lines().filter(|l| !PROD_SCHEMES.lines().any(|p| p == *l)).collect();
+    assert_eq!(added, vec![LIMITED_GRAD_K, LIMITED_GRAD_OMEGA]);
+    assert_eq!(lim.replace(&format!("{LIMITED_GRAD_K}\n{LIMITED_GRAD_OMEGA}\n"), ""), PROD_SCHEMES, "nothing else changes");
+    assert!(lim.contains(&format!("{PRODUCTION_GRAD_U}\n{LIMITED_GRAD_K}\n{LIMITED_GRAD_OMEGA}\n}}")), "inside gradSchemes, after grad(U)");
+    assert!(limited_turbulence_gradient_schemes(&lim).is_err(), "already-limited text is refused");
+    assert!(limited_turbulence_gradient_schemes(&PROD_SCHEMES.replace(PRODUCTION_GRAD_U, "")).is_err());
+    let elsewhere = PROD_SCHEMES.replace("    div(phi,k)      bounded Gauss limitedLinear 1;", "    grad(k)         Gauss linear;");
+    assert!(limited_turbulence_gradient_schemes(&elsewhere).is_err(), "an existing k gradient anywhere is refused");
+    assert_eq!(Schemes::LimitedTurbulenceGradients.apply(PROD_SCHEMES).unwrap(), lim);
+    let crlf = PROD_SCHEMES.replace('\n', "\r\n");
+    assert_eq!(limited_turbulence_gradient_schemes(&crlf).unwrap(), lim.replace('\n', "\r\n"));
+}
+
+#[test]
 fn limited_correction_changes_only_the_laplacian_and_sngrad_defaults() {
     let lim = limited_correction_schemes(PROD_SCHEMES).unwrap();
     let a: Vec<&str> = PROD_SCHEMES.lines().collect();
@@ -538,7 +570,12 @@ fn wp9_turbulence_diagnostic() {
         let (f, b) = copy_tree(&p.join("constant/polyMesh"), &target.join("constant/polyMesh")).unwrap();
         let state = start_source.join(p.file_name().unwrap());
         let (f2, b2) = copy_tree(&state.join(&start_time), &target.join(&start_time)).unwrap();
-        assert!(target.join(&start_time).join("U").is_file() && target.join(&start_time).join("phi").is_file(), "start fields at {start_time}");
+        // A restart needs C0's written flux; a start from 0 has U only (the
+        // Stage 2 and M1 cases, like any potentialFoam start, write no phi).
+        assert!(target.join(&start_time).join("U").is_file(), "start fields at {start_time}");
+        if variant.restarts_from_c0() {
+            assert!(target.join(&start_time).join("phi").is_file(), "restart flux at {start_time}");
+        }
         files += f + f2;
         bytes += b + b2;
         for name in ["points", "faces", "owner", "neighbour", "boundary"] {
@@ -550,6 +587,14 @@ fn wp9_turbulence_diagnostic() {
     }
     let copy_seconds = started.elapsed().as_secs_f64();
     let production_schemes = std::fs::read_to_string(source.join("system/fvSchemes")).unwrap();
+    // Only M1 runs on a remeshed case, and that case always says how it was made.
+    let mesh_fix_path = source.join("vernon_mesh_fix.json");
+    assert_eq!(mesh_fix_path.is_file(), variant == Variant::M1, "vernon_mesh_fix.json present exactly for m1: {}", mesh_fix_path.display());
+    let mesh_fix: serde_json::Value = if variant == Variant::M1 {
+        serde_json::from_str(&std::fs::read_to_string(&mesh_fix_path).unwrap()).unwrap()
+    } else {
+        serde_json::Value::Null
+    };
     let source_control = std::fs::read_to_string(source.join("system/controlDict")).unwrap();
 
     // 2. Classification boxes from the case's own surfaces; counter options.
@@ -605,6 +650,7 @@ fn wp9_turbulence_diagnostic() {
             "turbulence_convection": if phase.schemes == Schemes::UpwindTurbulence { "bounded Gauss upwind" } else { "bounded Gauss limitedLinear 1" },
             "laplacian_default": if phase.schemes == Schemes::LimitedCorrection { "Gauss linear limited corrected 0.33" } else { "Gauss linear corrected" },
             "sngrad_default": if phase.schemes == Schemes::LimitedCorrection { "limited corrected 0.33" } else { "corrected" },
+            "turbulence_gradients": if phase.schemes == Schemes::LimitedTurbulenceGradients { "cellLimited Gauss linear 1" } else { "Gauss linear (default)" },
             "fvSchemes_fnv1a64": format!("{:016x}", { let mut h: u64 = 0xcbf2_9ce4_8422_2325; for b in schemes.bytes() { h ^= u64::from(b); h = h.wrapping_mul(0x0100_0000_01b3); } h }),
             "wall_seconds": wall, "seconds_per_iteration": spi, "log": case.join("logs").join(format!("{step}.log")),
         }));
@@ -704,7 +750,7 @@ fn wp9_turbulence_diagnostic() {
         "source_case": source, "mesh_fingerprint_fnv": format!("{mesh_hash:016x}"), "copied_files": files, "copied_bytes": bytes,
         "copy_seconds": copy_seconds, "compile_seconds_on_fixture": compile_seconds, "compile_links_removed": links_removed, "np": 16,
         "phases": phase_rows, "iterations": last, "regions": regions.iter().map(|r| serde_json::json!({"name": r.0, "min": r.1, "max": r.2})).collect::<Vec<_>>(),
-        "start_source_case": start_source, "start_time": phases[0].start,
+        "start_source_case": start_source, "start_time": phases[0].start, "mesh_fix": mesh_fix,
         "counters": counters, "residual_rms": residual_rms,
         "reproduction_of_stage2": if variant.reference() == Some(Reference::Stage2) { reproduction.clone() } else { serde_json::Value::Null },
         "reproduction_of_c0": if variant.reference() == Some(Reference::C0) { reproduction } else { serde_json::Value::Null },

@@ -328,7 +328,7 @@ Assert-True ('wp9-diagnostic' -in $script:Wp9LinuxProfiles -and 'wp9-diagnostic'
 $fixtureEnvironment = Get-VerificationWp9FixtureEnvironmentFile
 Assert-True ($fixtureEnvironment -cmatch '^/mnt/[a-z]/.+/scripts/cfd/wp9-diagnostic-fixture-env\.sh$') 'the fixture environment is this checkout''s script as seen from WSL'
 Assert-True ((Get-VerificationWp9DiagnosticSource) -like '*scratch*continuation*runs*wp9-solve-fastback-20261108-a*temp*vernon-cfd-98196-cfd.solve_steady-8*native*case') 'the diagnostic source is the stopped Stage 2 case'
-foreach ($variant in @('smoke', 'c0', 'd1', 'r0', 'r1', 'd4')) { Assert-VerificationWp9Input 'wp9-diagnostic' $sizingDistribution $sizingUser $solveEnvironment '' $variant }
+foreach ($variant in @('smoke', 'c0', 'd1', 'r0', 'r1', 'd4', 'd5', 'm1')) { Assert-VerificationWp9Input 'wp9-diagnostic' $sizingDistribution $sizingUser $solveEnvironment '' $variant }
 foreach ($inputCase in @(
     @($sizingDistribution, $sizingUser, $solveEnvironment, 'd2'),
     @($sizingDistribution, $sizingUser, $solveEnvironment, ''),
@@ -354,11 +354,17 @@ try {
     Assert-True ($null -eq [Environment]::GetEnvironmentVariable('VERNON_DIAG_START_SOURCE', 'Process')) 'd1 starts from the Stage 2 case: no inherited start source survives'
     $c0Case = Get-VerificationWp9DiagnosticStartSource 'd4'
     Assert-True ($c0Case -like '*scratch*continuation*runs*wp9-diag-c0-20261108-a*temp*vernon-wp9-diag-c0-1891740*case') 'd4 restarts from the C0 diagnostic case'
-    foreach ($restart in @('r0', 'r1', 'd4')) {
+    foreach ($restart in @('r0', 'r1', 'd4', 'd5')) {
         Set-VerificationWp9DiagnosticEnvironment $diagDirectory $restart
         Assert-True ([Environment]::GetEnvironmentVariable('VERNON_DIAG_START_SOURCE', 'Process') -ceq $c0Case -and $env:VERNON_DIAG_VARIANT -ceq $restart) "$restart is given the C0 start source"
     }
     Assert-True ($null -eq (Get-VerificationWp9DiagnosticStartSource 'c0')) 'c0 has no start source'
+    $m1Case = Get-VerificationWp9DiagnosticSource 'm1'
+    Assert-True ($m1Case -like '*scratch*wp9-diagnostics*mesh-fix-20261109*m1*case' -and $m1Case -cne (Get-VerificationWp9DiagnosticSource 'c0')) 'm1 reads the remeshed case, not the Stage 2 case'
+    Set-VerificationWp9DiagnosticEnvironment $diagDirectory 'm1'
+    Assert-True ($env:VERNON_DIAG_SOURCE -ceq $m1Case -and $null -eq [Environment]::GetEnvironmentVariable('VERNON_DIAG_START_SOURCE', 'Process')) 'm1 starts from its own case at 0'
+    Set-VerificationWp9DiagnosticEnvironment $diagDirectory 'd5'
+    Assert-True ($env:VERNON_DIAG_SOURCE -ceq (Get-VerificationWp9DiagnosticSource 'c0')) 'd5 reads the Stage 2 case settings'
 } finally { foreach ($key in $diagSaved.Keys) { [Environment]::SetEnvironmentVariable($key, $diagSaved[$key], 'Process') } }
 $diagPassed = "running 1 test`ntest diagnostic::tests::wp9_turbulence_diagnostic ... ok`ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 384 filtered out;"
 $diagMarker = 'WP9_DIAGNOSTIC_COMPLETE variant=d1 iterations=1000 phases=2 np=16 instrumentation=checked acceptance_evidence=0'
@@ -377,6 +383,12 @@ Assert-True (-not (Test-VerificationWp9DiagnosticOutput $diagPassed $d4Marker $d
 $d4Row['variant'] = 'r1'
 Write-VerificationJson $diagPath $d4Row
 Assert-True (Test-VerificationWp9DiagnosticOutput $diagPassed $d4Marker.Replace('variant=d4', 'variant=r1') $diagPath 'r1') 'an r1 control completes with one 501-1000 phase'
+foreach ($single in @('d5', 'm1')) {
+    $d4Row['variant'] = $single
+    Write-VerificationJson $diagPath $d4Row
+    Assert-True (Test-VerificationWp9DiagnosticOutput $diagPassed $d4Marker.Replace('variant=d4', "variant=$single") $diagPath $single) "$single completes with one phase ending at 1000"
+    Assert-True (-not (Test-VerificationWp9DiagnosticOutput $diagPassed $d4Marker $diagPath $single)) "a d4 marker never completes $single"
+}
 $d4Row['variant'] = 'r0'; $d4Row['iterations'] = 510
 Write-VerificationJson $diagPath $d4Row
 Assert-True (Test-VerificationWp9DiagnosticOutput $diagPassed $d4Marker.Replace('variant=d4', 'variant=r0').Replace('iterations=1000', 'iterations=510') $diagPath 'r0') 'an r0 restart check ends at 510'
