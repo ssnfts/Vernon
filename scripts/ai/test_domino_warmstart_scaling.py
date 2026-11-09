@@ -10,6 +10,7 @@ import unittest
 from pathlib import Path
 
 from domino_warmstart_scaling import (
+    KNOWN_CONVENTIONS,
     bernoulli_coefficient,
     consistent_conventions,
     fit_bernoulli,
@@ -291,7 +292,25 @@ class RepositoryAuditTests(unittest.TestCase):
 
     def test_pressure_stays_unresolved_until_reference_parity(self):
         p = [c for c in self.audit["channels"] if c["name"] == "pressure"][0]
-        self.assertEqual(p["status"], "unresolved")
+        if p["status"] == "verified":
+            artifacts = {r["artifact"] for r in self.audit.get("reference_parity_runs", [])}
+            self.assertIn(p["verification_artifact"], artifacts)
+        else:
+            self.assertEqual(p["status"], "unresolved")
+
+    def test_parity_report_matches_recorded_reference_files(self):
+        for run in self.audit.get("reference_parity_runs", []):
+            self.assertEqual(run["kind"], "reference_parity")
+            report = json.loads((self.PATH.parents[2] / run["artifact"]).read_text(encoding="utf-8"))
+            files = run["reference_data"]["files"]
+            self.assertEqual(report["inputs"]["stl_sha256"], files["run_1/drivaer_1.stl"]["sha256"])
+            self.assertEqual(report["inputs"]["slice_sha256"], files["run_1/slices/yNormal_p00000.vtp"]["sha256"])
+
+    def test_proposals_name_known_conventions(self):
+        for row in self.audit["channels"]:
+            prop = row.get("proposed_after_parity")
+            if prop:
+                self.assertIn(prop["convention"], KNOWN_CONVENTIONS, row["name"])
 
 
 class GeometryRecordTests(unittest.TestCase):

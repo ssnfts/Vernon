@@ -30,7 +30,13 @@
     "global_parameters_note": "30 m/s and 1.205 kg/m^3 are reference constants, not learned Reynolds conditioning",
     "scaler_source_used_by_bridge": "scaling_factors.pkl min_val/max_val['volume_fields']",
     "pkl_vs_global_stats_compared": true,
-    "pkl_vs_global_stats_note": "Equal within float32 rounding: max |difference| 4.8e-8 over the five min and five max values (probe 2026-11-09, docs/research/domino-warmstart-probe-20261109.json)."
+    "pkl_vs_global_stats_note": "Equal within float32 rounding: max |difference| 4.8e-8 over the five min and five max values (probe 2026-11-09, docs/research/domino-warmstart-probe-20261109.json).",
+    "identified_by_reference_parity": {
+      "velocity": "U_hat = U / 30 m/s for data at U_inf = 38.889 m/s (so the freestream is U_hat = 1.296)",
+      "pressure": "p_hat = p_kinematic / (1.205 * 30^2), p_kinematic relative to DrivAerML p_ref = 0",
+      "nut": "nut_hat = nut / (30 * L), L = largest bounding-box extent of the STL",
+      "operating_point_note": "Inverse for a case at inlet speed U_c under the Reynolds-independence assumption: U = 30 * (U_c / 38.889) * U_hat; p_kinematic = 1.205 * 30^2 * (U_c / 38.889)^2 * p_hat. The assumption is unverified (Vernon: 16 m/s, Re about 2.4x lower than DrivAerML)."
+    }
   },
   "evidence_leads": [
     {
@@ -64,7 +70,7 @@
       "name": "Ux",
       "status": "unresolved",
       "convention": "u_ref",
-      "upstream_definition": "candidate U / U_ref with U_ref unresolved between 30.00 (checkpoint config) and 38.889 m/s (DrivAerML freestream)",
+      "upstream_definition": "reference parity supports U / 30 m/s (training freestream 38.889 m/s)",
       "reference": {
         "value": 30.0,
         "unit": "m/s",
@@ -74,14 +80,20 @@
       "source": null,
       "verification_artifact": null,
       "tolerance": null,
-      "probe_evidence": "consistency only, see probe_runs[0]; not a verification artifact"
+      "probe_evidence": "consistency only, see probe_runs[0]; not a verification artifact",
+      "proposed_after_parity": {
+        "convention": "u_ref",
+        "detail": "U_ref 30 m/s at training freestream 38.889 m/s",
+        "evidence": "reference_parity_runs[0], preregistered criteria met",
+        "awaiting": "owner acceptance before status changes to verified"
+      }
     },
     {
       "index": 1,
       "name": "Uy",
       "status": "unresolved",
       "convention": "u_ref",
-      "upstream_definition": "candidate U / U_ref with U_ref unresolved between 30.00 (checkpoint config) and 38.889 m/s (DrivAerML freestream)",
+      "upstream_definition": "reference parity supports U / 30 m/s (training freestream 38.889 m/s)",
       "reference": {
         "value": 30.0,
         "unit": "m/s",
@@ -91,14 +103,20 @@
       "source": null,
       "verification_artifact": null,
       "tolerance": null,
-      "probe_evidence": "consistency only, see probe_runs[0]; not a verification artifact"
+      "probe_evidence": "consistency only, see probe_runs[0]; not a verification artifact",
+      "proposed_after_parity": {
+        "convention": "u_ref",
+        "detail": "U_ref 30 m/s at training freestream 38.889 m/s",
+        "evidence": "reference_parity_runs[0], preregistered criteria met",
+        "awaiting": "owner acceptance before status changes to verified"
+      }
     },
     {
       "index": 2,
       "name": "Uz",
       "status": "unresolved",
       "convention": "u_ref",
-      "upstream_definition": "candidate U / U_ref with U_ref unresolved between 30.00 (checkpoint config) and 38.889 m/s (DrivAerML freestream)",
+      "upstream_definition": "reference parity supports U / 30 m/s (training freestream 38.889 m/s)",
       "reference": {
         "value": 30.0,
         "unit": "m/s",
@@ -108,14 +126,20 @@
       "source": null,
       "verification_artifact": null,
       "tolerance": null,
-      "probe_evidence": "consistency only, see probe_runs[0]; not a verification artifact"
+      "probe_evidence": "consistency only, see probe_runs[0]; not a verification artifact",
+      "proposed_after_parity": {
+        "convention": "u_ref",
+        "detail": "U_ref 30 m/s at training freestream 38.889 m/s",
+        "evidence": "reference_parity_runs[0], preregistered criteria met",
+        "awaiting": "owner acceptance before status changes to verified"
+      }
     },
     {
       "index": 3,
       "name": "pressure",
       "status": "unresolved",
       "convention": null,
-      "upstream_definition": "unresolved among rho_u_squared, half_rho_u_squared and kinematic_over_rho_u_squared; U_ref and gauge also unresolved",
+      "upstream_definition": "reference parity supports kinematic_over_rho_u_squared at U_ref 30; status stays unresolved until the owner accepts it",
       "reference": {
         "value": [
           30.0,
@@ -132,7 +156,13 @@
       "source": null,
       "verification_artifact": null,
       "tolerance": null,
-      "probe_evidence": "consistency only, see probe_runs[0]; not a verification artifact"
+      "probe_evidence": "consistency only, see probe_runs[0]; not a verification artifact",
+      "proposed_after_parity": {
+        "convention": "kinematic_over_rho_u_squared",
+        "detail": "rho 1.205, U_ref 30 m/s, gauge relative to DrivAerML p_ref = 0",
+        "evidence": "reference_parity_runs[0], preregistered criteria met",
+        "awaiting": "owner acceptance before status changes to verified"
+      }
     },
     {
       "index": 4,
@@ -240,6 +270,95 @@
       "scaling_module_sha256_as_run": "9d82171031ea0fd5ff5b1878f1ca8c66be424420f97519b16c412590317ed261",
       "known_report_quirks": [
         "stagnation.rise_expected_from_coefficient is coefficient * |U_inf_hat|^2, which assumes the nose line reached zero speed; it did not, so use coefficient * (|U_inf_hat|^2 - min |U_hat|^2) = 0.385 instead."
+      ]
+    }
+  ],
+  "reference_parity_runs": [
+    {
+      "artifact": "docs/research/domino-warmstart-parity-run1-20261109.json",
+      "script": "scripts/ai/domino_warmstart_parity.py",
+      "script_sha256_as_run": "1431cf2a31243daff3a7d07fe4937fbb86a86b0f9f514c2db502ba513f13a5a6",
+      "kind": "reference_parity",
+      "run_utc": "2026-11-09",
+      "reference_data": {
+        "dataset": "huggingface.co/datasets/neashton/drivaerml (main, downloaded 2026-11-09 with owner approval)",
+        "files": {
+          "run_1/drivaer_1.stl": {
+            "bytes": 142385186,
+            "sha256": "411e6651284a26fc94924106b833fd79febc6deba63922c929dd8acfc99720d2"
+          },
+          "run_1/slices/yNormal_p00000.vtp": {
+            "bytes": 21788863,
+            "sha256": "2a014d766c6f5ce8435da59177708164cce9fc10c0d8be7af576ce7dfbb736ee"
+          },
+          "run_1/force_mom_1.csv": {
+            "git_blob": "e892968be2d2be0bee1bfd7470ea6c94688ba5eb"
+          },
+          "run_1/geo_ref_1.csv": {
+            "git_blob": "af810369aed215720ab576e22100e4933e299345"
+          },
+          "run_1/geo_parameters_1.csv": {
+            "git_blob": "58a459facfac4b5ba236a0467b75b5ab5cc4e032"
+          }
+        },
+        "hash_check": "all five match the Hugging Face LFS sha256 / git blob ids",
+        "local_copy": "scratch/wp9-data/drivaerml-run1 (git-ignored, not redistributed)"
+      },
+      "preregistered_criteria": "fixed multiplier within 5 % of the fitted one and relative L2 error at least 1.5x lower than the runner-up (written into the script before the first run)",
+      "results": {
+        "labels_only": {
+          "q_from_pMeanTrim_over_CpMeanTrim": 756.1772,
+          "q_over_half_38.889_sq": 1.0,
+          "gauge_p_minus_q_Cp": 0.0,
+          "reading": "pMeanTrim is kinematic (density 1) relative to p_ref = 0, and Cp uses 38.889 m/s. The upstream-region median Ux of 35.8 m/s is the car's upstream deceleration, so the q / (0.5 U_upstream^2) ratio of 1.18 is not a density."
+        },
+        "velocity": {
+          "V_fit_mps": 30.056,
+          "candidate_30_error": -0.0019,
+          "candidate_38.889_error": 0.294,
+          "rel_l2_at_30": {
+            "all": 0.103,
+            "upstream": 0.025,
+            "above_car": 0.024,
+            "near_body": 0.093,
+            "wake": 0.13
+          },
+          "rel_l2_at_38.889_all": 0.309,
+          "preregistered": "supported"
+        },
+        "pressure": {
+          "D_fit_m2_s2": 1060.7,
+          "offset_fit_m2_s2": -2.2,
+          "best": "kinematic_over_rho_u_squared at U_ref 30 (D = 1084.5, error +2.2 %)",
+          "runner_up": "rho_u_squared at U_ref 30 (D = 900, error -15.2 %)",
+          "rel_l2_best": {
+            "all": 0.128,
+            "upstream": 0.074,
+            "above_car": 0.083,
+            "near_body": 0.127,
+            "wake": 0.199
+          },
+          "rel_l2_runner_up_all": 0.244,
+          "preregistered": "supported"
+        },
+        "nut": {
+          "multiplier_fit": 137.8,
+          "candidate_30_times_L": 141.1,
+          "error": 0.024,
+          "reading": "consistent with nut / (30 * L), L = largest STL bounding-box extent; nut stays unused"
+        },
+        "seed_difference_abs_median_normalised": [
+          0.0022,
+          0.0014,
+          0.0013,
+          0.0008,
+          1.9e-08
+        ]
+      },
+      "limitations": [
+        "One run (run_1) and one plane (y = 0); whether run_1 was in the checkpoint's training split is unknown, which matters for accuracy claims but not for identifying units and divisors.",
+        "Labels are time-averaged HRLES; error figures describe this sample, not a calibrated accuracy.",
+        "Identifies how the checkpoint was normalised for DrivAerML at 38.889 m/s. Using it at another inlet speed (Vernon's case runs at 16 m/s) adds an operating-point scaling and a Reynolds-number assumption that this parity does not test."
       ]
     }
   ]
