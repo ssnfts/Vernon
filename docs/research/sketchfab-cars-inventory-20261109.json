@@ -1,0 +1,71 @@
+{
+  "schema": "vernon.external_car_inventory.v1",
+  "updated_utc": "2026-11-09T04:15Z",
+  "status": "preview_domain_shift_only",
+  "policy": [
+    "Kept apart from the registered DrivAer benchmark: no borrowed Cd target, no assumed physical scale or aerodynamic accuracy.",
+    "Not training labels and not production references. CFD or training use needs geometry preparation and independently generated, converged labels.",
+    "Model files stay in the git-ignored scratch/sketchfab-cars/ folder; they are not committed or redistributed."
+  ],
+  "licence_evidence": "Each GLB's asset.extras names CC-BY-4.0, the author and the source URL. That is the uploader's own metadata inside the file; no separate licence record (page capture or download receipt) is stored. CC-BY-4.0 requires attribution in anything that redistributes or shows the model.",
+  "cars": [
+    {
+      "id": "m4-f82",
+      "file": "scratch/sketchfab-cars/m4-f82/bmw_m4_f82.glb",
+      "bytes": 23708756,
+      "sha256": "8530e5e6b513cb40e55a72905b0332295c7303fc9bfb062856d646f3e3343bad",
+      "generator": "Sketchfab-16.99.0",
+      "embedded_licence": "CC-BY-4.0",
+      "embedded_author": "Black Snow (https://sketchfab.com/BlackSnow02)",
+      "embedded_source": "https://sketchfab.com/3d-models/bmw-m4-f82-8e87379f40fd40dcac0a751e22c1a188",
+      "body": "notchback coupe",
+      "triangles": 506866,
+      "parts": 281,
+      "watertight_parts": 5,
+      "assembly_watertight": false,
+      "extent_file_units": [2.0318, 1.4277, 4.7012],
+      "orientation": "longest axis is glTF z, height is y (y up); front direction not in metadata",
+      "scale_reading": "4.70 file units long, consistent with a metre-scale model of a car about 4.7 m long; the comparison length is recalled, not looked up",
+      "prepared": "a 6 mm voxel shell (scratch/sketchfab-cars/shells/m4-f82_shell_domino.stl, sha256 f526da39...) and carprep-record.json were written by another session on 2026-11-09; not reviewed here"
+    },
+    {
+      "id": "m3-touring-g81",
+      "file": "scratch/sketchfab-cars/m3-touring-g81/bmw_m3_competition_touring_g81_hd.glb",
+      "bytes": 24969660,
+      "sha256": "60c1e73ceba4a04f4e9770f8bd41d1622ccc678682dbdafa276577e8e6307217",
+      "generator": "Sketchfab-16.73.0",
+      "embedded_licence": "CC-BY-4.0",
+      "embedded_author": "Mona x Supercars (https://sketchfab.com/Car2022)",
+      "embedded_source": "https://sketchfab.com/3d-models/bmw-m3-competition-touring-g81-hd-2cb477b062ba4425aaa4742f581b5352",
+      "body": "estate (wagon)",
+      "triangles": 303207,
+      "parts": 91,
+      "watertight_parts": 0,
+      "assembly_watertight": false,
+      "extent_file_units": [8.2448, 5.801, 19.0719],
+      "orientation": "longest axis is glTF z, height is y",
+      "scale_reading": "19.07 file units long: not metres. Commit 9669292 scales it by wheelbase x0.2503, giving length -0.6 % and height +1.0 % against recalled published dimensions. The scale is a recorded assumption, not metadata"
+    },
+    {
+      "id": "a7-sportback-c8",
+      "file": "scratch/sketchfab-cars/a7-sportback-c8/audi_a7_sportback_mk2_c8_2018-2025.glb",
+      "bytes": 14531884,
+      "sha256": "56eef1389136e09ba39c7e5bae99d8d38056819f1238c2ecba522174d103248f",
+      "generator": "Sketchfab-16.72.0",
+      "embedded_licence": "CC-BY-4.0",
+      "embedded_author": "szymonpasterczyk734 (https://sketchfab.com/szymonpasterczyk734)",
+      "embedded_source": "https://sketchfab.com/3d-models/audi-a7-sportback-mk2-c8-2018-2025-045f5064185948d4b34fe71b721c6cc7",
+      "body": "fastback (sportback)",
+      "triangles": 352072,
+      "parts": 110,
+      "watertight_parts": 0,
+      "assembly_watertight": false,
+      "extent_file_units": [1.8596, 1.107, 4.3872],
+      "orientation": "longest axis is glTF z, height is y",
+      "scale_reading": "4.39 x 1.86 x 1.11 file units: not metre scale. Raw bounds mislead here: the width includes the mirrors, and the model has no wheels, so its lowest point is the sill at 0.17. Commit 9669292 (claude/domino-warmstart-m1, docs/research/domino-warmstart-carprep-v1.json) scales it by wheelbase x1.150, giving length +1.5 % and height +3.3 % against published dimensions that were recalled, not looked up. Its wheels are synthetic and its ride height is assumed. An earlier version of this record called its proportions non-uniform; that reading came from the raw bounds and was wrong"
+    }
+  ],
+  "geometry_condition": "All three are visual models: many open parts, interiors and decals, no closed assembly. Any aerodynamic use first needs an outer-shell extraction, closed wheels and a ground contact, recorded per car.",
+  "allowed_use_now": "Labelled AI preview / domain-shift examples after these basic checks; outputs reported in model units with 'CFD validation pending'.",
+  "not_allowed": ["Cd or force targets", "training labels", "production or benchmark references", "physical-scale claims without a recorded, measured scale basis"]
+}

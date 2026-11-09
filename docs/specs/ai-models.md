@@ -91,9 +91,16 @@ redistributing weights; Vernon never bundles them).
 * **Frame:** metres, flow along **+x**, z up, nose toward −x. Surface box
   x −1.5..5.0, y ±1.4, z −0.32..1.4 m; volume box x −3.5..8.5, y ±2.25,
   z −0.32..3.0 m. Training surfaces span x −0.94..4.13, y ±1.13, z −0.32..1.23 m.
-* **Operating point:** fixed 30 m/s inlet, 1.205 kg/m³ air, zero yaw. These are
-  the only values in the checkpoint's `global_parameters`; Vernon exposes no
-  control for them, and says so in every report.
+* **Operating point:** zero yaw, no control exposed. The checkpoint's
+  `global_parameters` (30 m/s, 1.205 kg/m³) are **normalisation constants, not
+  the flow the model learned**: the DrivAerML labels are at 38.889 m/s, with
+  kinematic pressure (density 1). Reference parity on run_1 (2026-11-09) gives
+  U = 30·U_hat (so the training freestream is U_hat ≈ 1.296) and kinematic
+  p = 1.205·30²·p_hat. Equations and limits:
+  `docs/research/domino-warmstart-scaling-equations.md`. The preview node's help
+  text and report note still call 30 m/s / 1.205 kg/m³ the operating point;
+  that wording is due for correction (it does not change the displayed values,
+  which stay in model units).
 * **Surface path:** one prediction per triangle: pressure and wall shear
   (3 components). **Volume path:** at supplied points: velocity (3), pressure,
   turbulent viscosity. Vernon offers a y = const slice (default centreline).
