@@ -76,6 +76,11 @@ def pressure_to_kinematic(value_hat, rho_kg_m3, u_ref_mps, p_reference_pa, press
     Pa source:        p_Pa = factor * rho * U_ref^2 * p_hat; result = (p_Pa - p_reference_pa) / rho.
     Kinematic source: p_k  = factor * rho * U_ref^2 * p_hat; result = p_k - p_reference_pa / rho.
     `rho_kg_m3` is the density the normalisation divided by, not necessarily the air's.
+
+    Consistency-check helper only, not an import path: it accepts any rho and U, so the case's
+    density or inlet speed silently gives wrong fields, and for a kinematic source it converts a
+    Pa reference with the normalisation density. CFD import goes through
+    domino_warmstart_units.py (see the audit's import_conversion).
     """
     if not isinstance(pressure_scale, str) or pressure_scale not in PRESSURE_CONVENTIONS:
         raise ValueError(f"unknown pressure convention {pressure_scale!r}; "

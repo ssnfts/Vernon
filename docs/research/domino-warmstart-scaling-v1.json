@@ -107,7 +107,11 @@
       "tolerance": "preregistered: fixed U_ref within 5 % of fitted and rel. L2 >= 1.5x better than runner-up; measured U_fit 30.056 m/s (-0.19 %), rel. L2 0.103 vs 0.309 at 38.889 m/s",
       "probe_evidence": "consistency only, see probe_runs[0]; not a verification artifact",
       "acceptance": "owner accepted 2026-11-09 after reviewing reference_parity_runs[0]",
-      "scope": "Normalisation identity at the training operating point (DrivAerML, U_inf 38.889 m/s). Applying it at another inlet speed goes through normalization.operating_point_gate, which stays unresolved."
+      "scope": "Normalisation identity at the training operating point (DrivAerML, U_inf 38.889 m/s). Applying it at another inlet speed goes through normalization.operating_point_gate, which stays unresolved.",
+      "caveats": [
+        "Magnitude not identified by run_1: Uy is about zero on the y = 0 plane, so the parity confirms its sign only (a lone fit gives 39.8 m/s). The verified divisor rests on Ux, Uy and Uz sharing one vector divisor.",
+        "Source: post-hoc re-analysis of the run_1 parity fields by the scaling-semantics session (branch claude/domino-scaling-semantics, commit 12d8a43, docs/research/domino-warmstart-scaling-semantics-v1.json); not preregistered"
+      ]
     },
     {
       "index": 2,
@@ -126,7 +130,10 @@
       "tolerance": "preregistered: fixed U_ref within 5 % of fitted and rel. L2 >= 1.5x better than runner-up; measured U_fit 30.056 m/s (-0.19 %), rel. L2 0.103 vs 0.309 at 38.889 m/s",
       "probe_evidence": "consistency only, see probe_runs[0]; not a verification artifact",
       "acceptance": "owner accepted 2026-11-09 after reviewing reference_parity_runs[0]",
-      "scope": "Normalisation identity at the training operating point (DrivAerML, U_inf 38.889 m/s). Applying it at another inlet speed goes through normalization.operating_point_gate, which stays unresolved."
+      "scope": "Normalisation identity at the training operating point (DrivAerML, U_inf 38.889 m/s). Applying it at another inlet speed goes through normalization.operating_point_gate, which stays unresolved.",
+      "caveats": [
+        "Fitted alone: 29.81 m/s, consistent with the shared 30 m/s divisor. Source: post-hoc re-analysis of the run_1 parity fields by the scaling-semantics session (branch claude/domino-scaling-semantics, commit 12d8a43, docs/research/domino-warmstart-scaling-semantics-v1.json); not preregistered"
+      ]
     },
     {
       "index": 3,
@@ -152,7 +159,12 @@
       "tolerance": "preregistered: fixed divisor within 5 % of fitted and rel. L2 >= 1.5x better than runner-up; measured D_fit 1060.7 vs 1084.5 m^2/s^2 (+2.2 %), rel. L2 0.128 vs 0.244 (rho_u_squared)",
       "probe_evidence": "consistency only, see probe_runs[0]; not a verification artifact",
       "acceptance": "owner accepted 2026-11-09 after reviewing reference_parity_runs[0]",
-      "scope": "Normalisation identity at the training operating point (DrivAerML, U_inf 38.889 m/s). Applying it at another inlet speed goes through normalization.operating_point_gate, which stays unresolved."
+      "scope": "Normalisation identity at the training operating point (DrivAerML, U_inf 38.889 m/s). Applying it at another inlet speed goes through normalization.operating_point_gate, which stays unresolved.",
+      "caveats": [
+        "Margin over the runner-up depends on how the gauge is aligned: 1.90x with the upstream-region gauge used in the preregistered judge, 1.52x with a global-median gauge (criterion 1.5x). Gauge-free fitted divisor 1060.5.",
+        "The fit cannot separate rho 1.205 from 1.184 (+0.5 % in the divisor); 1.205 comes from the checkpoint config.yaml.",
+        "Source: post-hoc re-analysis of the run_1 parity fields by the scaling-semantics session (branch claude/domino-scaling-semantics, commit 12d8a43, docs/research/domino-warmstart-scaling-semantics-v1.json); not preregistered"
+      ]
     },
     {
       "index": 4,
@@ -349,7 +361,22 @@
         "One run (run_1) and one plane (y = 0); whether run_1 was in the checkpoint's training split is unknown, which matters for accuracy claims but not for identifying units and divisors.",
         "Labels are time-averaged HRLES; error figures describe this sample, not a calibrated accuracy.",
         "Identifies how the checkpoint was normalised for DrivAerML at 38.889 m/s. Using it at another inlet speed (Vernon's case runs at 16 m/s) adds an operating-point scaling and a Reynolds-number assumption that this parity does not test."
-      ]
+      ],
+      "post_hoc_reanalysis": {
+        "source": "post-hoc re-analysis of the run_1 parity fields by the scaling-semantics session (branch claude/domino-scaling-semantics, commit 12d8a43, docs/research/domino-warmstart-scaling-semantics-v1.json); not preregistered",
+        "channel_order": "confirmed; best swap (y<->z) is 3.2x worse",
+        "scope": "label-regression identification of units and divisors; software parity against a reference implementation is not established"
+      }
     }
-  ]
+  ],
+  "import_conversion": {
+    "module": "scripts/ai/domino_warmstart_units.py",
+    "branch": "claude/domino-scaling-semantics",
+    "commit": "12d8a43",
+    "status": "not merged into this branch",
+    "why": "binds U_norm 30 m/s and rho_norm 1.205 to this audit, takes the gauge in m^2/s^2 only, and refuses the operating-point step while operating_point_gate is unresolved unless Reynolds independence is stated",
+    "equations_at_case_speed_U_c": "U = 30 * (U_c / 38.889) * U_hat; p_kinematic = 1084.5 * (U_c / 38.889)^2 * p_hat + gauge (16 m/s: U = 12.343 * U_hat, p = 183.58 * p_hat + gauge)",
+    "not_for_import": "domino_warmstart_scaling.pressure_to_kinematic, a consistency-check helper that accepts any rho and U",
+    "plan_6_2_note": "The plan's p_Pa = rho * U_ref^2 * p_hat then / rho with U_ref = case speed adds a density division and uses the wrong speed; owner text, not changed here."
+  }
 }

@@ -327,6 +327,14 @@ class RepositoryAuditTests(unittest.TestCase):
         self.assertEqual(gate["status"], "unresolved")
         self.assertEqual(gate["blocks"], "CFD-field import")
 
+    def test_known_weak_spots_are_recorded(self):
+        rows = {c["name"]: c for c in self.audit["channels"]}
+        self.assertTrue(any("sign only" in s for s in rows["Uy"].get("caveats", [])))
+        self.assertTrue(any("1.52x" in s for s in rows["pressure"].get("caveats", [])))
+        imp = self.audit["import_conversion"]
+        self.assertEqual(imp["module"], "scripts/ai/domino_warmstart_units.py")
+        self.assertIn("pressure_to_kinematic", imp["not_for_import"])
+
     def test_accepted_conventions(self):
         conv = {c["name"]: c for c in self.audit["channels"]}
         for name in ("Ux", "Uy", "Uz"):
