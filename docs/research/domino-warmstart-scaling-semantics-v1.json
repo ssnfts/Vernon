@@ -1,0 +1,153 @@
+{
+  "schema": "vernon.domino_warmstart_scaling_semantics.v1",
+  "purpose": "Semantic check of docs/research/domino-warmstart-scaling-v1.json: explicit equations, which quantity each constant is, what the run_1 evidence does and does not establish, and the error factors of the earlier conversion. It adds limits; it changes no channel status.",
+  "updated_utc": "2026-11-09",
+  "audit": "docs/research/domino-warmstart-scaling-v1.json",
+  "equations_doc": "docs/research/domino-warmstart-scaling-equations.md",
+  "constants": {
+    "u_norm_mps": 30.0,
+    "u_norm_meaning": "velocity normalisation divisor from the checkpoint's global_parameters.inlet_velocity.reference; NOT the operating speed of the training data",
+    "rho_norm_kg_m3": 1.205,
+    "rho_norm_meaning": "density used only as a pressure divisor; the source pMeanTrim is kinematic (density 1), so this constant is not an air density of the data",
+    "training_freestream_mps": 38.889,
+    "training_freestream_meaning": "DrivAerML freestream; the physical operating point of the labels (pMeanTrim / CpMeanTrim = 0.5 * 38.889^2)",
+    "training_pressure_reference_m2_s2": 0.0,
+    "channel_order": [
+      "Ux",
+      "Uy",
+      "Uz",
+      "pressure",
+      "nut"
+    ],
+    "channel_order_source": "volume config.yaml variables.volume.solution: UMeanTrim (vector), pMeanTrim (scalar), nutMeanTrim (scalar)"
+  },
+  "conversions": {
+    "statistical_inverse": "f_hat_c = (y_c + 1) / 2 * (max_c - min_c) + min_c, scaling_factors.pkl volume_fields, unclamped",
+    "reference_velocity": "U_ref_sample = u_norm * (f_hat_0, f_hat_1, f_hat_2) = 30 * U_hat  [m/s, at the training sample's 38.889 m/s conditions]",
+    "reference_pressure": "p_kin_ref_sample = rho_norm * u_norm^2 * f_hat_3 = 1084.5 * p_hat  [m^2/s^2, kinematic, relative to p_ref = 0]; no division by any density",
+    "to_openfoam": "p_OpenFOAM = p_kin + c, with c an additive gauge fitted to the control case far field in m^2/s^2; OpenFOAM incompressible p is already kinematic, so no density appears",
+    "to_pascal_reporting_only": "p_Pa = rho_air * p_kin, one multiplication by the case air density (1.184 for Vernon's case); never used for import",
+    "operating_point_hypothesis": "s = U_case / 38.889; U_case_field = s * 30 * U_hat; p_case = s^2 * 1084.5 * p_hat (+ gauge). Assumes Reynolds independence; gated by audit normalization.operating_point_gate (unresolved)",
+    "operating_point_numbers_at_16_mps": {
+      "s": 0.4114273959217259,
+      "velocity_multiplier_mps": 12.342821877651778,
+      "pressure_multiplier_m2_s2": 183.57602854364438
+    }
+  },
+  "earlier_conversion_errors": {
+    "plan_6_2_formula": "p_dynamic_Pa = rho * U_ref^2 * p_hat; p_OpenFOAM = (p_dynamic_Pa - p_ref) / rho, with U_ref = case speed",
+    "density_division": "Treats p_hat as Pa over rho*U^2 and divides by rho: gives u_norm^2 * p_hat = 900 * p_hat at the reference conditions, too small by the factor rho_norm = 1.205. The source was never multiplied by a density, so dividing by one is the extra division.",
+    "case_speed_as_u_ref": "Using U_ref = 16 m/s for the 30 m/s divisor: velocity 16 * U_hat instead of 12.343 * U_hat, 29.6 % fast (freestream 20.74 m/s)",
+    "combined_pressure_at_16_mps": "rho*16^2*p_hat/rho = 256 * p_hat instead of 183.58 * p_hat, factor 1.3945 = (38.889/30)^2 / 1.205",
+    "status_in_code": "Not present in any import path (none exists). scripts/ai/domino_warmstart_scaling.py::pressure_to_kinematic gives the correct 1084.5 * p_hat only when called with rho = 1.205, U_ref = 30 and 'kinematic_over_rho_u_squared'; its signature also accepts the case density and speed silently. scripts/ai/domino_warmstart_units.py binds the constants to the audit and is the conversion an import must use.",
+    "p_reference_quirk": "pressure_to_kinematic(..., 'kinematic_over_rho_u_squared') converts a Pa gauge with the normalisation density 1.205, which is not the air density of either case. Harmless at p_reference = 0; domino_warmstart_units.py takes gauges in m^2/s^2 only."
+  },
+  "evidence_classification": {
+    "run_1_reference_parity": "label_regression_identification: fits of surrogate predictions against DrivAerML run_1 CFD labels. It identifies the normalisation structure; the 0.10 / 0.13 relative L2 values are prediction error against labels (surrogate error included), not implementation error.",
+    "software_parity": {
+      "status": "not_established",
+      "reason": "No reference-implementation outputs for identical input tensors exist locally (plan 6.4 rtol 1e-5 / atol 1e-6 comparison). The bridge and the parity script share the same installed PhysicsNeMo 1.3.0 datapipe call, so agreement between them is not independent."
+    },
+    "discriminating_power": "About +-5 %: it separates the structural candidates (x1.205 extra division 15 %, factor two 58 %, 38.889 m/s 72 %) but not rho_norm 1.205 from the case air density 1.184 (2 %); 1.205 comes from config.yaml, not from the fit."
+  },
+  "post_hoc_checks": {
+    "preregistered": false,
+    "script": "scripts/ai/domino_warmstart_semantics_check.py",
+    "measured": {
+      "input_npz_sha256": "be309d956a8850ecb2bd3e107163c46b29624091fd0143ee889d7ee2d40b354b",
+      "points": 147660,
+      "slice_abs_y_max_m": 0.0007796891373921344,
+      "velocity_components": {
+        "Ux": {
+          "fitted_multiplier_mps": 30.056280258812407,
+          "multiplier_error_of_30": -0.0018724958087887877,
+          "label_rms_mps": 28.120115174177155,
+          "correlation": 0.9879146243029766,
+          "rel_l2_at_30": 0.08472416199761792,
+          "rel_l2_sign_flipped": 1.9927476329493656
+        },
+        "Uy": {
+          "fitted_multiplier_mps": 39.81277985477309,
+          "multiplier_error_of_30": -0.24647311467743827,
+          "label_rms_mps": 2.4999730511429803,
+          "correlation": 0.919095162645599,
+          "rel_l2_at_30": 0.4581066102208522,
+          "rel_l2_sign_flipped": 1.6569425281526766
+        },
+        "Uz": {
+          "fitted_multiplier_mps": 29.806569186700546,
+          "multiplier_error_of_30": 0.006489536319589595,
+          "label_rms_mps": 6.466839908701133,
+          "correlation": 0.9774309283602971,
+          "rel_l2_at_30": 0.21044796644225933,
+          "rel_l2_sign_flipped": 1.9728419879683246
+        }
+      },
+      "velocity_channel_permutations_rel_l2": {
+        "xyz": 0.10265732787285349,
+        "xzy": 0.3266104970574306,
+        "yxz": 1.36557498797883,
+        "yzx": 1.4250620671254144,
+        "zxy": 1.4176781896369361,
+        "zyx": 1.442110400391222
+      },
+      "pressure_divisor": {
+        "least_squares_with_gauge_m2_s2": 1060.7201217721297,
+        "least_squares_gauge_m2_s2": -2.227691972022758,
+        "gauge_free_pairwise_difference_fit_m2_s2": 1060.5076276755572,
+        "candidates": {
+          "kinematic_rho_norm_u_norm_sq": {
+            "D_m2_s2": 1084.5,
+            "error_vs_gauge_free_fit": 0.02262347926438757,
+            "global_median_gauge_m2_s2": -0.9324394598841526,
+            "rel_l2_all": 0.12822644035193337
+          },
+          "extra_density_division_u_norm_sq": {
+            "D_m2_s2": 900.0,
+            "error_vs_gauge_free_fit": -0.1513498097390974,
+            "global_median_gauge_m2_s2": -5.462038994619366,
+            "rel_l2_all": 0.1948073075481787
+          },
+          "factor_two_half_u_norm_sq": {
+            "D_m2_s2": 450.0,
+            "error_vs_gauge_free_fit": -0.5756749048695486,
+            "global_median_gauge_m2_s2": -15.185702477263881,
+            "rel_l2_all": 0.5775067485284462
+          },
+          "wrong_density_1.184_u_norm_sq": {
+            "D_m2_s2": 1065.6,
+            "error_vs_gauge_free_fit": 0.004801825268908599,
+            "global_median_gauge_m2_s2": -1.196116949076636,
+            "rel_l2_all": 0.12645991443444177
+          },
+          "training_speed_38.889_kinematic": {
+            "D_m2_s2": 1822.3869568050004,
+            "error_vs_gauge_free_fit": 0.7184100418017232,
+            "global_median_gauge_m2_s2": 8.326117165474308,
+            "rel_l2_all": 0.7156080589177524
+          }
+        }
+      }
+    },
+    "reading": {
+      "Ux": "independently fitted 30.056 m/s (-0.19 %), sign confirmed",
+      "Uz": "independently fitted 29.807 m/s (+0.65 %), sign confirmed (flipped rel L2 1.97 vs 0.21)",
+      "Uy": "sign consistent (correlation 0.92), magnitude not independently tested: on the y = 0 plane Uy is the label's small asymmetry (rms 2.5 m/s), the fit gives 39.8 m/s (-25 %). Uy rests on the shared-divisor convention of a vector channel.",
+      "order": "identity order 0.103; best alternative (Uy and Uz swapped) 0.327, x3.2; any order moving Ux is above 1.36",
+      "pressure": "gauge-free divisor 1060.5 m^2/s^2, with-gauge 1060.7: kinematic 1084.5 is +2.3 %; the extra density division (900) is -15.1 %, the factor two (450) -57.6 %. With a global median gauge the rel L2 margin over the extra division is 0.195 / 0.128 = 1.52x, close to the 1.5x preregistered margin (which used an upstream gauge: 0.244 / 0.128 = 1.90x)."
+    }
+  },
+  "channel_semantic_status": {
+    "Ux": "structure_identified",
+    "Uy": "sign_only_magnitude_by_shared_convention",
+    "Uz": "structure_identified",
+    "pressure": "structure_identified",
+    "nut": "unresolved_unused"
+  },
+  "limitations": [
+    "One sample and one plane; run_1 may be a training case.",
+    "Identification at 38.889 m/s says nothing about the 16 m/s case; the operating-point gate stays unresolved.",
+    "Software parity against a reference implementation is not established.",
+    "These checks are post hoc; they limit or support the audit, they do not verify it."
+  ]
+}
