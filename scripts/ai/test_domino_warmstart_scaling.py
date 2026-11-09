@@ -358,5 +358,36 @@ class GeometryRecordTests(unittest.TestCase):
         self.assertLess(abs(geo["ground"]["gap_m"]), 0.01)
 
 
+class CarPrepRecordTests(unittest.TestCase):
+    """Cleaned Sketchfab shells: closed, placed like the Notchback, and honest about their sources."""
+
+    PATH = Path(__file__).resolve().parents[2] / "docs" / "research" / "domino-warmstart-carprep-v1.json"
+
+    def setUp(self):
+        self.rec = json.loads(self.PATH.read_text(encoding="utf-8"))
+
+    def test_three_body_types(self):
+        self.assertEqual(self.rec["schema"], "vernon.domino_warmstart_carprep.v1")
+        self.assertEqual({c["body"] for c in self.rec["cars"]}, {"notchback coupe", "fastback", "estate"})
+        self.assertTrue(self.rec["limitations"])
+
+    def test_shells_closed_and_placed(self):
+        for car in self.rec["cars"]:
+            sh, pl = car["shell"], car["placement"]
+            self.assertTrue(sh["watertight"] and sh["winding_consistent"], car["car"])
+            self.assertGreater(sh["volume_m3"], 5.0, car["car"])  # a hollow skin came out near 2 m^3
+            self.assertAlmostEqual(pl["front_axle_x_m"], 0.0)
+            self.assertAlmostEqual(pl["rear_axle_x_m"], car["published_recalled_m"]["wheelbase"], places=6)
+            self.assertAlmostEqual(pl["ground_gap_to_box_floor_m"], 0.0015, places=6)
+            self.assertTrue(car["checkpoint_domain"]["surface_box"]["inside"], car["car"])
+            self.assertLess(abs(car["scale"]["length_vs_published"]), 0.03, car["car"])
+
+    def test_synthetic_parts_are_labelled(self):
+        for car in self.rec["cars"]:
+            if car["axle_detection"]["method"].startswith("wheel-arch"):
+                self.assertTrue(car["synthetic_wheels"]["synthetic"], car["car"])
+            self.assertIn("published_recalled_m", car)
+
+
 if __name__ == "__main__":
     unittest.main()

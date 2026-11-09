@@ -1,0 +1,424 @@
+{
+ "schema": "vernon.domino_warmstart_carprep.v1",
+ "script_sha256": "d7ff79104b84dd6056954081a4f41b6dc5e0a6e3e71814cac393b2200828831e",
+ "limitations": [
+  "Sources are styled Sketchfab models, not engineering CAD; shut lines, underbody and wheels are approximate.",
+  "Published dimensions are recalled, not looked up; the scale rests on the wheelbase.",
+  "Voxel shell at 6 mm with 48 mm closing: openings under about 10 cm (shut lines, grilles, the gap between tyre and arch) are filled, concave corners get about 5 cm fillets, and parts thinner than about 1 cm (antenna, thin mirror stalks) can vanish.",
+  "Front direction and axes were read from rendered views, not metadata.",
+  "A7 wheels are synthetic and its ride height is assumed; the M4 keeps an open engine bay and tunnel cavities from the source model, while the A7 and M3 shells are closed underneath (Euler number 2)."
+ ],
+ "cars": [
+  {
+   "car": "m4-f82",
+   "body": "notchback coupe",
+   "source": {
+    "file": "m4-f82/bmw_m4_f82.glb",
+    "bytes": 23708756,
+    "sha256": "8530e5e6b513cb40e55a72905b0332295c7303fc9bfb062856d646f3e3343bad",
+    "parts": 281,
+    "triangles": 506866
+   },
+   "published_recalled_m": {
+    "length": 4.671,
+    "wheelbase": 2.812,
+    "width_no_mirrors": 1.87,
+    "height": 1.383
+   },
+   "rotation_model_to_checkpoint": [
+    [
+     0.0,
+     0.0,
+     -1.0
+    ],
+    [
+     -1.0,
+     0.0,
+     0.0
+    ],
+    [
+     0.0,
+     1.0,
+     0.0
+    ]
+   ],
+   "axle_detection": {
+    "method": "tyre contact patches",
+    "contact_vertices": 296
+   },
+   "scale": {
+    "factor": 1.0003307134531474,
+    "basis": "measured wheelbase -> published wheelbase",
+    "measured_wheelbase_model_units": 2.8110703412204145,
+    "length_after_scale_m": 4.702792954144181,
+    "length_vs_published": 0.006806455607831552,
+    "height_after_scale_m": 1.4282087967302661,
+    "height_vs_published": 0.03268893472904266
+   },
+   "shell": {
+    "sample_points": 12668338,
+    "grid": [
+     809,
+     364,
+     264
+    ],
+    "solid_voxels": 29853177,
+    "solid_volume_m3": 6.448286232,
+    "pitch_m": 0.006,
+    "close_radius_m": 0.048,
+    "smooth_sigma_voxels": 1.0,
+    "file": "m4-f82_shell_domino.stl",
+    "sha256": "0020f3dd4a56bbaba1acd5d347e1352c806b3c5f03c0f95c4dc6a497f58c4805",
+    "triangles": 2658722,
+    "watertight": true,
+    "winding_consistent": true,
+    "euler_number": -82,
+    "volume_m3": 6.446904240140859,
+    "area_m2": 36.82379719323722
+   },
+   "placement": {
+    "translation_m": [
+     1.301623,
+     0.002257,
+     -0.324771
+    ],
+    "bounds_min": [
+     -0.83712,
+     -1.017,
+     -0.3185
+    ],
+    "bounds_max": [
+     3.86188,
+     1.017,
+     1.11176
+    ],
+    "front_axle_x_m": 0.0,
+    "rear_axle_x_m": 2.812,
+    "ground_gap_to_box_floor_m": 0.0015000000000000013
+   },
+   "checkpoint_domain": {
+    "surface_box": {
+     "inside": true,
+     "margin_min_side_m": [
+      0.6629,
+      0.383,
+      0.0015
+     ],
+     "margin_max_side_m": [
+      1.1381,
+      0.383,
+      0.2882
+     ]
+    },
+    "volume_box": {
+     "inside": true,
+     "margin_min_side_m": [
+      2.6629,
+      1.233,
+      0.0015
+     ],
+     "margin_max_side_m": [
+      4.6381,
+      1.233,
+      1.8882
+     ]
+    }
+   },
+   "raw_bounds_rotated_model_units": [
+    [
+     -2.14003,
+     -1.01592,
+     0.00927
+    ],
+    [
+     2.56121,
+     1.01592,
+     1.437
+    ]
+   ],
+   "seconds": 32.6,
+   "underbody_clearance_mid_m": 0.144
+  },
+  {
+   "car": "a7-sportback-c8",
+   "body": "fastback",
+   "source": {
+    "file": "a7-sportback-c8/audi_a7_sportback_mk2_c8_2018-2025.glb",
+    "bytes": 14531884,
+    "sha256": "56eef1389136e09ba39c7e5bae99d8d38056819f1238c2ecba522174d103248f",
+    "parts": 110,
+    "triangles": 352072
+   },
+   "published_recalled_m": {
+    "length": 4.969,
+    "wheelbase": 2.926,
+    "width_no_mirrors": 1.908,
+    "height": 1.422
+   },
+   "rotation_model_to_checkpoint": [
+    [
+     0.0,
+     0.0,
+     -1.0
+    ],
+    [
+     -1.0,
+     0.0,
+     0.0
+    ],
+    [
+     0.0,
+     1.0,
+     0.0
+    ]
+   ],
+   "axle_detection": {
+    "method": "wheel-arch openings (model has no wheels)",
+    "opening_widths": [
+     0.6580789446830781,
+     0.6580789446830781
+    ],
+    "arch_low_points_z": [
+     0.4169733038167452,
+     0.3903480908793935
+    ]
+   },
+   "synthetic_wheels": {
+    "synthetic": true,
+    "radius": 0.356,
+    "width": 0.255,
+    "track": 1.64,
+    "radius_model_units": 0.3095924823380314,
+    "axle_z_model_units": 0.3095924823380314,
+    "ground_assumption": "model origin height z = 0",
+    "note": "plain cylinders, no rims, spokes or rotation; tyre size and track recalled"
+   },
+   "scale": {
+    "factor": 1.1498987227063806,
+    "basis": "measured wheelbase -> published wheelbase",
+    "measured_wheelbase_model_units": 2.5445719194412355,
+    "length_after_scale_m": 5.044827586206872,
+    "length_vs_published": 0.015260130047670017,
+    "height_after_scale_m": 1.468443641077791,
+    "height_vs_published": 0.03266078838100639
+   },
+   "shell": {
+    "sample_points": 9531512,
+    "grid": [
+     866,
+     382,
+     270
+    ],
+    "solid_voxels": 38272545,
+    "solid_volume_m3": 8.26686972,
+    "pitch_m": 0.006,
+    "close_radius_m": 0.048,
+    "smooth_sigma_voxels": 1.0,
+    "file": "a7-sportback-c8_shell_domino.stl",
+    "sha256": "7c5310728eaeb8a47450d278a13ee0f34bab3d95b8325d9517913506536b0051",
+    "triangles": 2009072,
+    "watertight": true,
+    "winding_consistent": true,
+    "euler_number": 2,
+    "volume_m3": 8.265860848195507,
+    "area_m2": 29.94051842167864
+   },
+   "placement": {
+    "translation_m": [
+     1.46458,
+     0.001192,
+     -0.3155
+    ],
+    "bounds_min": [
+     -0.98594,
+     -1.071,
+     -0.3185
+    ],
+    "bounds_max": [
+     4.05926,
+     1.071,
+     1.1515
+    ],
+    "front_axle_x_m": 0.0,
+    "rear_axle_x_m": 2.9259999999999997,
+    "ground_gap_to_box_floor_m": 0.0015000000000000013
+   },
+   "checkpoint_domain": {
+    "surface_box": {
+     "inside": true,
+     "margin_min_side_m": [
+      0.5141,
+      0.329,
+      0.0015
+     ],
+     "margin_max_side_m": [
+      0.9407,
+      0.329,
+      0.2485
+     ]
+    },
+    "volume_box": {
+     "inside": true,
+     "margin_min_side_m": [
+      2.5141,
+      1.179,
+      0.0015
+     ],
+     "margin_max_side_m": [
+      4.4407,
+      1.179,
+      1.8485
+     ]
+    }
+   },
+   "raw_bounds_rotated_model_units": [
+    [
+     -2.12916,
+     -0.92981,
+     0.17
+    ],
+    [
+     2.25803,
+     0.92982,
+     1.27702
+    ]
+   ],
+   "seconds": 27.5,
+   "underbody_clearance_mid_m": 0.204
+  },
+  {
+   "car": "m3-touring-g81",
+   "body": "estate",
+   "source": {
+    "file": "m3-touring-g81/bmw_m3_competition_touring_g81_hd.glb",
+    "bytes": 24969660,
+    "sha256": "60c1e73ceba4a04f4e9770f8bd41d1622ccc678682dbdafa276577e8e6307217",
+    "parts": 91,
+    "triangles": 303207
+   },
+   "published_recalled_m": {
+    "length": 4.801,
+    "wheelbase": 2.857,
+    "width_no_mirrors": 1.903,
+    "height": 1.438
+   },
+   "rotation_model_to_checkpoint": [
+    [
+     0.0,
+     0.0,
+     -1.0
+    ],
+    [
+     -1.0,
+     0.0,
+     0.0
+    ],
+    [
+     0.0,
+     1.0,
+     0.0
+    ]
+   ],
+   "axle_detection": {
+    "method": "tyre contact patches",
+    "contact_vertices": 100
+   },
+   "scale": {
+    "factor": 0.25030653041651774,
+    "basis": "measured wheelbase -> published wheelbase",
+    "measured_wheelbase_model_units": 11.414005041122437,
+    "length_after_scale_m": 4.773828609535899,
+    "length_vs_published": -0.005659527278504717,
+    "height_after_scale_m": 1.4520331657977397,
+    "height_vs_published": 0.009758807926105506
+   },
+   "shell": {
+    "sample_points": 12490487,
+    "grid": [
+     821,
+     369,
+     268
+    ],
+    "solid_voxels": 35939817,
+    "solid_volume_m3": 7.763000472,
+    "pitch_m": 0.006,
+    "close_radius_m": 0.048,
+    "smooth_sigma_voxels": 1.0,
+    "file": "m3-touring-g81_shell_domino.stl",
+    "sha256": "fff66b9fe0be23740deb7e953c38982c8175586fce91c81f09e550678e462330",
+    "triangles": 2001802,
+    "watertight": true,
+    "winding_consistent": true,
+    "euler_number": 2,
+    "volume_m3": 7.762145271997492,
+    "area_m2": 28.84339433756828
+   },
+   "placement": {
+    "translation_m": [
+     1.833264,
+     0.75743,
+     -0.56672
+    ],
+    "bounds_min": [
+     -0.85072,
+     -1.032,
+     -0.3185
+    ],
+    "bounds_max": [
+     3.92501,
+     1.032,
+     1.13578
+    ],
+    "front_axle_x_m": 0.0,
+    "rear_axle_x_m": 2.8569999999999998,
+    "ground_gap_to_box_floor_m": 0.0015000000000000013
+   },
+   "checkpoint_domain": {
+    "surface_box": {
+     "inside": true,
+     "margin_min_side_m": [
+      0.6493,
+      0.368,
+      0.0015
+     ],
+     "margin_max_side_m": [
+      1.075,
+      0.368,
+      0.2642
+     ]
+    },
+    "volume_box": {
+     "inside": true,
+     "margin_min_side_m": [
+      2.6493,
+      1.218,
+      0.0015
+     ],
+     "margin_max_side_m": [
+      4.575,
+      1.218,
+      1.8642
+     ]
+    }
+   },
+   "raw_bounds_rotated_model_units": [
+    [
+     -10.7108,
+     -7.13697,
+     1.00365
+    ],
+    [
+     8.36113,
+     1.10783,
+     6.80467
+    ]
+   ],
+   "seconds": 27.6,
+   "underbody_clearance_mid_m": 0.138
+  }
+ ],
+ "ride_height_check": {
+  "method": "lowest shell point with 0.6 < x < 2.2 m and |y| < 0.4 m, above the contact plane z = -0.3185 (overlay script, 2026-11-09)",
+  "reading": "A7 sits about 6 cm higher than the BMWs. Its ride height comes from assuming the model origin is the ground (the model has no wheels); arch-top clearance looks plausible but the true value is uncertain by several cm."
+ }
+}
