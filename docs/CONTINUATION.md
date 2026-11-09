@@ -6,6 +6,30 @@ Sections are newest first. Older sections use the original machine's paths
 (C:\Users\mabdu\REA\...) and the old flat scripts/ layout, and are kept as
 evidence. For current commands use docs/SETUP.md and docs/CFD-RUNBOOK.md.
 
+## WP9 D4 completed; R1 running, 2026-11-09
+
+- **D4** `wp9-diag-d4-20261109-a`: completed, exit 0, 05:20Z–08:04Z. Linux
+  cleanup was confirmed and the source was unchanged (checked by the chain).
+  fvSchemes FNV f74960fa38e257d5, `Gauss linear limited corrected 0.33` and
+  `limited corrected 0.33`. The solve took 18.88 s/it, against Stage 2's
+  16.99 s/it over the same window.
+- **Clipping, 501–1000 (D4 vs C0):** k clipped in 500/500 iterations in both.
+  - Mean k cells: 607.5 vs 610.8.
+  - Mean omega cells: 90.8 vs 90.1.
+  - 901–1000: k 600.1 vs 612.0; omega 92.4 vs 87.9.
+  - Lowest k: −1.86 vs −1.83. Lowest omega: −2.0e5 vs −9.9e5.
+  - Region and wall-band means are within a few cells of C0's.
+- **Residual RMS, 501–1000 (D4 vs C0):** U 0.0208 vs 0.0203; p 1.63e-3 vs
+  1.65e-3; k 2.23e-4 vs 2.24e-4; omega 5.6e-5 vs 8.8e-5.
+- **Screening forces (not results):** Cd 0.2750 ± 0.0081 (501–1000) and
+  0.2728 ± 0.0080 (751–1000). C0 had 0.2753 ± 0.0097 and 0.2737 ± 0.0101.
+- **Reading so far:** limited non-orthogonal correction did not change the
+  clipping. The omega differences may come from the restart itself, which R0
+  showed is not exact. R1 (same restart, production schemes) decides that. No
+  verdict until R1 is in.
+- **R1** `wp9-diag-r1-20261109-a` launched at 08:06Z and reached 672 at
+  08:59Z. Expect it at about 10:35Z.
+
 ## WP9 D4 running, R1 restart control queued (user chose the control), 2026-11-09
 
 - **R1** (commit 9e27d78): production schemes from C0's iteration 500 for
