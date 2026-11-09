@@ -2,7 +2,7 @@
   "schema": "vernon.domino_warmstart_scaling.v1",
   "purpose": "Per-channel conversion audit for AI initial fields. A channel may reach CFD import only when its status is 'verified'; scripts/ai/domino_warmstart_scaling.py::verified_convention enforces this.",
   "updated_utc": "2026-11-09",
-  "plan": "docs/superpowers/plans/2026-11-09-domino-cfd-warm-start.md, sections 6 and 19.1",
+  "plan": "docs/superpowers/plans/2026-11-09-domino-cfd-warm-start.md, sections 6, 19.1 and 20.5",
   "model": {
     "repository": "nvidia/domino_drivaerml",
     "revision": "35b1bf1edafdaa2600d16182825890cd51c07427",
@@ -29,8 +29,8 @@
     "encode_parameters": false,
     "global_parameters_note": "30 m/s and 1.205 kg/m^3 are reference constants, not learned Reynolds conditioning",
     "scaler_source_used_by_bridge": "scaling_factors.pkl min_val/max_val['volume_fields']",
-    "pkl_vs_global_stats_compared": false,
-    "pkl_vs_global_stats_note": "Not yet compared: the pickle needs NumPy, which the Windows Python lacks; compare inside the AI environment."
+    "pkl_vs_global_stats_compared": true,
+    "pkl_vs_global_stats_note": "Equal within float32 rounding: max |difference| 4.8e-8 over the five min and five max values (probe 2026-11-09, docs/research/domino-warmstart-probe-20261109.json)."
   },
   "evidence_leads": [
     {
@@ -38,35 +38,209 @@
       "observation": "pressure_volume min -2.3051293, max 0.85082501, mean -0.17798688; velocity mean (0.50533861, -0.0011122959, 0.011512947), max |component| about 2.4",
       "reading": "Velocity is already nondimensional. A stagnation maximum of 0.851 fits p/(0.5 rho U^2) with gauge about -0.15 better than p/(rho U^2), which needs gauge +0.35. Hypothesis only; it does not verify any channel.",
       "resolves_by": "Bernoulli fit on upstream inviscid probes (fit_bernoulli / classify_pressure_scale), stagnation probe and far-field U_hat -> (1,0,0), plus same-checkpoint reference parity (plan 6.4)"
+    },
+    {
+      "source": "DrivAerML paper, arXiv:2408.11969 (Section 2, Tables 3 and 4), read 2026-11-09",
+      "observation": "pMeanTrim is described as relative kinematic pressure; CpMeanTrim is the static pressure coefficient; freestream U_inf = 38.889 m/s; force files use rho_inf = 1 kg/m^3; x_BL = -2.339 m is 2.346 m upstream of the front axle (front axle x ~ 0.007 m).",
+      "reading": "If the training preprocessing divided kinematic pMeanTrim by rho*U_ref^2 with rho = 1.205, the checkpoint follows 'kinematic_over_rho_u_squared' (Bernoulli coefficient 0.415), not either Pa convention. If it divided velocity by 30 m/s while the data were at 38.889 m/s, the far-field U_hat is about 1.296, not 1. Both stay unresolved: the pinned preprocessing revision is not available locally.",
+      "resolves_by": "Preprocessing source at the checkpoint's revision, or reference parity using a slice that carries both pMeanTrim and CpMeanTrim (their ratio fixes the source unit)."
+    },
+    {
+      "source": "PhysicsNeMo source tree at 1966d3d (2.3.0a0, not the installed 1.3.0): examples/cfd/external_aerodynamics/domino_nim_finetuning/src/openfoam_datapipe.py and generate_base_predictions.py; globe/drivaer/dataset.py",
+      "observation": "The NIM fine-tuning datapipe for DrivAerML divides U by stream_velocity, p by air_density * stream_velocity^2 and nut by stream_velocity * length_scale, with STREAM_VELOCITY = 38.89 and AIR_DENSITY = 1.205. globe/drivaer/dataset.py states U_INF = 38.89 and Q_INF = 0.5 * U_INF^2 as a kinematic dynamic pressure, cross-checked against pMeanTrim / CpMeanTrim at stagnation points.",
+      "reading": "Supports a kinematic source pressure divided by rho*U^2. It is a different example and revision from the checkpoint, whose config.yaml names reference 30.00 m/s; the model card text says mean/std normalisation while config.yaml says min_max_scaling. Lead only.",
+      "resolves_by": "Same as above."
+    },
+    {
+      "source": "domino_drivaerml_volume_checkpoint/config.yaml (sha256 2c9670c7...)",
+      "observation": "global_parameters.inlet_velocity.reference = [30.00], air_density.reference = 1.205; data_processor.kind = drivaer_aws; training data paths are cluster paths not shipped.",
+      "reading": "The checkpoint's own reference speed differs from DrivAerML's 38.889 m/s. Which value the training preprocessing used for velocity and pressure is unresolved.",
+      "resolves_by": "Far-field U_hat from the probe narrows this (consistency only); reference parity decides it."
     }
   ],
   "channels": [
     {
-      "index": 0, "name": "Ux", "status": "unresolved", "convention": "u_ref",
-      "upstream_definition": "candidate U_x / U_ref", "reference": {"value": 30.0, "unit": "m/s", "provenance": "checkpoint global_parameters"},
-      "openfoam_target": "U.x, [0 1 -1 0 0 0 0]", "source": null, "verification_artifact": null, "tolerance": null
+      "index": 0,
+      "name": "Ux",
+      "status": "unresolved",
+      "convention": "u_ref",
+      "upstream_definition": "candidate U / U_ref with U_ref unresolved between 30.00 (checkpoint config) and 38.889 m/s (DrivAerML freestream)",
+      "reference": {
+        "value": 30.0,
+        "unit": "m/s",
+        "provenance": "checkpoint global_parameters"
+      },
+      "openfoam_target": "U.x, [0 1 -1 0 0 0 0]",
+      "source": null,
+      "verification_artifact": null,
+      "tolerance": null,
+      "probe_evidence": "consistency only, see probe_runs[0]; not a verification artifact"
     },
     {
-      "index": 1, "name": "Uy", "status": "unresolved", "convention": "u_ref",
-      "upstream_definition": "candidate U_y / U_ref", "reference": {"value": 30.0, "unit": "m/s", "provenance": "checkpoint global_parameters"},
-      "openfoam_target": "U.y, [0 1 -1 0 0 0 0]", "source": null, "verification_artifact": null, "tolerance": null
+      "index": 1,
+      "name": "Uy",
+      "status": "unresolved",
+      "convention": "u_ref",
+      "upstream_definition": "candidate U / U_ref with U_ref unresolved between 30.00 (checkpoint config) and 38.889 m/s (DrivAerML freestream)",
+      "reference": {
+        "value": 30.0,
+        "unit": "m/s",
+        "provenance": "checkpoint global_parameters"
+      },
+      "openfoam_target": "U.y, [0 1 -1 0 0 0 0]",
+      "source": null,
+      "verification_artifact": null,
+      "tolerance": null,
+      "probe_evidence": "consistency only, see probe_runs[0]; not a verification artifact"
     },
     {
-      "index": 2, "name": "Uz", "status": "unresolved", "convention": "u_ref",
-      "upstream_definition": "candidate U_z / U_ref", "reference": {"value": 30.0, "unit": "m/s", "provenance": "checkpoint global_parameters"},
-      "openfoam_target": "U.z, [0 1 -1 0 0 0 0]", "source": null, "verification_artifact": null, "tolerance": null
+      "index": 2,
+      "name": "Uz",
+      "status": "unresolved",
+      "convention": "u_ref",
+      "upstream_definition": "candidate U / U_ref with U_ref unresolved between 30.00 (checkpoint config) and 38.889 m/s (DrivAerML freestream)",
+      "reference": {
+        "value": 30.0,
+        "unit": "m/s",
+        "provenance": "checkpoint global_parameters"
+      },
+      "openfoam_target": "U.z, [0 1 -1 0 0 0 0]",
+      "source": null,
+      "verification_artifact": null,
+      "tolerance": null,
+      "probe_evidence": "consistency only, see probe_runs[0]; not a verification artifact"
     },
     {
-      "index": 3, "name": "pressure", "status": "unresolved", "convention": null,
-      "upstream_definition": "unresolved: rho_u_squared or half_rho_u_squared, gauge unknown",
-      "reference": {"value": [30.0, 1.205], "unit": ["m/s", "kg/m^3"], "provenance": "checkpoint global_parameters"},
+      "index": 3,
+      "name": "pressure",
+      "status": "unresolved",
+      "convention": null,
+      "upstream_definition": "unresolved among rho_u_squared, half_rho_u_squared and kinematic_over_rho_u_squared; U_ref and gauge also unresolved",
+      "reference": {
+        "value": [
+          30.0,
+          1.205
+        ],
+        "unit": [
+          "m/s",
+          "kg/m^3"
+        ],
+        "provenance": "checkpoint global_parameters"
+      },
       "gauge": "unresolved; align additively to the control case by far-field least squares",
-      "openfoam_target": "p (kinematic gauge), [0 2 -2 0 0 0 0]", "source": null, "verification_artifact": null, "tolerance": null
+      "openfoam_target": "p (kinematic gauge), [0 2 -2 0 0 0 0]",
+      "source": null,
+      "verification_artifact": null,
+      "tolerance": null,
+      "probe_evidence": "consistency only, see probe_runs[0]; not a verification artifact"
     },
     {
-      "index": 4, "name": "nut", "status": "unresolved", "convention": null,
+      "index": 4,
+      "name": "nut",
+      "status": "unresolved",
+      "convention": null,
       "upstream_definition": "unknown; not imported in the first delivery",
-      "reference": null, "openfoam_target": "not used", "source": null, "verification_artifact": null, "tolerance": null
+      "reference": null,
+      "openfoam_target": "not used",
+      "source": null,
+      "verification_artifact": null,
+      "tolerance": null,
+      "probe_evidence": "consistency only, see probe_runs[0]; not a verification artifact"
+    }
+  ],
+  "verification_policy": "Probe outputs (Bernoulli coefficient, stagnation rise, far-field level, seed spread, mirror pairs) are consistency diagnostics of the model's own predictions. They may support a hypothesis but never set a channel to 'verified'. Verification needs the exact preprocessing path that produced checkpoint 0.501 or independent same-checkpoint reference parity on a labelled DrivAerML sample (plan 6.4), and is required before any CFD-field import.",
+  "probe_runs": [
+    {
+      "artifact": "docs/research/domino-warmstart-probe-20261109.json",
+      "script": "scripts/ai/domino_warmstart_probe.py",
+      "kind": "consistency_only",
+      "run_utc": "2026-11-09T01:22:46Z",
+      "environment": "AI-3D WSL, torch 2.7.1+cu126, PhysicsNeMo 1.3.0, RTX 4090 Laptop GPU, TF32 off",
+      "geometry": "TUM DrivAer Notchback full car, six parts, x_m = 1e-3 x_mm (docs/research/domino-warmstart-geometry-v1.json)",
+      "measurements": {
+        "same_seed_repeat": "bit-identical (seed 11, 5081 points)",
+        "seed_spread_8_seeds_std_median_normalised": [
+          0.00034,
+          0.00023,
+          0.00018,
+          0.00017,
+          6.3e-05
+        ],
+        "seed_spread_std_max_normalised": [
+          0.0104,
+          0.0034,
+          0.0049,
+          0.0043,
+          0.0795
+        ],
+        "two_chunk_split_abs_median_p95_max_normalised": {
+          "median": [
+            3e-07,
+            3.1e-07,
+            2.7e-07,
+            1.2e-07,
+            1.8e-07
+          ],
+          "p95": [
+            0.0019,
+            0.0011,
+            0.0008,
+            0.0007,
+            0.0009
+          ],
+          "max": [
+            0.0113,
+            0.0066,
+            0.0051,
+            0.0059,
+            0.1616
+          ]
+        },
+        "mirror_pairs_abs_median_p95_nondimensional": {
+          "median": [
+            0.0088,
+            0.012,
+            0.0068,
+            0.0049,
+            4.6e-08
+          ],
+          "p95": [
+            0.086,
+            0.066,
+            0.037,
+            0.019,
+            8.9e-07
+          ]
+        },
+        "bernoulli_coefficient": 0.391,
+        "bernoulli_rms": 0.021,
+        "bernoulli_fit_points": 1032,
+        "far_field_U_hat": [
+          1.261,
+          0.003,
+          0.021
+        ],
+        "far_field_U_hat_std": [
+          0.028,
+          0.028,
+          0.017
+        ],
+        "far_field_p_hat": 0.02,
+        "nose_line_rise_over_far_field": 0.422,
+        "nose_line_min_speed_sq": 0.605
+      },
+      "reading": [
+        "Chunking with one global seed: half the points match to float rounding and the other half differ by seed-spread amounts, consistent with a changed random stream rather than an independent chunking effect; not separately proven.",
+        "Bernoulli coefficient 0.391 is nearest the kinematic_over_rho_u_squared value 0.415 and far from 0.5 and 1.0. Far-field Ux_hat 1.261 at x = -3.3 m is nearer 38.889/30 = 1.296 than 1.0. Together they are consistent with DrivAerML kinematic pMeanTrim at 38.889 m/s normalised by rho*30^2 and velocity by 30, but the model's own predictions cannot verify this.",
+        "The global_stats pressure maximum 0.851 corresponds to Cp about 1.22 under that hypothesis; Cp above 1 can occur at rotating-wheel contact, so it is not decisive either way.",
+        "The nose line did not reach stagnation (minimum |U_hat|^2 0.605); its rise 0.422 compares with the Bernoulli value 0.391 * (1.591 - 0.605) = 0.385.",
+        "Mirror disagreement is 15-30x the seed spread at the same points, so it is not sampling noise; the asymmetric detailed underbody and the model both contribute and are not separated."
+      ],
+      "script_sha256_as_run": "d22669ff2429eb576e1bb436f40383c91c031d52aad5878d0d5d220ee784aac0",
+      "scaling_module_sha256_as_run": "9d82171031ea0fd5ff5b1878f1ca8c66be424420f97519b16c412590317ed261",
+      "known_report_quirks": [
+        "stagnation.rise_expected_from_coefficient is coefficient * |U_inf_hat|^2, which assumes the nose line reached zero speed; it did not, so use coefficient * (|U_inf_hat|^2 - min |U_hat|^2) = 0.385 instead."
+      ]
     }
   ]
 }

@@ -1,0 +1,272 @@
+{
+  "schema": "vernon.domino_warmstart_probe.v1",
+  "diagnostic_only": true,
+  "cfd_validation": "DEFERRED",
+  "started_utc": "2026-11-09T01:22:46Z",
+  "environment": {
+    "torch": "2.7.1+cu126",
+    "cuda": "12.6",
+    "physicsnemo": "1.3.0",
+    "gpu": "NVIDIA GeForce RTX 4090 Laptop GPU",
+    "tf32": false
+  },
+  "hashes": {
+    "DoMINO.0.501.mdlus": "faf54e217ca7855fa085122fb3a77b3aeae39f0a09a9b14c1652f1a6c9902882",
+    "scaling_factors.pkl": "895b876ab7a2f32b4c714e4eafc7b2e7d94029e037bfc2950cf8c6cb2a818c2d",
+    "config.yaml": "2c9670c7c3139e9c4e12799e66efdd94a7793e4516c0bfbb4fc98d592e209f73",
+    "global_stats.json": "f926a7346138f334ebf23c8da7073198ef4835ade955c121a6bd54771aee6ff3"
+  },
+  "installed_solutions": {
+    "sha256": "c3f2b1b3fdf21a773399e377c2e8dc43074ee094545cd4a7745937157c154cd6",
+    "uses_torch_rand": true,
+    "file": "/opt/ai3d/DoMINO/lib/python3.11/site-packages/physicsnemo/models/domino/solutions.py",
+    "noise_intensity": 50,
+    "num_sample_points": 7
+  },
+  "scaler": {
+    "pkl_min": [
+      -1.2975250482559204,
+      -2.409858226776123,
+      -1.9022164344787598,
+      -2.305129289627075,
+      -8.46166226566595e-25
+    ],
+    "pkl_max": [
+      2.3708395957946777,
+      2.3351433277130127,
+      1.9189891815185547,
+      0.8508250117301941,
+      6.135329749668017e-05
+    ],
+    "global_stats_min": [
+      -1.297525,
+      -2.4098582,
+      -1.9022164,
+      -2.3051293,
+      -8.4616623e-25
+    ],
+    "global_stats_max": [
+      2.3708396,
+      2.3351433,
+      1.9189892,
+      0.85082501,
+      6.1353297e-05
+    ],
+    "max_abs_difference": 4.825592037072113e-08
+  },
+  "geometry": {
+    "top": "Notchback",
+    "part_sha256": {
+      "part_01_Body.stl": "4040139b1e54ce525f94588ca4b104e3f75e95e8022fd22d3caaf14a9eb46a08",
+      "part_02_UB_Detailed.stl": "f9fad6a4639756e70773678716853ecf3a70a8ecc201a7e343dd774815b2d217",
+      "part_03_Notchback.stl": "be62da8d6337cb4cb21c6be5798a22a9304bac0114ba59193c960a5ce4a1ad0b",
+      "part_05_Wheels_Front.stl": "0f34463299aa1b383eb7387f751ecc513194349e42003c48f736abaa066d18dc",
+      "part_06_Wheels_Rear.stl": "4c66688e398b44af79afa03cc670c9205b59c2906f7c917aca60b56bad667be1",
+      "part_07_Mirror.stl": "7ca3467ed8077500e9fa74653b1b41edd6396bc358957f2874c90f3b6da8c151"
+    },
+    "transform": "x_m = 1e-3 * x_mm, identity frame",
+    "bounds_min_m": [
+      -0.807848875,
+      -1.01498936,
+      -0.31850019900000004
+    ],
+    "bounds_max_m": [
+      3.8049779600000004,
+      1.01499069,
+      1.10246583
+    ],
+    "faces": 2854756,
+    "vertices": 1445912,
+    "area_weighted_center_y_m": -0.009091234667049869
+  },
+  "probe_anchors": {
+    "nose_x_m": -0.807848875,
+    "nose_z_m": -0.0719147198
+  },
+  "repeatability": {
+    "units": "normalised model output (min-max scaled), per channel Ux,Uy,Uz,pressure,nut",
+    "points": 5081,
+    "same_seed_repeat": {
+      "seed": 11,
+      "bit_identical": true,
+      "max": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "median": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "p95": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    "seed_spread": {
+      "seeds": [
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18
+      ],
+      "std_max": [
+        0.01037951457184185,
+        0.0033512594320632212,
+        0.004909731911182185,
+        0.004311468209360976,
+        0.07953127039578677
+      ],
+      "std_median": [
+        0.00033719092975853873,
+        0.00023356122527405442,
+        0.00018000175058223363,
+        0.00017074659128981853,
+        6.279679590935593e-05
+      ],
+      "std_p95": [
+        0.0019279993913052986,
+        0.0009707033812083729,
+        0.0008530512351814327,
+        0.0007462668761774547,
+        0.0008956294314519188
+      ],
+      "range_max": [
+        0.0328998863697052,
+        0.009802784770727158,
+        0.01295781135559082,
+        0.011428236961364746,
+        0.27227894216775894
+      ],
+      "meaning": "sensitivity to the solution's random neighbour sampling; not a calibrated uncertainty"
+    },
+    "two_chunk_split": {
+      "seed": 11,
+      "split_at": 2540,
+      "max": [
+        0.011295497417449951,
+        0.006592592224478722,
+        0.005088083446025848,
+        0.005921363830566406,
+        0.16159653663635254
+      ],
+      "median": [
+        2.980232238769531e-07,
+        3.0919909477233887e-07,
+        2.7474015951156616e-07,
+        1.1920928955078125e-07,
+        1.7881393432617188e-07
+      ],
+      "p95": [
+        0.0019322037696838379,
+        0.0010659825056791306,
+        0.0007732734084129333,
+        0.0007349848747253418,
+        0.0008944272994995117
+      ],
+      "meaning": "with one global seed, chunking also changes the random stream; compare with seed_spread before attributing a difference to chunking itself"
+    }
+  },
+  "timing": {
+    "probe_seconds": 32.554628133773804,
+    "points": 5081,
+    "peak_vram_GB": 3.512580608
+  },
+  "consistency_checks": {
+    "status": "consistency only; does not verify or select a pressure convention",
+    "bernoulli": {
+      "coefficient": 0.3907732961261751,
+      "constant": 0.6693572509764099,
+      "rms": 0.02059055998549486,
+      "fit_points": 1032,
+      "speed_sq_range": [
+        0.5410879526732465,
+        1.8846681654032067
+      ],
+      "model": "p_hat = const - coefficient * |U_hat|^2 over upstream block and nose line"
+    },
+    "candidate_coefficients": {
+      "pressure_in_Pa_over_rho_u_squared": 0.5,
+      "kinematic_pressure_over_u_squared": 0.5,
+      "pressure_in_Pa_over_half_rho_u_squared": 1.0,
+      "kinematic_pressure_over_rho_u_squared_rho_1.205": 0.41493775933609955,
+      "rho_u_squared": 0.5,
+      "half_rho_u_squared": 1.0,
+      "kinematic_over_rho_u_squared": 0.41493775933609955,
+      "consistent_within_0.04": [
+        "kinematic_over_rho_u_squared"
+      ],
+      "note": "coefficient = V^2/(2D); identical for V = 30 and V = 38.89 when D scales with V^2"
+    },
+    "far_field": {
+      "U_hat_mean": [
+        1.2613524053648615,
+        0.0026992298668715078,
+        0.020916999734695692
+      ],
+      "U_hat_std": [
+        0.02814533405872174,
+        0.027595779666637923,
+        0.016676476771666598
+      ],
+      "p_hat_mean": 0.019757492527042637,
+      "p_hat_std": 0.01738148526148099,
+      "candidate_Ux_hat": {
+        "U_ref_equals_freestream": 1.0,
+        "DrivAerML_38.89_over_checkpoint_30": 1.2963333333333333
+      }
+    },
+    "stagnation": {
+      "nose_line_p_hat_max": 0.4417580900026823,
+      "rise_over_far_field": 0.42200059747563967,
+      "rise_expected_from_coefficient": 0.6218979976757625,
+      "nose_line_min_speed_sq": 0.6047213266270304
+    }
+  },
+  "mirror": {
+    "pairs": 2000,
+    "median_abs": [
+      0.008759308362840112,
+      0.012033319039542967,
+      0.006839899757817958,
+      0.004932769884968824,
+      4.624453945383726e-08
+    ],
+    "p95_abs": [
+      0.08574002507606467,
+      0.06624161356818324,
+      0.03671555743316807,
+      0.01868772471308606,
+      8.925487527116616e-07
+    ],
+    "max_abs": [
+      0.6677249558330283,
+      0.26834172659639055,
+      0.22440140884044135,
+      0.061594980014309186,
+      6.622108445824381e-06
+    ],
+    "seed_spread_std_median_same_points": [
+      0.0005795042401437713,
+      0.0005692169647096624,
+      0.0002855818872878121,
+      0.00022783388295538148,
+      2.491296419066614e-09
+    ],
+    "units": "seed-mean fields after the statistical inverse (nondimensional), channels Ux,Uy,Uz,pressure,nut; Uy compared with its sign flipped",
+    "meaning": "consistency diagnostic: geometry asymmetry (detailed underbody), sampling noise and model asymmetry all contribute; not an error estimate"
+  },
+  "finished_utc": "2026-11-09T01:23:41Z"
+}

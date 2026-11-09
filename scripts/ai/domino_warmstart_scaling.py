@@ -12,10 +12,21 @@ import math
 
 AUDIT_SCHEMA = "vernon.domino_warmstart_scaling.v1"
 
-# Pressure normalisations a channel audit may name. The factor multiplies
-# rho * U_ref^2. No default: an unknown or missing name is refused.
-PRESSURE_SCALES = {"rho_u_squared": 1.0, "half_rho_u_squared": 0.5}
-KNOWN_CONVENTIONS = frozenset({"u_ref"}) | frozenset(PRESSURE_SCALES)
+# Pressure normalisations a channel audit may name: (divisor factor on rho * U_ref^2,
+# unit of the source pressure before division). No default: an unknown or missing
+# name is refused.
+#   rho_u_squared                 p_hat = p_Pa / (rho U^2)
+#   half_rho_u_squared            p_hat = p_Pa / (0.5 rho U^2)
+#   kinematic_over_rho_u_squared  p_hat = p_kinematic / (rho U^2); arises when a kinematic
+#                                 source field (OpenFOAM incompressible p, DrivAerML pMeanTrim)
+#                                 is divided by a density it never carried.
+PRESSURE_CONVENTIONS = {
+    "rho_u_squared": (1.0, "Pa"),
+    "half_rho_u_squared": (0.5, "Pa"),
+    "kinematic_over_rho_u_squared": (1.0, "kinematic"),
+}
+PRESSURE_SCALES = {k: v[0] for k, v in PRESSURE_CONVENTIONS.items()}
+KNOWN_CONVENTIONS = frozenset({"u_ref"}) | frozenset(PRESSURE_CONVENTIONS)
 
 
 def _real(x, name):
@@ -62,25 +73,31 @@ def velocity_to_si(value_hat, u_ref_mps):
 def pressure_to_kinematic(value_hat, rho_kg_m3, u_ref_mps, p_reference_pa, pressure_scale):
     """Gauge kinematic pressure (m^2/s^2) from a nondimensional pressure.
 
-    p_Pa = factor * rho * U_ref^2 * p_hat, factor from `pressure_scale`;
-    result = (p_Pa - p_reference_pa) / rho.
+    Pa source:        p_Pa = factor * rho * U_ref^2 * p_hat; result = (p_Pa - p_reference_pa) / rho.
+    Kinematic source: p_k  = factor * rho * U_ref^2 * p_hat; result = p_k - p_reference_pa / rho.
+    `rho_kg_m3` is the density the normalisation divided by, not necessarily the air's.
     """
-    if not isinstance(pressure_scale, str) or pressure_scale not in PRESSURE_SCALES:
+    if not isinstance(pressure_scale, str) or pressure_scale not in PRESSURE_CONVENTIONS:
         raise ValueError(f"unknown pressure convention {pressure_scale!r}; "
-                         f"expected one of {sorted(PRESSURE_SCALES)}")
+                         f"expected one of {sorted(PRESSURE_CONVENTIONS)}")
     p_hat = _real(value_hat, "value_hat")
     rho = _positive(rho_kg_m3, "rho_kg_m3")
     u = _positive(u_ref_mps, "u_ref_mps")
     p_ref = _real(p_reference_pa, "p_reference_pa")
-    p_pa = PRESSURE_SCALES[pressure_scale] * rho * u * u * p_hat
-    return (p_pa - p_ref) / rho
+    factor, source = PRESSURE_CONVENTIONS[pressure_scale]
+    scaled = factor * rho * u * u * p_hat
+    if source == "Pa":
+        return (scaled - p_ref) / rho
+    return scaled - p_ref / rho
 
 
 def fit_bernoulli(p_hat, speed_sq_hat):
     """Least-squares fit of p_hat = const - c * |U_hat|^2 over upstream inviscid probes.
 
-    Returns (c, const, rms_residual). c = 0.5 means p was normalised by
-    rho*U^2; c = 1 means 0.5*rho*U^2. const - c is the freestream gauge.
+    Returns (c, const, rms_residual). See `bernoulli_coefficient` for the value
+    each convention implies; several conventions can give the same c, so the fit
+    is a consistency check, never a verification. const - c * |U_inf_hat|^2 is
+    the freestream gauge.
     """
     if len(p_hat) != len(speed_sq_hat):
         raise ValueError(f"length mismatch: {len(p_hat)} pressures, {len(speed_sq_hat)} speeds")
@@ -100,18 +117,31 @@ def fit_bernoulli(p_hat, speed_sq_hat):
     return -slope, const, rms
 
 
-def classify_pressure_scale(coefficient, tolerance):
-    """Name the convention whose Bernoulli coefficient lies within `tolerance`, else None."""
-    tol = _real(tolerance, "tolerance")
-    if not 0.0 < tol < 0.25:  # 0.25 is halfway between 0.5 and 1.0
-        raise ValueError(f"tolerance must be in (0, 0.25), got {tol}")
+def bernoulli_coefficient(pressure_scale, rho_kg_m3):
+    """The c in p_hat = const - c * |U_hat|^2 implied by a convention, velocity scaled by U_ref.
+
+    Pa source: c = 1 / (2 factor). Kinematic source: c = 1 / (2 factor rho). Independent
+    of U_ref when both velocity and pressure use the same U_ref.
+    """
+    if not isinstance(pressure_scale, str) or pressure_scale not in PRESSURE_CONVENTIONS:
+        raise ValueError(f"unknown pressure convention {pressure_scale!r}")
+    rho = _positive(rho_kg_m3, "rho_kg_m3")
+    factor, source = PRESSURE_CONVENTIONS[pressure_scale]
+    return 0.5 / factor if source == "Pa" else 0.5 / (factor * rho)
+
+
+def consistent_conventions(coefficient, tolerance, rho_kg_m3):
+    """Every convention whose implied coefficient lies within `tolerance`, sorted by name.
+
+    Consistency only: an empty or multi-name result is normal, and a single name is not a
+    verification; the audit JSON decides through `verified_convention`.
+    """
+    tol = _positive(tolerance, "tolerance")
     if isinstance(coefficient, bool) or not isinstance(coefficient, (int, float)) \
             or not math.isfinite(coefficient):
-        return None
-    for name, factor in PRESSURE_SCALES.items():
-        if abs(coefficient - 0.5 / factor) <= tol:
-            return name
-    return None
+        return []
+    return sorted(name for name in PRESSURE_CONVENTIONS
+                  if abs(coefficient - bernoulli_coefficient(name, rho_kg_m3)) <= tol)
 
 
 def verified_convention(audit, channel):

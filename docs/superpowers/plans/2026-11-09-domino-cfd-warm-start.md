@@ -935,3 +935,58 @@ contract in both arms. Without it, M6 cannot report elapsed acceleration.
 `scripts/ai/` is inside the run fingerprint. While a fingerprint-bound run is
 active, Task 1 (pure Python) and Task 2 tests must be written in a separate
 worktree, not the live checkout. Merge them after the run completes.
+
+
+## 20. D1 interim finding and revised DoMINO priorities (2026-11-09)
+
+This section takes precedence over speculative recommendations in section 19 where they conflict. It records the owner's interim D1 report at approximately iteration 600, not a finished 501–1000 result. The run was still recorded as running when this note was prepared. Re-read final artifacts before assigning a final experimental conclusion.
+
+### 20.1 What the interim experiment supports
+
+Upwind k/omega produced no negative cells in iterations 1–500. After restarting with production limitedLinear 1, clipping returned immediately at iteration 501. Over 501–599, the reported mean counts were about 500 k cells versus C0's 603, and 87 omega cells versus C0's 91. Omega regions were similar to C0: front/rear wheels, underbody and near-body; most were 2 mm–1 cm from a wall.
+
+This is evidence against the missing startup being a sufficient explanation or sufficient remedy. It supports investigating ongoing numerical behavior when the production transport is active. It does not isolate convection alone: local mesh geometry, near-wall treatment, turbulence source/cross-diffusion terms, gradients, linear-solve accuracy and nonlinear coupling can interact.
+
+A count of bounded cells is not a production gate verdict. Region similarity does not prove that exactly the same cells recur. Lower counts alone do not prove convergence or force accuracy.
+
+The reported omega RMS over 501–599 was about 13 times C0's. The switch can introduce a transient, so compare later subwindows and spike frequency before claiming a sustained deterioration. Complete the matched 501–1000 comparison, including U/p, forces, continuity, counts, affected volumes and extrema.
+
+### 20.2 Numerical work now has priority over full-mesh AI initialization
+
+Recommended order after D1 completes:
+
+1. Complete location analysis using existing saved maps and native mesh/field data. Determine persistent cell identities and affected volumes, not only regional counts. Cross-reference actual wall distance, y+, layer coverage/transitions, aspect ratio, non-orthogonality, skewness, wheel contact and local gradients. Wall distance in millimeters is not itself y+.
+2. Run a paired turbulence-relaxation experiment if the final evidence supports it: change only k/omega equation relaxation, for example 0.9 to 0.5, with the same U/p settings, schemes, mesh and checkpoint as its control.
+3. If using the previously proposed D2 start at Stage 2 time 2000, compare it with C1 from that exact checkpoint. Do not treat a D1 restart at 500 as the matching control for a D2 start at 2000. Record any revised pair explicitly.
+4. Consider targeted gradient/transport or linear-solve experiments based on the spatial and residual evidence. D3 is lower priority, not disproven by D1.
+5. Evaluate each change separately; do not combine stronger relaxation, an AI seed and a new discretization in one nominal one-factor experiment.
+
+Under-relaxation alters the iteration path; upwind alters spatial discretization. Keep their roles distinct. No production threshold is changed. Zero clipping alone still does not demonstrate accepted residuals or trustworthy forces.
+
+### 20.3 Changes to the DoMINO implementation sequence
+
+- **Keep the pretrained weights unchanged.** This experiment evaluates OpenFOAM numerics, not DoMINO prediction error. It supplies no supervised evidence for changing neural weights.
+- **Continue M1–M4 offline/fixture work** when ownership permits: scaling, registered whole-car context, direct-cell identity, bounded inference, import, continuity correction and field-survival tests remain useful.
+- **Defer M5 full-mesh AI screens and M6 production acceleration runs** while the selected baseline still shows unresolved recurring clipping and a residual plateau. A separately justified diagnostic AI-initialization experiment may be proposed later, but must not be sold as the next likely fix or as production readiness.
+- **Retain U/p-only import in the first implementation.** Do not derive k/omega from nut or import additional turbulence channels merely to bypass the instability.
+- **Preserve near-wall/geometry fidelity controls.** Verify full-car wheel/underbody context and actual error at relevant query locations; avoid claims that a surrogate will diagnose bad cells from its flow predictions.
+- **Retain pre-bound monitoring after any AI import.** The counter remains the source of exact clipping evidence. DoMINO fields are supplemental flow estimates.
+- **Do not train on clipped/cancelled diagnostic fields as accepted targets.** Use independently converged cases and grouped holdouts when adaptation becomes justified.
+
+A U/p warm start may still change subsequent turbulence evolution through coupled production/advection. D1 does not prove that no possible initial field can help, or that warm starts can only affect the first few iterations. It substantially weakens the case for prioritizing initialization as the remedy for this observed recurring behavior. Any benefit must be measured.
+
+### 20.4 Frozen-flow turbulence pre-solve is optional and conditional
+
+The proposal in section 19.7 is a separate ablation, not an approved default stage. Repeated turbulence corrections with frozen U/phi can encounter the same problematic numerical operator and can continue bounding. An arbitrary number of passes can add cost without producing a consistent coupled SST solution.
+
+Before adopting it, establish a stable turbulence discretization and measure a matched no-AI control with the same pre-solve. Record pass count, clipping, residuals, field change and cost. Never treat pre-solve positivity as production convergence. Prefer completing the relaxation/location investigation before building this extra large-case phase.
+
+### 20.5 Qualifications to the section 19 audit proposals
+
+- Bernoulli/stagnation probes are useful sanity checks, but a surrogate's own predictions cannot independently establish its dimensional normalization or pressure gauge. Resolve the rho*U^2 versus half-rho*U^2 definition from pinned preprocessing/metadata and independent reference parity. A fitted constant must not compensate for the wrong multiplicative scale.
+- Mirror disagreement and repeated-seed spread are consistency/sensitivity diagnostics, not calibrated error bars or proof of correctness. Keep ensembles or adaptive blend weights as separately preregistered arms.
+- A centered surface center of mass is a useful check but does not prove complete whole-car geometry. Verify registered component/context coverage and symmetry explicitly.
+- The geometry-encoding grid spacing alone does not prove a hard pointwise resolution limit for a neural field model. Preserve the near-wall taper initially, but assess boundary-layer prediction fidelity from data rather than declaring it impossible from grid spacing.
+- Early stopping remains a separately verified runner capability with both force windows and all residual requirements. Do not rush its integration to manufacture an actual speedup claim.
+
+No solver settings, executable code, model weights or active run were changed by this documentation update.

@@ -1,0 +1,411 @@
+{
+ "schema": "vernon.domino_warmstart_geometry.v1",
+ "transform": "x_m = 1e-3 * x_mm; no rotation, no translation",
+ "parts_dir": "E:\\REA\\vernon\\scratch\\wp9-data\\tum-drivaer\\extracted",
+ "top": "Notchback",
+ "checkpoint_files": {
+  "volume/config.yaml": "2c9670c7c3139e9c4e12799e66efdd94a7793e4516c0bfbb4fc98d592e209f73",
+  "surface/global_stats.json": "6cea892d398a2d2ee3a0e87c67d5f2587fba7825a9b2d38505081a27e448d41c"
+ },
+ "parts": [
+  {
+   "file": "part_01_Body.stl",
+   "bytes": 113727779,
+   "sha256": "4040139b1e54ce525f94588ca4b104e3f75e95e8022fd22d3caaf14a9eb46a08",
+   "triangles": 492387,
+   "area_m2": 10.806215003503375,
+   "min_m": [
+    -0.807848875,
+    -0.910030626,
+    -0.161453017
+   ],
+   "max_m": [
+    3.8049779600000004,
+    0.910030634,
+    1.08623121
+   ],
+   "area_weighted_mean_m": [
+    1.1701178031083828,
+    0.0016656557253403705,
+    0.40177844319964273
+   ],
+   "area_weighted_std_m": [
+    1.346716608729968,
+    0.6690759829834915,
+    0.3076868150865584
+   ],
+   "mirror_occupancy": 0.9946754923397237
+  },
+  {
+   "file": "part_02_UB_Detailed.stl",
+   "bytes": 276101388,
+   "sha256": "f9fad6a4639756e70773678716853ecf3a70a8ecc201a7e343dd774815b2d217",
+   "triangles": 1188349,
+   "area_m2": 12.32721978751352,
+   "min_m": [
+    -0.794476636,
+    -0.8954177640000001,
+    -0.174893364
+   ],
+   "max_m": [
+    3.77425003,
+    0.8954191130000001,
+    0.463128246
+   ],
+   "area_weighted_mean_m": [
+    1.5941122486285042,
+    -0.02576558524126239,
+    -0.0056744235979742305
+   ],
+   "area_weighted_std_m": [
+    1.2694309661602596,
+    0.47885275032199537,
+    0.1682177364404476
+   ],
+   "mirror_occupancy": 0.7419259957898012
+  },
+  {
+   "file": "part_03_Notchback.stl",
+   "bytes": 54875327,
+   "sha256": "be62da8d6337cb4cb21c6be5798a22a9304bac0114ba59193c960a5ce4a1ad0b",
+   "triangles": 239755,
+   "area_m2": 4.733487418039224,
+   "min_m": [
+    1.5299992500000001,
+    -0.858872631,
+    0.552999369
+   ],
+   "max_m": [
+    3.72563367,
+    0.8588717360000001,
+    1.10246583
+   ],
+   "area_weighted_mean_m": [
+    2.5784703373642057,
+    -1.79174186642259e-07,
+    0.8631043248732869
+   ],
+   "area_weighted_std_m": [
+    0.6301582840425224,
+    0.523722463589252,
+    0.17320537718673193
+   ],
+   "mirror_occupancy": 1.0
+  },
+  {
+   "file": "part_05_Wheels_Front.stl",
+   "bytes": 43434782,
+   "sha256": "0f34463299aa1b383eb7387f751ecc513194349e42003c48f736abaa066d18dc",
+   "triangles": 186848,
+   "area_m2": 2.422736918340841,
+   "min_m": [
+    -0.311494065,
+    -0.8732716789999999,
+    -0.31850001099999997
+   ],
+   "max_m": [
+    0.32550165500000006,
+    0.873271681,
+    0.318500005
+   ],
+   "area_weighted_mean_m": [
+    0.007003092518339614,
+    -1.1477406780627422e-05,
+    -7.067364268948337e-07
+   ],
+   "area_weighted_std_m": [
+    0.18031522486254833,
+    0.7725194448345242,
+    0.18031057233557662
+   ],
+   "mirror_occupancy": 1.0
+  },
+  {
+   "file": "part_06_Wheels_Rear.stl",
+   "bytes": 164015756,
+   "sha256": "4c66688e398b44af79afa03cc670c9205b59c2906f7c917aca60b56bad667be1",
+   "triangles": 710296,
+   "area_m2": 2.4391961131388236,
+   "min_m": [
+    2.4746864,
+    -0.87643322,
+    -0.31850019900000004
+   ],
+   "max_m": [
+    3.11168258,
+    0.87643322,
+    0.31850028700000005
+   ],
+   "area_weighted_mean_m": [
+    2.7931850057457543,
+    1.2121693820367117e-05,
+    -1.3923571210725655e-06
+   ],
+   "area_weighted_std_m": [
+    0.1803211821291675,
+    0.7756353839060743,
+    0.18032504563768295
+   ],
+   "mirror_occupancy": 1.0
+  },
+  {
+   "file": "part_07_Mirror.stl",
+   "bytes": 8510882,
+   "sha256": "7ca3467ed8077500e9fa74653b1b41edd6396bc358957f2874c90f3b6da8c151",
+   "triangles": 37121,
+   "area_m2": 0.22693353799034174,
+   "min_m": [
+    0.744963444,
+    -1.01498936,
+    0.606486163
+   ],
+   "max_m": [
+    1.0019077,
+    1.01499069,
+    0.780202459
+   ],
+   "area_weighted_mean_m": [
+    0.9241281752215774,
+    3.911531685056754e-05,
+    0.6855506082774502
+   ],
+   "area_weighted_std_m": [
+    0.044240870093244525,
+    0.8832664552431649,
+    0.04352191378706286
+   ],
+   "mirror_occupancy": 1.0
+  }
+ ],
+ "assembly": {
+  "triangles": 2854756,
+  "area_m2": 32.95578877852613,
+  "min_m": [
+   -0.807848875,
+   -1.01498936,
+   -0.31850019900000004
+  ],
+  "max_m": [
+   3.8049779600000004,
+   1.01499069,
+   1.10246583
+  ],
+  "area_weighted_mean_m": [
+   1.5639280308881764,
+   -0.009091234667049879,
+   0.25831022313317265
+  ],
+  "area_weighted_std_m": [
+   1.3233309419185941,
+   0.6048918767811943,
+   0.3836666350004892
+  ],
+  "mirror_occupancy": 0.8966440991671132,
+  "voxel_m": 0.005
+ },
+ "centreline": {
+  "bounds_mid_y_m": 6.65000000066307e-07,
+  "area_weighted_y_m": -0.009091234667049879
+ },
+ "wheels": {
+  "front": {
+   "left_y_negative": {
+    "x_bounds_mid_m": 0.0070120595000000285,
+    "z_bounds_mid_m": -2.9999999984209325e-09,
+    "radius_from_z_extent_m": 0.318500008,
+    "contact_z_m": -0.31850001099999997,
+    "y_range_m": [
+     -0.8732716789999999,
+     -0.6472685840000001
+    ],
+    "triangles": 93372
+   },
+   "right_y_positive": {
+    "x_bounds_mid_m": 0.0070031184999999885,
+    "z_bounds_mid_m": -2.9999999984209325e-09,
+    "radius_from_z_extent_m": 0.318500008,
+    "contact_z_m": -0.31850001099999997,
+    "y_range_m": [
+     0.647268521,
+     0.873271681
+    ],
+    "triangles": 93476
+   }
+  },
+  "rear": {
+   "left_y_negative": {
+    "x_bounds_mid_m": 2.79318449,
+    "z_bounds_mid_m": -2.9999999984209325e-09,
+    "radius_from_z_extent_m": 0.318500008,
+    "contact_z_m": -0.31850001099999997,
+    "y_range_m": [
+     -0.87643322,
+     -0.650430124
+    ],
+    "triangles": 355018
+   },
+   "right_y_positive": {
+    "x_bounds_mid_m": 2.79318449,
+    "z_bounds_mid_m": 4.400000000459592e-08,
+    "radius_from_z_extent_m": 0.318500243,
+    "contact_z_m": -0.31850019900000004,
+    "y_range_m": [
+     0.65043006,
+     0.87643322
+    ],
+    "triangles": 355278
+   }
+  }
+ },
+ "axles": {
+  "front_x_m": 0.0070075890000000085,
+  "rear_x_m": 2.79318449,
+  "wheelbase_m": 2.7861769009999997,
+  "front_z_m": -2.9999999984209325e-09,
+  "rear_z_m": 2.0500000003087493e-08,
+  "literature_wheelbase_m": 2.786
+ },
+ "ground": {
+  "lowest_wheel_z_m": -0.31850019900000004,
+  "checkpoint_box_min_z_m": -0.32,
+  "gap_m": 0.0014998009999999673
+ },
+ "checkpoint_domain": {
+  "volume_box": {
+   "min": [
+    -3.5,
+    -2.25,
+    -0.32
+   ],
+   "max": [
+    8.5,
+    2.25,
+    3.0
+   ],
+   "assembly_inside": true,
+   "margins": {
+    "min_side_m": [
+     2.692151125,
+     1.23501064,
+     0.0014998009999999673
+    ],
+    "max_side_m": [
+     4.69502204,
+     1.23500931,
+     1.89753417
+    ]
+   }
+  },
+  "surface_box": {
+   "min": [
+    -1.5,
+    -1.4,
+    -0.32
+   ],
+   "max": [
+    5.0,
+    1.4,
+    1.4
+   ],
+   "assembly_inside": true,
+   "margins": {
+    "min_side_m": [
+     0.692151125,
+     0.38501063999999996,
+     0.0014998009999999673
+    ],
+    "max_side_m": [
+     1.1950220399999996,
+     0.3850093099999998,
+     0.2975341699999998
+    ]
+   }
+  },
+  "surface_coordinate_stats": {
+   "checkpoint_mean_m": [
+    1.5403649994381368,
+    -0.008204190200701629,
+    0.24224146332271185
+   ],
+   "checkpoint_std_m": [
+    1.3309369735216343,
+    0.6132087570971925,
+    0.3775321000158331
+   ],
+   "assembly_area_weighted_mean_m": [
+    1.5639280308881764,
+    -0.009091234667049879,
+    0.25831022313317265
+   ],
+   "assembly_area_weighted_std_m": [
+    1.3233309419185941,
+    0.6048918767811943,
+    0.3836666350004892
+   ],
+   "mean_difference_in_checkpoint_std": [
+    0.017704092619571867,
+    -0.0014465619678155624,
+    0.042562631918681613
+   ],
+   "caveat": "Checkpoint statistics are over DrivAerML surface cells (not area-weighted, refined near features, 500 morphs); the min/max coordinate fields in global_stats.json repeat mean/std and are not bounds."
+  }
+ },
+ "limitations": [
+  "Registration of the transform is consistent with the checkpoint boxes and statistics; it is not a match to any training car.",
+  "DrivAerML geometries are morphs of the DrivAer notchback; a DrivAerML STL (run_<n>/drivaer_<n>.stl) is needed for a direct comparison.",
+  "Mirror occupancy is a voxel test at the stated size; it does not measure sub-voxel asymmetry.",
+  "Axle centres come from wheel-part bounds and assume each wheel part is a closed tyre plus rim."
+ ],
+ "seconds": 47.7,
+ "production_cfd_frame": {
+  "source": "scratch/continuation/runs/wp9-solve-fastback-20261108-a/.../native/case/constant/triSurface (D1 source case)",
+  "measured_bounds_m": {
+   "wheel_fr.stl": {
+    "triangles": 93476,
+    "min": [
+     0.49635,
+     0.64727,
+     -0.002
+    ],
+    "max": [
+     1.13335,
+     0.87327,
+     0.635
+    ]
+   },
+   "wheel_rr.stl": {
+    "triangles": 355278,
+    "min": [
+     3.28254,
+     0.65043,
+     -0.002
+    ],
+    "max": [
+     3.91953,
+     0.87643,
+     0.635
+    ]
+   },
+   "body.stl": {
+    "triangles": 944811,
+    "min": [
+     0.0,
+     -0.021,
+     0.14161
+    ],
+    "max": [
+     4.61283,
+     1.01499,
+     1.4164
+    ]
+   }
+  },
+  "reading": "Fastback top, positive-y half model. Relative to the TUM assembly above the front wheel is shifted by +0.80785 m in x (nose at x = 0) and +0.3165 m in z (wheels 2 mm below z = 0); body max x 4.61283 equals 3.80498 + 0.80785.",
+  "candidate_transform_to_checkpoint": "x_ckpt = x_cfd - 0.80785, y_ckpt = y_cfd, z_ckpt = z_cfd - 0.3165; mirror to a full car for the model's geometry input",
+  "open_questions": [
+   "CFD ground z = 0 maps to -0.3165, 3.5 mm above the checkpoint box floor -0.32 and 2 mm above the TUM wheel contact -0.3185.",
+   "The Fastback top is outside DrivAerML (notchback morphs only); prediction quality there is unmeasured.",
+   "The candidate transform comes from bounds alone; verify on matched vertices before import."
+  ]
+ }
+}

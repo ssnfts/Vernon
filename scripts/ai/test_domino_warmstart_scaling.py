@@ -10,7 +10,8 @@ import unittest
 from pathlib import Path
 
 from domino_warmstart_scaling import (
-    classify_pressure_scale,
+    bernoulli_coefficient,
+    consistent_conventions,
     fit_bernoulli,
     inverse_minmax,
     inverse_minmax_row,
@@ -121,6 +122,21 @@ class PressureTests(unittest.TestCase):
         b = pressure_to_kinematic(0.2, 1.205, 16.0, 0.0, "rho_u_squared")
         self.assertAlmostEqual(a, b)
 
+    def test_kinematic_source_over_rho_u_squared(self):
+        # Kinematic source divided by rho U^2: p_k = 0.2 * 1.205 * 900 = 216.9 m^2/s^2.
+        p = pressure_to_kinematic(0.2, 1.205, 30.0, 0.0, "kinematic_over_rho_u_squared")
+        self.assertAlmostEqual(p, 216.9)
+        # Reference given in Pa is converted with the same density: 216.9 - 12.05 / 1.205 = 206.9.
+        p = pressure_to_kinematic(0.2, 1.205, 30.0, 12.05, "kinematic_over_rho_u_squared")
+        self.assertAlmostEqual(p, 206.9)
+
+    def test_conventions_differ_by_density_for_the_same_p_hat(self):
+        # rho_u_squared gives 0.2 * 900 = 180; the kinematic reading gives 216.9 (ratio rho).
+        a = pressure_to_kinematic(0.2, 1.205, 30.0, 0.0, "rho_u_squared")
+        b = pressure_to_kinematic(0.2, 1.205, 30.0, 0.0, "kinematic_over_rho_u_squared")
+        self.assertAlmostEqual(a, 180.0)
+        self.assertAlmostEqual(b / a, 1.205)
+
     def test_unknown_convention_is_refused(self):
         for scale in ("guess", "", None, "RHO_U_SQUARED"):
             with self.assertRaises(ValueError, msg=repr(scale)):
@@ -150,7 +166,7 @@ class BernoulliTests(unittest.TestCase):
         self.assertAlmostEqual(c, 0.5, places=12)
         self.assertAlmostEqual(const, 0.3, places=12)
         self.assertLess(rms, 1e-12)
-        self.assertEqual(classify_pressure_scale(c, 0.05), "rho_u_squared")
+        self.assertEqual(consistent_conventions(c, 0.05, 1.205), ["rho_u_squared"])
 
     def test_half_rho_u_squared_gives_one(self):
         # Cp-style with gauge -0.15: p_hat = -0.15 + (1 - q) = 0.85 - q.
@@ -158,7 +174,7 @@ class BernoulliTests(unittest.TestCase):
         c, const, _ = fit_bernoulli(p, self.Q)
         self.assertAlmostEqual(c, 1.0, places=12)
         self.assertAlmostEqual(const, 0.85, places=12)
-        self.assertEqual(classify_pressure_scale(c, 0.05), "half_rho_u_squared")
+        self.assertEqual(consistent_conventions(c, 0.05, 1.205), ["half_rho_u_squared"])
 
     def test_noisy_fit_reports_residual(self):
         noise = [0.01, -0.01, 0.01, -0.01, 0.01, -0.01]
@@ -167,14 +183,33 @@ class BernoulliTests(unittest.TestCase):
         self.assertAlmostEqual(c, 0.5, delta=0.05)
         self.assertGreater(rms, 0.005)
 
-    def test_ambiguous_coefficient_is_unresolved(self):
-        self.assertIsNone(classify_pressure_scale(0.75, 0.05))
-        self.assertIsNone(classify_pressure_scale(NAN, 0.05))
+    def test_kinematic_source_divided_by_rho_u_squared(self):
+        # Kinematic p_k / (rho U^2) gives c = 0.5 / rho = 0.41494 at rho = 1.205.
+        p = [0.3 - (0.5 / 1.205) * q for q in self.Q]
+        c, _, _ = fit_bernoulli(p, self.Q)
+        self.assertAlmostEqual(c, 0.41494, places=4)
+        self.assertAlmostEqual(bernoulli_coefficient("kinematic_over_rho_u_squared", 1.205), 0.41494, places=4)
+        self.assertEqual(consistent_conventions(c, 0.04, 1.205), ["kinematic_over_rho_u_squared"])
 
-    def test_tolerance_must_separate_the_conventions(self):
-        for tol in (0.0, -0.1, 0.25, 0.3, NAN):
+    def test_wide_tolerance_reports_every_consistent_convention(self):
+        # 0.46 is within 0.05 of both 0.5 and 0.415: the check cannot decide, so it says so.
+        self.assertEqual(consistent_conventions(0.46, 0.05, 1.205),
+                         ["kinematic_over_rho_u_squared", "rho_u_squared"])
+
+    def test_density_one_makes_kinematic_and_pa_readings_indistinguishable(self):
+        self.assertEqual(consistent_conventions(0.5, 0.01, 1.0),
+                         ["kinematic_over_rho_u_squared", "rho_u_squared"])
+
+    def test_inconsistent_or_nonfinite_coefficient_gives_nothing(self):
+        self.assertEqual(consistent_conventions(0.75, 0.05, 1.205), [])
+        self.assertEqual(consistent_conventions(NAN, 0.05, 1.205), [])
+
+    def test_bad_tolerance_or_convention_refused(self):
+        for tol in (0.0, -0.1, NAN):
             with self.assertRaises(ValueError, msg=str(tol)):
-                classify_pressure_scale(0.5, tol)
+                consistent_conventions(0.5, tol, 1.205)
+        with self.assertRaises(ValueError):
+            bernoulli_coefficient("guess", 1.205)
 
     def test_degenerate_fit_refused(self):
         with self.assertRaises(ValueError):
@@ -243,6 +278,42 @@ class RepositoryAuditTests(unittest.TestCase):
     def test_nut_stays_unused_in_first_delivery(self):
         nut = [c for c in self.audit["channels"] if c["name"] == "nut"][0]
         self.assertEqual(nut["status"], "unresolved")
+
+    def test_probe_runs_are_consistency_only_and_never_verify(self):
+        # Plan 20.5: a surrogate's own predictions cannot establish its normalisation.
+        probes = self.audit.get("probe_runs", [])
+        artifacts = {r["artifact"] for r in probes}
+        for run in probes:
+            self.assertEqual(run["kind"], "consistency_only")
+            self.assertTrue((self.PATH.parents[2] / run["artifact"]).is_file(), run["artifact"])
+        for row in self.audit["channels"]:
+            self.assertNotIn(row.get("verification_artifact"), artifacts, row["name"])
+
+    def test_pressure_stays_unresolved_until_reference_parity(self):
+        p = [c for c in self.audit["channels"] if c["name"] == "pressure"][0]
+        self.assertEqual(p["status"], "unresolved")
+
+
+class GeometryRecordTests(unittest.TestCase):
+    """The registration record and the probe must describe the same six parts."""
+
+    ROOT = Path(__file__).resolve().parents[2] / "docs" / "research"
+
+    def load(self, name):
+        return json.loads((self.ROOT / name).read_text(encoding="utf-8"))
+
+    def test_record_parts_match_probe_hashes(self):
+        geo = self.load("domino-warmstart-geometry-v1.json")
+        probe = self.load("domino-warmstart-probe-20261109.json")
+        self.assertEqual(geo["schema"], "vernon.domino_warmstart_geometry.v1")
+        self.assertEqual({p["file"]: p["sha256"] for p in geo["parts"]}, probe["geometry"]["part_sha256"])
+
+    def test_record_states_domain_checks_and_limits(self):
+        geo = self.load("domino-warmstart-geometry-v1.json")
+        for box in ("volume_box", "surface_box"):
+            self.assertIn("assembly_inside", geo["checkpoint_domain"][box])
+        self.assertTrue(geo["limitations"])
+        self.assertLess(abs(geo["ground"]["gap_m"]), 0.01)
 
 
 if __name__ == "__main__":
