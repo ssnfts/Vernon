@@ -44,7 +44,7 @@
       "assembly_watertight": false,
       "extent_file_units": [8.2448, 5.801, 19.0719],
       "orientation": "longest axis is glTF z, height is y",
-      "scale_reading": "19.07 file units long: not metres. Roughly 4x a real car's length, so the unit or a scale node is unknown; the physical scale must be set from a measured feature (wheelbase) and recorded as an assumption"
+      "scale_reading": "19.07 file units long: not metres. Commit 9669292 scales it by wheelbase x0.2503, giving length -0.6 % and height +1.0 % against recalled published dimensions. The scale is a recorded assumption, not metadata"
     },
     {
       "id": "a7-sportback-c8",
@@ -62,7 +62,7 @@
       "assembly_watertight": false,
       "extent_file_units": [1.8596, 1.107, 4.3872],
       "orientation": "longest axis is glTF z, height is y",
-      "scale_reading": "4.39 x 1.86 x 1.11 file units. Against recalled dimensions of the real car (about 4.97 x 1.91 x 1.42 m) the length, width and height ratios differ (about 0.88, 0.97, 0.78), so a single scale factor cannot make it dimensionally faithful; the bounding box may also be cut by the wheels or missing parts. Treat its proportions as stylised"
+      "scale_reading": "4.39 x 1.86 x 1.11 file units: not metre scale. Raw bounds mislead here: the width includes the mirrors, and the model has no wheels, so its lowest point is the sill at 0.17. Commit 9669292 (claude/domino-warmstart-m1, docs/research/domino-warmstart-carprep-v1.json) scales it by wheelbase x1.150, giving length +1.5 % and height +3.3 % against published dimensions that were recalled, not looked up. Its wheels are synthetic and its ride height is assumed. An earlier version of this record called its proportions non-uniform; that reading came from the raw bounds and was wrong"
     }
   ],
   "geometry_condition": "All three are visual models: many open parts, interiors and decals, no closed assembly. Any aerodynamic use first needs an outer-shell extraction, closed wheels and a ground contact, recorded per car.",
