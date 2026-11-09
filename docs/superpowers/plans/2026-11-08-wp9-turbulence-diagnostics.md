@@ -176,6 +176,24 @@ in docs/CONTINUATION.md).
   Mesh fixes to the wheel layers, the mirror refinement or the contact patch are
   the costlier alternative.
 
+## Results: D4 and its R1 control (2026-11-09)
+
+Both runs restart from C0's iteration 500 and compare iterations 501–1000.
+Details are in docs/CONTINUATION.md.
+
+- **R1** uses the production schemes. It departs from C0 at iteration 501 (the
+  restart is not exact), but its clipping counts match C0's (k 610 / omega 90
+  cells per iteration).
+- **D4** (`limited corrected 0.33` for the laplacian and snGrad terms) clips k
+  in every iteration, like R1. Its counts are 607.5 / 90.8 against R1's
+  609.9 / 89.5, in the same regions and the same worst cells.
+- **Size of the differences:** D4's residual and screening-force differences
+  from R1 are within the restart perturbation.
+- **Cost:** D4 is 8% slower per iteration.
+- **Verdict:** non-orthogonal correction is not the driver of the clipping.
+  The remaining candidates are D5 (limited k/omega gradients) and mesh fixes
+  at the recurring cells.
+
 ## Decisions after the screen
 
 1. If D1 removes the startup blow-up and clipping stays rare after the switch

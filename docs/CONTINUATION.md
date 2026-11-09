@@ -6,6 +6,45 @@ Sections are newest first. Older sections use the original machine's paths
 (C:\Users\mabdu\REA\...) and the old flat scripts/ layout, and are kept as
 evidence. For current commands use docs/SETUP.md and docs/CFD-RUNBOOK.md.
 
+## WP9 R1 completed: D4 (limited correction) does not reduce clipping, 2026-11-09
+
+- **R1** `wp9-diag-r1-20261109-a`: completed, exit 0, 08:06Z–10:36Z.
+  - Linux cleanup confirmed; source unchanged; no swap.
+  - fvSchemes FNV 41ad9d1f665715c3, the same as C0.
+  - 17.48 s/it.
+- **Restart perturbation (R1 vs C0):** the runs diverge from iteration 501.
+  - The maximum relative difference is 0.96 for the initial residuals and
+    1.0 for the bounding minimum.
+  - Clipping statistics are unchanged: k 609.9 vs 610.8, omega 89.5 vs 90.1
+    cells per iteration.
+  - The omega residual RMS is 5.95e-5 vs C0's 8.75e-5. So the restart alone
+    gives D4's lower omega RMS.
+  - The extreme omega minimum moves a lot (−7.3e5 vs −9.9e5), so it is not a
+    usable comparison metric.
+  - Screening Cd moves by +0.0011 (501–1000) and +0.0021 (751–1000).
+- **D4 vs R1, the controlled comparison, over 501–1000:**
+  - k: clipped in 500/500 iterations in both; 607.5 vs 609.9 cells per
+    iteration; 901–1000: 600.1 vs 604.0.
+  - omega: 90.8 vs 89.5; 901–1000: 92.4 vs 88.2.
+  - Regions and wall bands are within a few cells of each other.
+  - Residual RMS: U 0.0208 vs 0.0207; p 1.63e-3 vs 1.69e-3;
+    k 2.23e-4 vs 2.28e-4; omega 5.57e-5 vs 5.95e-5.
+  - Worst cells at maps 750 and 1000: the top three k cells (4/52986,
+    4/640618, 4/693410) are the same in C0, R1 and D4. Overlap of the
+    worst-cell sets: D4–R1 0.60 (k) and 0.43 (omega); R1–C0 0.54 and 0.38.
+  - Screening Cd: 0.2750 ± 0.0081 vs 0.2764 ± 0.0099 (501–1000), and
+    0.2728 vs 0.2758 (751–1000). Both differences are within one SD.
+  - Cost: 18.88 vs 17.48 s/it (+8%).
+- **Conclusion:**
+  - The limited non-orthogonal correction (0.33) does not reduce the k/omega
+    clipping. Every difference from R1 is the size of the restart
+    perturbation (R1 vs C0) or smaller.
+  - Non-orthogonal correction is ruled out as the driver.
+  - Stage 3 stays blocked.
+  - The next step is the user's choice: D5 (cellLimited gradients for k/omega,
+    a restart from C0's 500, compared with R1), mesh fixes for the recurring
+    cells (layers 2–4 at the mirror, front wheel and nose), or D2/D3.
+
 ## WP9 D4 completed; R1 running, 2026-11-09
 
 - **D4** `wp9-diag-d4-20261109-a`: completed, exit 0, 05:20Z–08:04Z. Linux
