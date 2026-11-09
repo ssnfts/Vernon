@@ -373,7 +373,7 @@
     "module": "scripts/ai/domino_warmstart_units.py",
     "branch": "claude/domino-scaling-semantics",
     "commit": "12d8a43",
-    "status": "not merged into this branch",
+    "status": "merged into claude/domino-warmstart-m1 at e649550 (no-ff, user-approved)",
     "why": "binds U_norm 30 m/s and rho_norm 1.205 to this audit, takes the gauge in m^2/s^2 only, and refuses the operating-point step while operating_point_gate is unresolved unless Reynolds independence is stated",
     "equations_at_case_speed_U_c": "U = 30 * (U_c / 38.889) * U_hat; p_kinematic = 1084.5 * (U_c / 38.889)^2 * p_hat + gauge (16 m/s: U = 12.343 * U_hat, p = 183.58 * p_hat + gauge)",
     "not_for_import": "domino_warmstart_scaling.pressure_to_kinematic, a consistency-check helper that accepts any rho and U",
