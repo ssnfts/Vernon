@@ -6,6 +6,34 @@ Sections are newest first. Older sections use the original machine's paths
 (C:\Users\mabdu\REA\...) and the old flat scripts/ layout, and are kept as
 evidence. For current commands use docs/SETUP.md and docs/CFD-RUNBOOK.md.
 
+## WP9 D5 completed: limited k/omega gradients remove ~93–95% of clipping, 2026-11-09
+
+- **D5** `wp9-diag-d5-20261110-a`: completed, exit 0, 21:10Z–23:52Z.
+  - Source unchanged; no swap; cleanup confirmed.
+  - fvSchemes FNV d9febec1b6f9dad9, with the `grad(k)`/`grad(omega)`
+    `cellLimited Gauss linear 1` lines present.
+  - 18.62 s/it, against R1's 17.48.
+- **D5 vs R1, 501–1000:**
+  - k clipped cells: 43.0 vs 609.9 per iteration. Lowest k −0.156 vs −1.49.
+  - omega clipped cells: 4.2 vs 89.5.
+  - The front-wheel, nose and mirror hotspots almost disappear. What is left
+    is about 35 k cells in the underbody band, and k is still clipped in
+    500/500 iterations.
+  - Residual RMS: U and p unchanged; k 2.52e-4 vs 2.28e-4; omega 7.09e-5 vs
+    5.95e-5.
+  - Screening Cd 0.2759 ± 0.0087 vs 0.2764 ± 0.0099. The force oscillation
+    is essentially unchanged.
+- **Verdict:** unlimited k/omega gradients are the main source of the
+  clipping. Limiting them does not by itself steady the forces. Stage 3 stays
+  blocked.
+- **Next, the user's choice:**
+  - adopt the limited gradients in production `fv_schemes` (test first) and
+    plan a new Stage 2 protocol run from iteration 0; or
+  - first investigate the remaining force oscillation (decision 5 in the
+    diagnostics plan) or the underbody-band cells.
+- Full tables are in
+  `docs/superpowers/plans/2026-11-08-wp9-turbulence-diagnostics.md`.
+
 ## WP9 mesh fix: no candidate qualifies, no M1 solve; D5 running, 2026-11-09
 
 - **Mesh fix (M1):** three candidates changed only `addLayersControls`

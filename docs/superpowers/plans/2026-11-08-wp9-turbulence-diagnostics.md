@@ -289,7 +289,48 @@ eligibility checks:
   `addLayersControls` (surface refinement or layer count/thickness at those
   features), which are protocol mesh changes, not a diagnostic tweak.
 
-## Decisions after the screen
+### Result: D5 removes most clipping (2026-11-09)
+
+Run `wp9-diag-d5-20261110-a`:
+- Completed with exit 0, 21:10Z–23:52Z.
+- Source fingerprint unchanged; no swap (minimum available memory 2.85 GB);
+  no processes left after cleanup.
+- fvSchemes FNV d9febec1b6f9dad9. The case gradSchemes contain the
+  `grad(k)` and `grad(omega)` `cellLimited Gauss linear 1` lines.
+- 500 iterations, solver `End`. The 6 warnings are the absent-patch warnings
+  of the half model, the same count as R1.
+
+D5 vs R1 (the restart control), 501–1000:
+
+| | R1 | D5 |
+|---|---|---|
+| k: iterations with clipping | 500/500 | 500/500 |
+| k: mean clipped cells | 609.9 | **43.0 (−93%)** |
+| k: 901–1000 | 604.0 | 41.6 |
+| k: lowest value | −1.49 | −0.156 |
+| k: clipped volume (m³) | 0.0507 | 0.00022 |
+| k by region (wheel_fr / body_near / underbody / wake / other) | 137 / 223 / 157 / 22 / 48 | 3.5 / 3.2 / 35.2 / 0.4 / 0.6 |
+| omega: mean clipped cells | 89.5 | **4.2 (−95%)** |
+| omega: lowest value | −7.3e5 | −7.7e3 |
+| Residual RMS U / p | 0.0207 / 1.69e-3 | 0.0210 / 1.71e-3 |
+| Residual RMS k / omega | 2.28e-4 / 5.95e-5 | 2.52e-4 / 7.09e-5 |
+| Screening Cd 501–1000 | 0.2764 ± 0.0099 | 0.2759 ± 0.0087 |
+| Screening Cd 751–1000 | 0.2758 ± 0.0106 | 0.2746 ± 0.0091 |
+| s/it | 17.48 | 18.62 (+6.5%) |
+
+- **The clipping comes from the unlimited k/omega gradients.** Limiting them
+  removes nearly all clipping at the front-wheel, nose and mirror hotspots
+  (from about 360 cells per iteration to about 7). This is far larger than the
+  restart perturbation (R1 vs C0) or D4.
+- **Not a cure.** k is still clipped in every iteration, by about 35 cells
+  in the underbody band (wall band 2).
+- **Forces still oscillate** with the same spread (Cd SD 0.009–0.010). The
+  k/omega residual RMS is 10–19% higher than R1's. So D5 by itself does not
+  show that the force oscillation comes from the clipping.
+- **This is a diagnostic, not acceptance evidence.** Under decision 2
+  below, adopting it in production needs its own change (test first in
+  `fv_schemes`) and a new protocol run with the intended schemes from
+  iteration 0. Stage 3 stays blocked.
 
 1. If D1 removes the startup blow-up and clipping stays rare after the switch
    back to `limitedLinear`: implement the specified startup in `fv_schemes`
