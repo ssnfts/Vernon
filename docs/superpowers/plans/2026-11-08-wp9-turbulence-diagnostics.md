@@ -255,6 +255,40 @@ The cells are new, so the comparison is by region and box, not by cell index.
 `cellLimited Gauss linear 1`, restarted from C0's iteration 500, 501–1000,
 compared with R1. It runs on the Stage 2 mesh, independent of M1's outcome.
 
+### Result: no candidate qualifies, so no M1 solve (2026-11-09)
+
+Outputs are in `scratch/wp9-diagnostics/mesh-fix-20261109/{baseline,a,b,c}`.
+Rough cells in the hotspot boxes (front wheel / nose / mirror), with the
+eligibility checks:
+
+| | Baseline | A | B | C |
+|---|---|---|---|---|
+| snappy | — | no errors | no errors | **125 illegal faces** |
+| checkMesh | OK | OK | OK | OK |
+| Cells | 12,056,197 | 12,056,537 | **11,931,951** | 12,094,063 |
+| Body coverage | 89.2% | 88% | 88% | 91.2% |
+| Wheel coverage (fr/rr) | 66.2 / 69.1% | 62.7 / 65.4% | 63.3 / 65.9% | 51.2 / 58.3% |
+| Boxes | 5,697 / 8,298 / 5,460 | 4,406 / 7,751 / 5,188 | 4,467 / 8,901 / 5,502 | 3,921 / 7,793 / 5,412 |
+| **Box total** (need ≤ 15,564) | 19,455 | 17,345 (−10.8%) | 18,870 (−3.0%) | 17,126 (−12.0%) |
+| Rough, layers 2–4 | 142,405 | 126,451 (−11.2%) | 155,745 (+9.4%) | 122,996 (−13.6%) |
+| nonOrtho ≥ 40, layers 2–4 | 24,005 | 12,642 | 15,595 | 25,777 |
+| snappy wall time, peak RSS | 2,402 s | 3,680 s, 20.6 GB | 3,712 s, 20.6 GB | 26,980 s, 21.5 GB |
+
+- **B** is ineligible (below 12.0M cells). **C** is ineligible (snappy reported
+  illegal faces). Its score was computed afterwards for information only, in
+  `c-info-score`.
+- **A** is the only eligible candidate. It reduces the box total by 10.8%,
+  short of the required 20%. So, by rule 3, there is no M1 solve.
+- No candidate would have qualified even ignoring eligibility: the best box
+  reduction is C's 12.0%.
+- Observation (not a selection criterion): A halves the severely
+  non-orthogonal cells (≥ 40°) in layers 2–4. The hotspot boxes barely move,
+  so the roughness there does not come mainly from layer smoothing settings.
+- Conclusion: layer-control smoothing alone does not remove the rough cells
+  at the clipping hotspots. Changing them would need changes beyond
+  `addLayersControls` (surface refinement or layer count/thickness at those
+  features), which are protocol mesh changes, not a diagnostic tweak.
+
 ## Decisions after the screen
 
 1. If D1 removes the startup blow-up and clipping stays rare after the switch

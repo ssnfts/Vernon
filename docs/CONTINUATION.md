@@ -6,6 +6,32 @@ Sections are newest first. Older sections use the original machine's paths
 (C:\Users\mabdu\REA\...) and the old flat scripts/ layout, and are kept as
 evidence. For current commands use docs/SETUP.md and docs/CFD-RUNBOOK.md.
 
+## WP9 mesh fix: no candidate qualifies, no M1 solve; D5 running, 2026-11-09
+
+- **Mesh fix (M1):** three candidates changed only `addLayersControls`
+  (`scripts/cfd/wp9-mesh-fix.sh`). They were scored with `wp9MeshMetricDict`
+  against the Stage 2 mesh. The selection rules were committed in 2b9c72d
+  before any mesh was built.
+  - Outputs: `scratch/wp9-diagnostics/mesh-fix-20261109/`.
+  - The full table is in
+    `docs/superpowers/plans/2026-11-08-wp9-turbulence-diagnostics.md`.
+- **Results:**
+  - **A** (smoothing) is eligible, but cuts rough cells in the hotspot boxes
+    only from 19,455 to 17,345 (−10.8%). It needed 20%.
+  - **B** (+ buffer cells) is ineligible: 11.93M cells, below the 12.0M floor.
+  - **C** (+ nOuterIter 5) is ineligible: snappy finished with 125 illegal
+    faces after 7.5 h. Its informational score was −12.0%.
+- **Verdict:** no M1 solve. Layer-control smoothing does not remove the rough
+  layer cells at the front wheel, nose and mirror. Remeshing costs about
+  1 h and 20.6 GB peak RSS per candidate (C: 7.5 h, 21.5 GB).
+- **D5** `wp9-diag-d5-20261110-a`: running since 21:10:52Z, about 2.6 h.
+  - Settings: `grad(k)`/`grad(omega)` `cellLimited Gauss linear 1`,
+    restarted from C0's 500, compared with R1.
+  - Launch note: the launcher reports "Worker … has not published status"
+    after 30 s because the worker is still scanning `target/`. The status
+    appeared after about 80 s. Use the bundled pwsh 7
+    (`E:\REA\tools\pwsh\7.6.9\pwsh.exe`), not Windows PowerShell 5.1.
+
 ## WP9 R1 completed: D4 (limited correction) does not reduce clipping, 2026-11-09
 
 - **R1** `wp9-diag-r1-20261109-a`: completed, exit 0, 08:06Z–10:36Z.
