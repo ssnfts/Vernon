@@ -35,7 +35,13 @@
       "velocity": "U_hat = U / 30 m/s for data at U_inf = 38.889 m/s (so the freestream is U_hat = 1.296)",
       "pressure": "p_hat = p_kinematic / (1.205 * 30^2), p_kinematic relative to DrivAerML p_ref = 0",
       "nut": "nut_hat = nut / (30 * L), L = largest bounding-box extent of the STL",
-      "operating_point_note": "Inverse for a case at inlet speed U_c under the Reynolds-independence assumption: U = 30 * (U_c / 38.889) * U_hat; p_kinematic = 1.205 * 30^2 * (U_c / 38.889)^2 * p_hat. The assumption is unverified (Vernon: 16 m/s, Re about 2.4x lower than DrivAerML)."
+      "operating_point_note": "See operating_point_gate (unresolved)."
+    },
+    "operating_point_gate": {
+      "status": "unresolved",
+      "statement": "Using the verified channels at inlet speed U_c assumes Reynolds independence: U = 30 * (U_c / 38.889) * U_hat; p_kinematic = 1.205 * 30^2 * (U_c / 38.889)^2 * p_hat.",
+      "why_open": "Vernon's case runs at 16 m/s (Re about 2.4x lower than DrivAerML); no evidence here tests it. Geometry (Fastback top outside the notchback-only training set) and the CFD-frame transform are separate open items.",
+      "blocks": "CFD-field import"
     }
   },
   "evidence_leads": [
@@ -68,78 +74,66 @@
     {
       "index": 0,
       "name": "Ux",
-      "status": "unresolved",
+      "status": "verified",
       "convention": "u_ref",
-      "upstream_definition": "reference parity supports U / 30 m/s (training freestream 38.889 m/s)",
+      "upstream_definition": "U_hat = U / 30 m/s (training freestream 38.889 m/s, so freestream U_hat = 1.296)",
       "reference": {
         "value": 30.0,
         "unit": "m/s",
         "provenance": "checkpoint global_parameters"
       },
       "openfoam_target": "U.x, [0 1 -1 0 0 0 0]",
-      "source": null,
-      "verification_artifact": null,
-      "tolerance": null,
+      "source": "same-checkpoint reference parity on DrivAerML run_1, y = 0 slice (UMeanTrim), 147,660 cells",
+      "verification_artifact": "docs/research/domino-warmstart-parity-run1-20261109.json",
+      "tolerance": "preregistered: fixed U_ref within 5 % of fitted and rel. L2 >= 1.5x better than runner-up; measured U_fit 30.056 m/s (-0.19 %), rel. L2 0.103 vs 0.309 at 38.889 m/s",
       "probe_evidence": "consistency only, see probe_runs[0]; not a verification artifact",
-      "proposed_after_parity": {
-        "convention": "u_ref",
-        "detail": "U_ref 30 m/s at training freestream 38.889 m/s",
-        "evidence": "reference_parity_runs[0], preregistered criteria met",
-        "awaiting": "owner acceptance before status changes to verified"
-      }
+      "acceptance": "owner accepted 2026-11-09 after reviewing reference_parity_runs[0]",
+      "scope": "Normalisation identity at the training operating point (DrivAerML, U_inf 38.889 m/s). Applying it at another inlet speed goes through normalization.operating_point_gate, which stays unresolved."
     },
     {
       "index": 1,
       "name": "Uy",
-      "status": "unresolved",
+      "status": "verified",
       "convention": "u_ref",
-      "upstream_definition": "reference parity supports U / 30 m/s (training freestream 38.889 m/s)",
+      "upstream_definition": "U_hat = U / 30 m/s (training freestream 38.889 m/s, so freestream U_hat = 1.296)",
       "reference": {
         "value": 30.0,
         "unit": "m/s",
         "provenance": "checkpoint global_parameters"
       },
       "openfoam_target": "U.y, [0 1 -1 0 0 0 0]",
-      "source": null,
-      "verification_artifact": null,
-      "tolerance": null,
+      "source": "same-checkpoint reference parity on DrivAerML run_1, y = 0 slice (UMeanTrim), 147,660 cells",
+      "verification_artifact": "docs/research/domino-warmstart-parity-run1-20261109.json",
+      "tolerance": "preregistered: fixed U_ref within 5 % of fitted and rel. L2 >= 1.5x better than runner-up; measured U_fit 30.056 m/s (-0.19 %), rel. L2 0.103 vs 0.309 at 38.889 m/s",
       "probe_evidence": "consistency only, see probe_runs[0]; not a verification artifact",
-      "proposed_after_parity": {
-        "convention": "u_ref",
-        "detail": "U_ref 30 m/s at training freestream 38.889 m/s",
-        "evidence": "reference_parity_runs[0], preregistered criteria met",
-        "awaiting": "owner acceptance before status changes to verified"
-      }
+      "acceptance": "owner accepted 2026-11-09 after reviewing reference_parity_runs[0]",
+      "scope": "Normalisation identity at the training operating point (DrivAerML, U_inf 38.889 m/s). Applying it at another inlet speed goes through normalization.operating_point_gate, which stays unresolved."
     },
     {
       "index": 2,
       "name": "Uz",
-      "status": "unresolved",
+      "status": "verified",
       "convention": "u_ref",
-      "upstream_definition": "reference parity supports U / 30 m/s (training freestream 38.889 m/s)",
+      "upstream_definition": "U_hat = U / 30 m/s (training freestream 38.889 m/s, so freestream U_hat = 1.296)",
       "reference": {
         "value": 30.0,
         "unit": "m/s",
         "provenance": "checkpoint global_parameters"
       },
       "openfoam_target": "U.z, [0 1 -1 0 0 0 0]",
-      "source": null,
-      "verification_artifact": null,
-      "tolerance": null,
+      "source": "same-checkpoint reference parity on DrivAerML run_1, y = 0 slice (UMeanTrim), 147,660 cells",
+      "verification_artifact": "docs/research/domino-warmstart-parity-run1-20261109.json",
+      "tolerance": "preregistered: fixed U_ref within 5 % of fitted and rel. L2 >= 1.5x better than runner-up; measured U_fit 30.056 m/s (-0.19 %), rel. L2 0.103 vs 0.309 at 38.889 m/s",
       "probe_evidence": "consistency only, see probe_runs[0]; not a verification artifact",
-      "proposed_after_parity": {
-        "convention": "u_ref",
-        "detail": "U_ref 30 m/s at training freestream 38.889 m/s",
-        "evidence": "reference_parity_runs[0], preregistered criteria met",
-        "awaiting": "owner acceptance before status changes to verified"
-      }
+      "acceptance": "owner accepted 2026-11-09 after reviewing reference_parity_runs[0]",
+      "scope": "Normalisation identity at the training operating point (DrivAerML, U_inf 38.889 m/s). Applying it at another inlet speed goes through normalization.operating_point_gate, which stays unresolved."
     },
     {
       "index": 3,
       "name": "pressure",
-      "status": "unresolved",
-      "convention": null,
-      "upstream_definition": "reference parity supports kinematic_over_rho_u_squared at U_ref 30; status stays unresolved until the owner accepts it",
+      "status": "verified",
+      "convention": "kinematic_over_rho_u_squared",
+      "upstream_definition": "p_hat = p_kinematic / (1.205 * 30^2), p_kinematic relative to DrivAerML p_ref = 0",
       "reference": {
         "value": [
           30.0,
@@ -151,18 +145,14 @@
         ],
         "provenance": "checkpoint global_parameters"
       },
-      "gauge": "unresolved; align additively to the control case by far-field least squares",
+      "gauge": "training labels relative to p_ref = 0 (fitted offset -2.2 m^2/s^2, 0.3 % of q); for a CFD case still align additively to the control case by far-field least squares",
       "openfoam_target": "p (kinematic gauge), [0 2 -2 0 0 0 0]",
-      "source": null,
-      "verification_artifact": null,
-      "tolerance": null,
+      "source": "same-checkpoint reference parity on DrivAerML run_1, y = 0 slice (pMeanTrim, CpMeanTrim), 147,660 cells; pMeanTrim / CpMeanTrim = 0.5 * 38.889^2 fixes the source as kinematic",
+      "verification_artifact": "docs/research/domino-warmstart-parity-run1-20261109.json",
+      "tolerance": "preregistered: fixed divisor within 5 % of fitted and rel. L2 >= 1.5x better than runner-up; measured D_fit 1060.7 vs 1084.5 m^2/s^2 (+2.2 %), rel. L2 0.128 vs 0.244 (rho_u_squared)",
       "probe_evidence": "consistency only, see probe_runs[0]; not a verification artifact",
-      "proposed_after_parity": {
-        "convention": "kinematic_over_rho_u_squared",
-        "detail": "rho 1.205, U_ref 30 m/s, gauge relative to DrivAerML p_ref = 0",
-        "evidence": "reference_parity_runs[0], preregistered criteria met",
-        "awaiting": "owner acceptance before status changes to verified"
-      }
+      "acceptance": "owner accepted 2026-11-09 after reviewing reference_parity_runs[0]",
+      "scope": "Normalisation identity at the training operating point (DrivAerML, U_inf 38.889 m/s). Applying it at another inlet speed goes through normalization.operating_point_gate, which stays unresolved."
     },
     {
       "index": 4,

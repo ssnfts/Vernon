@@ -312,6 +312,29 @@ class RepositoryAuditTests(unittest.TestCase):
             if prop:
                 self.assertIn(prop["convention"], KNOWN_CONVENTIONS, row["name"])
 
+    def test_verified_channels_rest_on_accepted_reference_parity(self):
+        artifacts = {r["artifact"] for r in self.audit.get("reference_parity_runs", [])}
+        for row in self.audit["channels"]:
+            if row["status"] == "verified":
+                self.assertIn(row["verification_artifact"], artifacts, row["name"])
+                self.assertIn("owner accepted", row.get("acceptance", ""), row["name"])
+                self.assertIn("operating_point_gate", row.get("scope", ""), row["name"])
+                self.assertNotIn("proposed_after_parity", row, row["name"])
+
+    def test_operating_point_gate_stays_open(self):
+        # Verifying the normalisation at 38.889 m/s says nothing about Reynolds independence at 16 m/s.
+        gate = self.audit["normalization"]["operating_point_gate"]
+        self.assertEqual(gate["status"], "unresolved")
+        self.assertEqual(gate["blocks"], "CFD-field import")
+
+    def test_accepted_conventions(self):
+        conv = {c["name"]: c for c in self.audit["channels"]}
+        for name in ("Ux", "Uy", "Uz"):
+            self.assertEqual(verified_convention(self.audit, name), "u_ref")
+            self.assertEqual(conv[name]["reference"]["value"], 30.0)
+        self.assertEqual(verified_convention(self.audit, "pressure"), "kinematic_over_rho_u_squared")
+        self.assertEqual(conv["pressure"]["reference"]["value"], [30.0, 1.205])
+
 
 class GeometryRecordTests(unittest.TestCase):
     """The registration record and the probe must describe the same six parts."""
