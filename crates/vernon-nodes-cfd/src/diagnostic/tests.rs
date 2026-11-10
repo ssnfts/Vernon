@@ -1,3 +1,4 @@
+use super::arms::*;
 use super::*;
 use std::path::{Path, PathBuf};
 
@@ -467,6 +468,102 @@ fn fixture_restart_switch_uses_upwind_then_production() {
     println!("WP9_FIXTURE_SWITCH_PROVEN restart=exact upwind_through=2 production_from=3 after_diff={:e}", after.max_rel_diff);
 }
 
+fn fixture_solution_case(dir: &Path, solution: &str, control: Option<&str>, end: u32) {
+    fixture_case(dir, None, false, end, end);
+    write(&dir.join("system/fvSolution"), solution);
+    if let Some(c) = control {
+        write(&dir.join("system/controlDict"), c);
+    }
+}
+
+/// Explicit `k` and `omega` equation factors override the `".*"` default:
+/// production `".*" 0.9` plus explicit k/omega 0.5 solves exactly like
+/// `".*" 0.5` (U stays 0.9 in both), and differently from production.
+#[test]
+#[ignore = "needs WSL and OpenFOAM"]
+fn fixture_explicit_turbulence_relaxation_overrides_the_default() {
+    let env = var("VERNON_DIAG_FIXTURE_ENV");
+    let root = fixture_root("relax");
+    let explicit = Solution::TurbulenceRelaxation.apply(PROD_SOLUTION).unwrap();
+    let all_half = PROD_SOLUTION.replace("        \".*\"            0.9;", "        \".*\"            0.5;");
+    assert_ne!(all_half, PROD_SOLUTION);
+    let mut histories = Vec::new();
+    for (name, text) in [("production", PROD_SOLUTION.to_string()), ("explicit", explicit), ("default", all_half)] {
+        let case = root.join(name);
+        fixture_solution_case(&case, &text, None, 5);
+        run(&case, &env, &[("blockMesh", &["blockMesh"]), ("solver", &["simpleFoam"])], 30).unwrap();
+        assert!(log(&case, "solver").contains("\nEnd"));
+        histories.push((case.clone(), parse_initial_residuals(&log(&case, "solver"))));
+    }
+    let same = compare_histories(&histories[1].1, &histories[2].1, 1, 5);
+    assert_eq!((same.compared_iterations, same.max_rel_diff), (5, 0.0), "explicit k/omega 0.5 equals \".*\" 0.5: {same:?}");
+    same_files(&histories[1].0.join("5"), &histories[2].0.join("5"), &FIELDS);
+    let differs = compare_histories(&histories[0].1, &histories[1].1, 1, 5);
+    assert!(differs.max_rel_diff > 1e-6, "and differs from production: {differs:?}");
+    println!("WP9_FIXTURE_RELAXATION_OVERRIDE_PROVEN iterations=5 explicit_equals_default=exact production_diff={:e}", differs.max_rel_diff);
+}
+
+/// The monitors change nothing in the solution; the inlet flux is the known
+/// inflow and the open-boundary balance is small.
+#[test]
+#[ignore = "needs WSL and OpenFOAM"]
+fn fixture_monitors_leave_the_solution_unchanged_and_balance_the_flux() {
+    let env = var("VERNON_DIAG_FIXTURE_ENV");
+    let root = fixture_root("monitors");
+    let control = fixture_control(0, 5, 5) + "\nfunctions\n{\n}\n";
+    let monitored = with_monitors(&control, &["inlet", "outlet"]).unwrap();
+    let (plain, watched) = (root.join("plain"), root.join("watched"));
+    fixture_solution_case(&plain, PROD_SOLUTION, Some(&control), 5);
+    fixture_solution_case(&watched, PROD_SOLUTION, Some(&monitored), 5);
+    for case in [&plain, &watched] {
+        run(case, &env, &[("blockMesh", &["blockMesh"]), ("solver", &["simpleFoam"])], 30).unwrap();
+        assert!(log(case, "solver").contains("\nEnd"));
+    }
+    same_files(&plain.join("5"), &watched.join("5"), &FIELDS);
+    let c = compare_histories(&parse_initial_residuals(&log(&plain, "solver")), &parse_initial_residuals(&log(&watched, "solver")), 1, 5);
+    assert_eq!((c.compared_iterations, c.max_rel_diff), (5, 0.0), "{c:?}");
+    let fluxes: Vec<(&str, BTreeMap<u32, f64>)> = ["inlet", "outlet"]
+        .iter()
+        .map(|p| {
+            let (names, rows) = object_rows(&watched, &format!("wp9Flux_{p}"), "surfaceFieldValue.dat", 0);
+            let col = names.iter().position(|n| n == "sum(phi)").unwrap_or_else(|| panic!("{names:?}"));
+            (*p, rows.into_iter().map(|(i, v)| (i, v[col])).collect())
+        })
+        .collect();
+    for i in 1..=5 {
+        assert!((fluxes[0].1[&i] + 0.25).abs() < 1e-9, "inlet flux at {i} is the 1 m/s x 0.25 m2 inflow: {}", fluxes[0].1[&i]);
+    }
+    let balance = flux_balance(&fluxes, 1, 5).unwrap();
+    assert!(balance.values().all(|b| b.abs() < 0.05), "{balance:?}");
+    let (names, ranges) = object_rows(&watched, "wp9Range", "fieldMinMax.dat", 0);
+    assert_eq!(ranges.len(), 5);
+    for f in ["U", "p", "k", "omega", "nut"] {
+        assert!(names.iter().any(|n| n.contains(&format!("({f})"))), "a range column for {f}: {names:?}");
+    }
+    println!("WP9_FIXTURE_MONITORS_PROVEN fields=identical inlet=-0.25 balance_max={:e} range_columns={}", balance.values().fold(0.0f64, |m, b| m.max(b.abs())), names.join(","));
+}
+
+/// A split solver entry is what the solver uses: U solves end at 0.01 of
+/// their initial residual, k and omega at 0.1.
+#[test]
+#[ignore = "needs WSL and OpenFOAM"]
+fn fixture_split_solver_entries_select_their_own_rel_tol() {
+    let env = var("VERNON_DIAG_FIXTURE_ENV");
+    let root = fixture_root("reltol");
+    let case = root.join("utight");
+    fixture_solution_case(&case, &Solution::VelocityRelTol.apply(PROD_SOLUTION).unwrap(), None, 5);
+    run(&case, &env, &[("blockMesh", &["blockMesh"]), ("solver", &["simpleFoam"])], 30).unwrap();
+    let text = log(&case, "solver");
+    assert!(text.contains("\nEnd"));
+    for f in ["Ux", "Uy", "Uz"] {
+        check_rel_tol(&text, f, true).unwrap();
+    }
+    for f in ["k", "omega"] {
+        check_rel_tol(&text, f, false).unwrap();
+    }
+    println!("WP9_FIXTURE_SPLIT_RELTOL_PROVEN iterations=5");
+}
+
 // ------------------------------------------------------------ the real case
 
 fn bytes_of(dir: &Path) -> u64 {
@@ -535,17 +632,29 @@ fn force_window(case: &Path, first: u32, last: u32) -> serde_json::Value {
 #[test]
 #[ignore = "needs WSL, OpenFOAM and the stopped Stage 2 case"]
 fn wp9_turbulence_diagnostic() {
-    let variant = Variant::parse(&var("VERNON_DIAG_VARIANT")).unwrap();
+    // An older variant, or a checkpoint arm of the Stage 2 rerun investigation.
+    let name = var("VERNON_DIAG_VARIANT");
+    let arm = Arm::parse(&name).ok();
+    let variant = if arm.is_some() { None } else { Some(Variant::parse(&name).unwrap()) };
     let source = PathBuf::from(var("VERNON_DIAG_SOURCE"));
     let out_path = PathBuf::from(var("VERNON_DIAG_OUT"));
     let solve_env = var("VERNON_WSL_ENV_FILE");
     let fixture_env = var("VERNON_DIAG_FIXTURE_ENV");
     assert_eq!((var("VERNON_WSL_DISTRO").as_str(), var("VERNON_WSL_USER").as_str()), (DISTRO, USER));
-    let phases = variant.phases();
-    // R0 and D4 start from C0's written iteration 500 on the same mesh.
-    let start_source = if variant.restarts_from_c0() { PathBuf::from(var("VERNON_DIAG_START_SOURCE")) } else { source.clone() };
+    // A checkpoint arm restarts from the preserved rerun checkpoint, every
+    // file re-hashed against its manifest before anything is copied.
+    let checkpoint = arm.map(|_| verify_checkpoint(&source).unwrap_or_else(|e| panic!("checkpoint: {e}")));
+    let plan = match (variant, arm, checkpoint) {
+        (Some(v), _, _) => v.plan(),
+        (None, Some(a), Some(t)) => a.plan(t),
+        _ => unreachable!(),
+    };
+    let phases = plan.phases.clone();
+    let restarts_from_c0 = variant.is_some_and(Variant::restarts_from_c0);
+    // R0, R1, D4 and D5 start from C0's written iteration 500 on the same mesh.
+    let start_source = if restarts_from_c0 { PathBuf::from(var("VERNON_DIAG_START_SOURCE")) } else { source.clone() };
     let first = phases[0].start + 1;
-    let work = std::env::temp_dir().join(format!("vernon-wp9-diag-{}-{}", variant.id(), std::process::id()));
+    let work = std::env::temp_dir().join(format!("vernon-wp9-diag-{}-{}", plan.id, std::process::id()));
     let case = work.join("case");
     std::fs::create_dir_all(&case).unwrap();
 
@@ -573,8 +682,10 @@ fn wp9_turbulence_diagnostic() {
         // A restart needs C0's written flux; a start from 0 has U only (the
         // Stage 2 and M1 cases, like any potentialFoam start, write no phi).
         assert!(target.join(&start_time).join("U").is_file(), "start fields at {start_time}");
-        if variant.restarts_from_c0() {
-            assert!(target.join(&start_time).join("phi").is_file(), "restart flux at {start_time}");
+        if restarts_from_c0 || arm.is_some() {
+            for f in ["phi", "nut", "k", "omega", "p"] {
+                assert!(target.join(&start_time).join(f).is_file(), "restart field {f} at {start_time}");
+            }
         }
         files += f + f2;
         bytes += b + b2;
@@ -587,10 +698,19 @@ fn wp9_turbulence_diagnostic() {
     }
     let copy_seconds = started.elapsed().as_secs_f64();
     let production_schemes = std::fs::read_to_string(source.join("system/fvSchemes")).unwrap();
+    // The arms are bound to the rerun's own (limited-gradient) dictionaries.
+    if arm.is_some() {
+        for line in [PRODUCTION_GRAD_U, LIMITED_GRAD_K, LIMITED_GRAD_OMEGA] {
+            assert!(production_schemes.lines().any(|l| l == line), "checkpoint fvSchemes has '{line}'");
+        }
+    }
+    let production_solution = std::fs::read_to_string(source.join("system/fvSolution")).unwrap();
+    let solution_text = plan.solution.apply(&production_solution).unwrap_or_else(|e| panic!("fvSolution {}: {e}", plan.solution.label()));
+    std::fs::write(case.join("system/fvSolution"), &solution_text).unwrap();
     // Only M1 runs on a remeshed case, and that case always says how it was made.
     let mesh_fix_path = source.join("vernon_mesh_fix.json");
-    assert_eq!(mesh_fix_path.is_file(), variant == Variant::M1, "vernon_mesh_fix.json present exactly for m1: {}", mesh_fix_path.display());
-    let mesh_fix: serde_json::Value = if variant == Variant::M1 {
+    assert_eq!(mesh_fix_path.is_file(), variant == Some(Variant::M1), "vernon_mesh_fix.json present exactly for m1: {}", mesh_fix_path.display());
+    let mesh_fix: serde_json::Value = if variant == Some(Variant::M1) {
         serde_json::from_str(&std::fs::read_to_string(&mesh_fix_path).unwrap()).unwrap()
     } else {
         serde_json::Value::Null
@@ -600,7 +720,7 @@ fn wp9_turbulence_diagnostic() {
     // 2. Classification boxes from the case's own surfaces; counter options.
     let bounds = |name: &str| stl_bounds(&std::fs::read_to_string(source.join(format!("constant/triSurface/{name}.stl"))).unwrap()).unwrap_or_else(|| panic!("{name}.stl bounds"));
     let regions = case_regions(bounds("body"), bounds("wheel_fr"), bounds("wheel_rr"));
-    let options = fv_options(&regions, &variant.map_iterations(), None);
+    let options = fv_options(&regions, &plan.map_iterations, None);
     std::fs::write(case.join("system/fvOptions"), &options).unwrap();
 
     // 3. Compile the counter before the timed solve, on the fixture with the
@@ -618,10 +738,13 @@ fn wp9_turbulence_diagnostic() {
     // 4. Phases: one solver process each, schemes fixed for its lifetime.
     let mut phase_rows = Vec::new();
     let mut full_log = String::new();
+    let mut lookups = Vec::new();
     for (n, phase) in phases.iter().enumerate() {
         let schemes = &phase.schemes.apply(&production_schemes).unwrap();
         std::fs::write(case.join("system/fvSchemes"), schemes).unwrap();
-        std::fs::write(case.join("system/controlDict"), diagnostic_control_dict(&source_control, phase.start, phase.end, variant.write_interval()).unwrap()).unwrap();
+        let control = diagnostic_control_dict(&source_control, phase.start, phase.end, plan.write_interval).unwrap();
+        let control = if plan.monitors { with_monitors(&control, &OPEN_PATCHES).unwrap() } else { control };
+        std::fs::write(case.join("system/controlDict"), control).unwrap();
         let step = format!("solver_phase{}", n + 1);
         let t = std::time::Instant::now();
         let result = run(&case, &solve_env, &[(step.as_str(), &["mpirun", "-np", "16", "simpleFoam", "-parallel"])], Variant::phase_timeout_min(phase));
@@ -639,6 +762,13 @@ fn wp9_turbulence_diagnostic() {
         for p in 0..16 {
             assert!(case.join(format!("processor{p}/{}/U", phase.end)).is_file(), "{step} wrote its end time on processor{p}");
         }
+        if arm.is_some() {
+            // The solver's own output proves which relTol each field used.
+            let tight = plan.solution.tight_fields();
+            for f in ["p", "Ux", "Uy", "Uz", "k", "omega"] {
+                lookups.push(check_rel_tol(&text, f, tight.contains(&f)).unwrap_or_else(|e| panic!("{step} solver settings: {e}")));
+            }
+        }
         let clock = parse_clock(&text);
         let spi = match (clock.get(&(phase.start + 1)), clock.get(&phase.end)) {
             (Some(a), Some(b)) if phase.end > phase.start + 1 => (b - a) / f64::from(phase.end - phase.start - 1),
@@ -652,6 +782,9 @@ fn wp9_turbulence_diagnostic() {
             "sngrad_default": if phase.schemes == Schemes::LimitedCorrection { "limited corrected 0.33" } else { "corrected" },
             "turbulence_gradients": if phase.schemes == Schemes::LimitedTurbulenceGradients { "cellLimited Gauss linear 1" } else { "Gauss linear (default)" },
             "fvSchemes_fnv1a64": format!("{:016x}", { let mut h: u64 = 0xcbf2_9ce4_8422_2325; for b in schemes.bytes() { h ^= u64::from(b); h = h.wrapping_mul(0x0100_0000_01b3); } h }),
+            "fvSolution": plan.solution.label(),
+            "fvSolution_fnv1a64": format!("{:016x}", fnv1a_file(&case.join("system/fvSolution")).unwrap()),
+            "monitors": plan.monitors,
             "wall_seconds": wall, "seconds_per_iteration": spi, "log": case.join("logs").join(format!("{step}.log")),
         }));
         full_log += &text;
@@ -665,7 +798,7 @@ fn wp9_turbulence_diagnostic() {
         let (names, rows) = counter_rows(&case, field);
         check_counter(field, &rows, &bounding, first, last).unwrap_or_else(|e| panic!("instrumentation: {e}"));
         let mut w = Vec::new();
-        for (a, b) in variant.windows() {
+        for &(a, b) in &plan.windows {
             w.push(serde_json::json!({
                 "first": a, "last": b,
                 "iterations_with_clipping": rows.iter().filter(|r| r.iteration >= a && r.iteration <= b && r.below > 0).count(),
@@ -685,7 +818,7 @@ fn wp9_turbulence_diagnostic() {
             "worst_cells": case.join(format!("postProcessing/wp9ClipCounter/clip_{field}_worst.dat")),
         }));
     }
-    for i in variant.map_iterations() {
+    for &i in &plan.map_iterations {
         for f in ["clipCount_k", "clipMin_k", "clipCount_omega", "clipMin_omega"] {
             assert!(case.join(format!("processor0/{i}/{f}")).is_file(), "map {f} kept at {i}");
         }
@@ -694,12 +827,13 @@ fn wp9_turbulence_diagnostic() {
     // 6. Residuals and screening forces; reproduction of the reference run
     //    (Stage 2 for C0, C0 for the R0 restart check).
     let residuals = parse_initial_residuals(&full_log);
-    let residual_rms: Vec<serde_json::Value> = variant.windows().iter().map(|(a, b)| serde_json::json!({
+    let residual_rms: Vec<serde_json::Value> = plan.windows.iter().map(|(a, b)| serde_json::json!({
         "first": a, "last": b, "p": rms_initial(&residuals, "p", *a, *b), "U": rms_initial(&residuals, "U", *a, *b),
         "k": rms_initial(&residuals, "k", *a, *b), "omega": rms_initial(&residuals, "omega", *a, *b),
     })).collect();
     let source_log = std::fs::read_to_string(source.join("logs/solver.log")).unwrap_or_default();
-    let reference_log_path = match variant.reference() {
+    let reference = variant.and_then(Variant::reference);
+    let reference_log_path = match reference {
         Some(Reference::C0) => Some(start_source.join("logs/solver_phase1.log")),
         Some(Reference::Stage2) => Some(source.join("logs/solver.log")),
         None => None,
@@ -729,7 +863,7 @@ fn wp9_turbulence_diagnostic() {
         serde_json::Value::Null
     };
     let source_clock = parse_clock(&source_log);
-    if variant == Variant::R0 {
+    if variant == Some(Variant::R0) {
         // The restart from C0's written 500 must continue C0 exactly, so any
         // D4 difference comes from its schemes, not from the restart.
         let r = &reproduction;
@@ -742,25 +876,151 @@ fn wp9_turbulence_diagnostic() {
         (Some(a), Some(b)) if last > first + 1 => Some((b - a) / f64::from(last - first - 1)),
         _ => None,
     };
-    let forces: Vec<serde_json::Value> = variant.force_windows().iter().map(|(a, b)| force_window(&case, *a, *b)).collect();
+    let forces: Vec<serde_json::Value> = plan.force_windows.iter().map(|(a, b)| force_window(&case, *a, *b)).collect();
+    // Checkpoint arms: production-aggregated residuals, sample-SD forces and
+    // drift, force breakdown, continuity, open-boundary flux balance, field
+    // ranges and linear-solver work, each per comparison window.
+    let arm_measurements = if arm.is_some() { arm_windows(&case, &full_log, &plan) } else { serde_json::Value::Null };
 
     let row = serde_json::json!({
-        "scope": "turbulence_diagnostic", "variant": variant.id(), "diagnostic_only": true,
+        "scope": "turbulence_diagnostic", "variant": plan.id, "diagnostic_only": true,
+        "checkpoint_time": checkpoint, "checkpoint_manifest": arm.map(|_| source.join(CHECKPOINT_FILE)),
+        "fvSolution": plan.solution.label(), "solver_settings_proof": lookups, "arm_measurements": arm_measurements,
         "acceptance_evidence": false, "physical_validation": false,
         "source_case": source, "mesh_fingerprint_fnv": format!("{mesh_hash:016x}"), "copied_files": files, "copied_bytes": bytes,
         "copy_seconds": copy_seconds, "compile_seconds_on_fixture": compile_seconds, "compile_links_removed": links_removed, "np": 16,
         "phases": phase_rows, "iterations": last, "regions": regions.iter().map(|r| serde_json::json!({"name": r.0, "min": r.1, "max": r.2})).collect::<Vec<_>>(),
         "start_source_case": start_source, "start_time": phases[0].start, "mesh_fix": mesh_fix,
         "counters": counters, "residual_rms": residual_rms,
-        "reproduction_of_stage2": if variant.reference() == Some(Reference::Stage2) { reproduction.clone() } else { serde_json::Value::Null },
-        "reproduction_of_c0": if variant.reference() == Some(Reference::C0) { reproduction } else { serde_json::Value::Null },
+        "reproduction_of_stage2": if reference == Some(Reference::Stage2) { reproduction.clone() } else { serde_json::Value::Null },
+        "reproduction_of_c0": if reference == Some(Reference::C0) { reproduction } else { serde_json::Value::Null },
         "stage2_seconds_per_iteration_same_window": source_spi,
         "screening_forces_not_results": forces, "case_bytes": bytes_of(&case), "case": case,
     });
     std::fs::write(&out_path, serde_json::to_string_pretty(&row).unwrap()).unwrap();
     let back: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&out_path).unwrap()).unwrap();
-    assert_eq!(back["variant"], variant.id());
+    assert_eq!(back["variant"], plan.id);
     assert_eq!(back["iterations"], last);
     // Own line: --nocapture output follows cargo's "test name ... " prefix.
-    println!("\nWP9_DIAGNOSTIC_COMPLETE variant={} iterations={} phases={} np=16 instrumentation=checked acceptance_evidence=0", variant.id(), last, phases.len());
+    println!("\nWP9_DIAGNOSTIC_COMPLETE variant={} iterations={} phases={} np=16 instrumentation=checked acceptance_evidence=0", plan.id, last, phases.len());
+}
+
+/// Copies a stopped Stage 2 run's checkpoint (all 16 ranks' meshes and one
+/// written time, the dictionaries, surfaces and solver log) into an empty
+/// directory with a hash manifest. The run's own case is only read.
+#[test]
+#[ignore = "needs a stopped Stage 2 case"]
+fn wp9_preserve_stage2_checkpoint() {
+    let from = PathBuf::from(var("VERNON_PRESERVE_FROM"));
+    let to = PathBuf::from(var("VERNON_PRESERVE_TO"));
+    let time: u32 = var("VERNON_PRESERVE_TIME").parse().unwrap();
+    let provenance: serde_json::Value = serde_json::from_str(&var("VERNON_PRESERVE_PROVENANCE")).unwrap();
+    let doc = preserve_checkpoint(&from, &to, time, provenance).unwrap();
+    assert_eq!(verify_checkpoint(&to).unwrap(), time);
+    println!("\nWP9_CHECKPOINT_PRESERVED time={time} files={} bytes={}", doc["file_count"], doc["bytes"]);
+}
+
+/// Rows of the one function-object file a single-phase arm writes.
+fn object_rows(case: &Path, object: &str, file: &str, start: u32) -> (Vec<String>, BTreeMap<u32, Vec<f64>>) {
+    let path = case.join(format!("postProcessing/{object}/{start}/{file}"));
+    parse_dat(&std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+}
+
+fn every_iteration<T>(rows: &BTreeMap<u32, T>, first: u32, last: u32, what: &str) {
+    let missing: Vec<u32> = (first..=last).filter(|i| !rows.contains_key(i)).collect();
+    assert!(missing.is_empty(), "{what}: {} iterations missing, first {:?}", missing.len(), missing.first());
+}
+
+fn arm_windows(case: &Path, full_log: &str, plan: &Plan) -> serde_json::Value {
+    let (start, last) = (plan.phases[0].start, plan.phases.last().unwrap().end);
+    let first = start + 1;
+    let stats = |v: &[f64]| {
+        let s = crate::coeffs::window_stats(v).expect("finite window");
+        serde_json::json!({ "n": s.n, "mean": s.mean, "sample_sd": s.sd, "drift_pct": s.drift_pct })
+    };
+    // Production aggregation: the worst initial residual of each field in an
+    // iteration (U = worst component), RMS over the window.
+    let worst: BTreeMap<u32, BTreeMap<String, f64>> = parse_initial_residuals(full_log)
+        .into_iter()
+        .map(|(i, list)| {
+            let mut m: BTreeMap<String, f64> = BTreeMap::new();
+            for (f, v) in list {
+                let e = m.entry(f).or_insert(v);
+                *e = e.max(v);
+            }
+            let u = ["Ux", "Uy", "Uz"].iter().filter_map(|c| m.get(*c).copied()).fold(f64::NAN, f64::max);
+            m.insert("U".into(), u);
+            (i, m)
+        })
+        .collect();
+    every_iteration(&worst, first, last, "residuals");
+    let (_, coeffs) = object_rows(case, "forceCoeffs1", "coefficient.dat", start);
+    every_iteration(&coeffs, first, last, "force coefficients");
+    let (_, body) = object_rows(case, "forces_body", "force.dat", start);
+    every_iteration(&body, first, last, "body forces");
+    let fluxes: Vec<(&str, BTreeMap<u32, f64>)> = OPEN_PATCHES
+        .iter()
+        .map(|p| {
+            let (names, rows) = object_rows(case, &format!("wp9Flux_{p}"), "surfaceFieldValue.dat", start);
+            let col = names.iter().position(|n| n == "sum(phi)").unwrap_or_else(|| panic!("wp9Flux_{p}: no sum(phi) column in {names:?}"));
+            (*p, rows.into_iter().map(|(i, v)| (i, v[col])).collect())
+        })
+        .collect();
+    let balance = flux_balance(&fluxes, first, last).unwrap_or_else(|e| panic!("flux balance: {e}"));
+    let (range_names, ranges) = object_rows(case, "wp9Range", "fieldMinMax.dat", start);
+    every_iteration(&ranges, first, last, "field ranges");
+    let continuity: BTreeMap<u32, f64> = {
+        let mut out = BTreeMap::new();
+        let mut it = None;
+        for line in full_log.lines() {
+            if let Some(i) = iteration_of(line) {
+                it = Some(i);
+            } else if let (Some(i), Some(rest)) = (it, line.split_once("continuity errors : sum local = ")) {
+                if let Some(v) = rest.1.split(',').next().and_then(|v| v.trim().parse::<f64>().ok()) {
+                    out.insert(i, v);
+                }
+            }
+        }
+        out
+    };
+    every_iteration(&continuity, first, last, "continuity");
+    let clock = parse_clock(full_log);
+    let windows: Vec<serde_json::Value> = plan
+        .windows
+        .iter()
+        .map(|&(a, b)| {
+            let its: Vec<u32> = (a..=b).collect();
+            let rms = |f: &str| (its.iter().map(|i| worst[i][f].powi(2)).sum::<f64>() / its.len() as f64).sqrt();
+            let col = |rows: &BTreeMap<u32, Vec<f64>>, j: usize| its.iter().map(|i| rows[i][j]).collect::<Vec<f64>>();
+            let range: serde_json::Map<String, serde_json::Value> = range_names
+                .iter()
+                .enumerate()
+                .map(|(j, n)| {
+                    let v = col(&ranges, j);
+                    (n.clone(), serde_json::json!([v.iter().copied().fold(f64::INFINITY, f64::min), v.iter().copied().fold(f64::NEG_INFINITY, f64::max)]))
+                })
+                .collect();
+            let bal: Vec<f64> = its.iter().map(|i| balance[i]).collect();
+            let linear: serde_json::Map<String, serde_json::Value> = ["p", "Ux", "Uy", "Uz", "k", "omega"]
+                .iter()
+                .map(|f| {
+                    let n: Vec<f64> = parse_solves(full_log, f).into_iter().filter(|s| s.0 >= a && s.0 <= b).map(|s| f64::from(s.3)).collect();
+                    (f.to_string(), serde_json::json!(n.iter().sum::<f64>() / n.len().max(1) as f64))
+                })
+                .collect();
+            serde_json::json!({
+                "first": a, "last": b,
+                "residual_rms": { "p": rms("p"), "U": rms("U"), "Ux": rms("Ux"), "Uy": rms("Uy"), "Uz": rms("Uz"), "k": rms("k"), "omega": rms("omega") },
+                "screening_drag_coefficient": stats(&col(&coeffs, 0)),
+                "screening_lift_coefficient": stats(&col(&coeffs, 3)),
+                "body_drag_force_n": { "total": stats(&col(&body, 0)), "pressure": stats(&col(&body, 3)), "viscous": stats(&col(&body, 6)) },
+                "continuity_sum_local": stats(&its.iter().map(|i| continuity[i]).collect::<Vec<_>>()),
+                "open_boundary_flux_balance": { "mean": bal.iter().sum::<f64>() / bal.len() as f64, "max_abs": bal.iter().fold(0.0f64, |m, x| m.max(x.abs())) },
+                "field_ranges": range,
+                "mean_linear_iterations": linear,
+                "seconds_per_iteration": match (clock.get(&a), clock.get(&b)) { (Some(x), Some(y)) if b > a => serde_json::json!((y - x) / f64::from(b - a)), _ => serde_json::Value::Null },
+            })
+        })
+        .collect();
+    serde_json::json!({ "statistic": "sample standard deviation (n-1); drift = fitted slope x n / |mean| (coeffs::window_stats)", "windows": windows })
 }

@@ -32,7 +32,9 @@ $script:Wp9SolveProfiles = @('wp9-solve-pilot', 'wp9-solve')
 $script:Wp9LinuxProfiles = @('wp9-sizing', 'wp9-sizing-serial', 'wp9-solve-pilot', 'wp9-solve', 'wp9-diagnostic')
 # Profiles whose worker runs the read-only memory sampler.
 $script:Wp9SampledProfiles = @('wp9-solve-pilot', 'wp9-solve', 'wp9-diagnostic')
-$script:Wp9DiagnosticVariants = @('smoke', 'c0', 'd1', 'r0', 'r1', 'd4', 'd5', 'm1')
+# Checkpoint arms restart from the preserved Stage 2 rerun checkpoint (2026-11-10 investigation).
+$script:Wp9CheckpointArms = @('s2c', 'ptight', 'utight', 'trelax', 'urelax', 'ttight')
+$script:Wp9DiagnosticVariants = @('smoke', 'c0', 'd1', 'r0', 'r1', 'd4', 'd5', 'm1') + $script:Wp9CheckpointArms
 $script:VerificationScripts = Split-Path $PSScriptRoot -Parent
 $script:VerificationRepo = [IO.Path]::GetFullPath((Split-Path $script:VerificationScripts -Parent))
 # The fixed sizing environment is this checkout's own script, seen from WSL (C:\x -> /mnt/c/x).
@@ -55,9 +57,11 @@ function Get-VerificationWp9FixtureEnvironmentFile {
 }
 $script:VerificationRoot = Join-Path $script:VerificationRepo 'scratch/continuation'
 # Diagnostics read only the stopped Stage 2 case (its 16-way 12M mesh and fields),
-# except M1, which reads the remeshed case built by scripts/cfd/wp9-mesh-fix.sh.
+# except M1, which reads the remeshed case built by scripts/cfd/wp9-mesh-fix.sh,
+# and the checkpoint arms, which read the preserved, hash-listed rerun checkpoint.
 function Get-VerificationWp9DiagnosticSource([string]$Variant = '') {
     if ($Variant -ceq 'm1') { return [IO.Path]::GetFullPath((Join-Path $script:VerificationRepo 'scratch/wp9-diagnostics/mesh-fix-20261109/m1/case')) }
+    if ($Variant -cin $script:Wp9CheckpointArms) { return [IO.Path]::GetFullPath((Join-Path $script:VerificationRepo 'scratch/wp9-investigation-20261110/checkpoint/case')) }
     [IO.Path]::GetFullPath((Join-Path $script:VerificationRoot 'runs/wp9-solve-fastback-20261108-a/temp/vernon-cfd-98196-cfd.solve_steady-8/native/case'))
 }
 # R0, R1, D4 and D5 restart from the C0 diagnostic's written iteration 500 (same mesh).
@@ -289,7 +293,7 @@ function Set-VerificationWp9SolveEnvironment([string]$OutputDirectory, [Validate
     foreach ($key in $fixed.Keys) { [Environment]::SetEnvironmentVariable($key, $fixed[$key], 'Process') }
 }
 # Fixed settings of a turbulence diagnostic; the variant is the only choice.
-function Set-VerificationWp9DiagnosticEnvironment([string]$OutputDirectory, [ValidateSet('smoke', 'c0', 'd1', 'r0', 'r1', 'd4', 'd5', 'm1')][string]$Variant) {
+function Set-VerificationWp9DiagnosticEnvironment([string]$OutputDirectory, [ValidateSet('smoke', 'c0', 'd1', 'r0', 'r1', 'd4', 'd5', 'm1', 's2c', 'ptight', 'utight', 'trelax', 'urelax', 'ttight')][string]$Variant) {
     $outputPath = Join-Path $OutputDirectory 'diagnostic.json'
     Assert-VerificationOutputPath $outputPath
     $fixed = [ordered]@{
@@ -308,8 +312,15 @@ function Set-VerificationWp9DiagnosticEnvironment([string]$OutputDirectory, [Val
 }
 # A diagnostic completes with one executed test, one marker of its variant and a
 # matching row. It is screening evidence: never acceptance, never coefficients.
-function Test-VerificationWp9DiagnosticOutput([string]$Output, [string]$ErrorOutput = '', [string]$RowPath = '', [string]$Variant = '') {
+function Test-VerificationWp9DiagnosticOutput([string]$Output, [string]$ErrorOutput = '', [string]$RowPath = '', [string]$Variant = '', [string]$CheckpointManifest = '') {
     $shape = @{ smoke = @(4, 2); c0 = @(1000, 1); d1 = @(1000, 2); r0 = @(510, 1); r1 = @(1000, 1); d4 = @(1000, 1); d5 = @(1000, 1); m1 = @(1000, 1) }
+    if ($Variant -cin $script:Wp9CheckpointArms) {
+        # A checkpoint arm runs 500 iterations after its preserved checkpoint time.
+        if (-not $CheckpointManifest) { $CheckpointManifest = Join-Path (Get-VerificationWp9DiagnosticSource $Variant) 'vernon_checkpoint.json' }
+        try { $time = [int](Get-Content -Raw -LiteralPath $CheckpointManifest | ConvertFrom-Json -ErrorAction Stop).time } catch { return $false }
+        if ($time -le 0) { return $false }
+        $shape[$Variant] = @(($time + 500), 1)
+    }
     if (-not $shape.ContainsKey($Variant)) { return $false }
     $combined = $Output + "`n" + $ErrorOutput
     if ($combined -match '(?im)^\s*SKIPPED\b' -or

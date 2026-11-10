@@ -10,6 +10,9 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+pub mod arms;
+pub use arms::{Plan, Solution};
+
 /// One phase is one solver process. A scheme change only ever happens between
 /// processes, by restarting from a written time, never by editing a file that
 /// a running solver may re-read.
@@ -182,6 +185,21 @@ impl Variant {
         let phases = self.phases();
         let (first, last) = (phases[0].start + 1, phases.last().unwrap().end);
         if last == 1000 && first <= 501 { vec![(501, 1000), (751, 1000)] } else { vec![(first, last)] }
+    }
+
+    /// The run plan: production fvSolution and no extra monitors, so every
+    /// earlier variant stays reproducible.
+    pub fn plan(self) -> Plan {
+        Plan {
+            id: self.id(),
+            phases: self.phases(),
+            windows: self.windows(),
+            force_windows: self.force_windows(),
+            map_iterations: self.map_iterations(),
+            write_interval: self.write_interval(),
+            solution: Solution::Production,
+            monitors: false,
+        }
     }
 
     /// Solver-process limit: 40 s per iteration (measured 17) plus 30 minutes
@@ -989,5 +1007,7 @@ pub fn processor_dirs(case: &Path) -> std::io::Result<Vec<PathBuf>> {
     Ok(out.into_iter().map(|p| p.1).collect())
 }
 
+#[cfg(test)]
+mod arm_tests;
 #[cfg(test)]
 mod tests;

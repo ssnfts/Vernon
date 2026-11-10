@@ -392,6 +392,21 @@ foreach ($single in @('d5', 'm1')) {
 $d4Row['variant'] = 'r0'; $d4Row['iterations'] = 510
 Write-VerificationJson $diagPath $d4Row
 Assert-True (Test-VerificationWp9DiagnosticOutput $diagPassed $d4Marker.Replace('variant=d4', 'variant=r0').Replace('iterations=1000', 'iterations=510') $diagPath 'r0') 'an r0 restart check ends at 510'
+# Checkpoint arms: preserved rerun checkpoint, 500 iterations after its time.
+$armCase = Get-VerificationWp9DiagnosticSource 's2c'
+Assert-True ($armCase -like '*scratch*wp9-investigation-20261110*checkpoint*case' -and $armCase -cne (Get-VerificationWp9DiagnosticSource 'c0')) 'checkpoint arms read the preserved rerun checkpoint'
+$manifest = Join-Path $diagDirectory 'vernon_checkpoint.json'
+Write-VerificationJson $manifest ([ordered]@{ time = 2000 })
+foreach ($arm in @('s2c', 'ptight', 'utight', 'trelax', 'urelax', 'ttight')) {
+    Assert-VerificationWp9Input 'wp9-diagnostic' $sizingDistribution $sizingUser $solveEnvironment '' $arm
+    Assert-True ((Get-VerificationWp9DiagnosticSource $arm) -ceq $armCase -and $null -eq (Get-VerificationWp9DiagnosticStartSource $arm)) "$arm restarts from the checkpoint itself"
+    $d4Row['variant'] = $arm; $d4Row['iterations'] = 2500
+    Write-VerificationJson $diagPath $d4Row
+    $armMarker = "WP9_DIAGNOSTIC_COMPLETE variant=$arm iterations=2500 phases=1 np=16 instrumentation=checked acceptance_evidence=0"
+    Assert-True (Test-VerificationWp9DiagnosticOutput $diagPassed $armMarker $diagPath $arm $manifest) "$arm completes 500 iterations after checkpoint 2000"
+    Assert-True (-not (Test-VerificationWp9DiagnosticOutput $diagPassed $armMarker.Replace('2500', '3000') $diagPath $arm $manifest)) "$arm must end exactly 500 after the checkpoint"
+}
+Assert-True (-not (Test-VerificationWp9DiagnosticOutput $diagPassed $armMarker $diagPath 'ttight' (Join-Path $diagDirectory 'missing.json'))) 'an arm without a checkpoint manifest fails closed'
 Write-VerificationJson $diagPath $validDiagRow
 foreach ($badMarker in @('', $diagMarker.Replace('acceptance_evidence=0', 'acceptance_evidence=1'), $diagMarker.Replace('iterations=1000', 'iterations=999'), $diagMarker.Replace('phases=2', 'phases=1'), $diagMarker.Replace('instrumentation=checked', 'instrumentation=skipped'), ($diagMarker + "`n" + $diagMarker), ($diagMarker + "`nWP9_REPLICATION_SOLVE_COMPLETE x"), ('note ' + $diagMarker))) {
     Assert-True (-not (Test-VerificationWp9DiagnosticOutput $diagPassed $badMarker $diagPath 'd1')) 'only one exact diagnostic marker matching the variant qualifies'
