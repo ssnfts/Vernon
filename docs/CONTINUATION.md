@@ -6,6 +6,45 @@ Sections are newest first. Older sections use the original machine's paths
 (C:\Users\mabdu\REA\...) and the old flat scripts/ layout, and are kept as
 evidence. For current commands use docs/SETUP.md and docs/CFD-RUNBOOK.md.
 
+## WP9 D5 adopted; Stage 2 rerun launched (user: "investigate, adopt and rerun"), 2026-11-10
+
+- **Investigation** (existing histories; details in the diagnostics plan):
+  - The Cd oscillation is body pressure drag: 89–100% of the variance.
+  - It is stationary through Stage 2's 2546 iterations: Cd SD 0.007–0.011
+    in every 250-iteration window, with no decay.
+  - It is quasi-periodic, with periods of 50–90 iterations. This is a
+    steady-solver limit cycle around the separated wake, and D5 does not
+    change it.
+- **Gate check on Stage 2's last 2000 iterations**, with the
+  `iteration_gate` formulas:
+  - Cd window change 0.61% (limit 0.2%); drift 1.76% (limit 0.1%);
+  - residual RMS p 1.6e-3, U up to 2.0e-2, k 2.2e-4, omega 4.1e-4
+    (limit 1e-5).
+  - D5's residuals are of the same size. **Expected outcome: "not
+    converged"**, to be reported as such if it happens.
+- **Remaining clipped cells:** the underside of the nose's front edge
+  (x 0–0.06, z ≈ 0.20) and the front wheel's lower front.
+- **Adopted** in 29ddb55:
+  - Change: the steady `fv_schemes` has `grad(k)` and `grad(omega)` set to
+    `cellLimited Gauss linear 1`. The DDES recipe is unchanged.
+  - Test: `case::tests::steady_recipe_limits_the_velocity_and_turbulence_gradients`,
+    observed failing first.
+  - Crate: 373 passed. Workspace: 1655 passed, 0 failed. Clippy clean.
+- **Stage 2 rerun** `wp9-solve-fastback-20261110-a`:
+  - Started 2026-11-10T00:22:51Z from 29ddb55 on a clean tree, profile
+    `wp9-solve`, sourceBefore 3dbd5412….
+  - Expected end: about 2026-11-11 13:00–15:00Z (remesh about 40 min, then
+    7000 iterations at about 18.6 s/it). The outer bound expires
+    2026-11-12 00:22Z.
+  - Pre-flight: on AC; sleep on AC "never" (read only); E: 539 GB free;
+    host 22 GB free.
+  - **Do not edit scripts/, crates/, Cargo.*, AGENTS.md or CLEAN_ROOM.md
+    while it runs.**
+  - To check: `verification-status.ps1 -RunId wp9-solve-fastback-20261110-a`.
+  - When it ends: verify from the artifacts and report Cd against 0.275 ± 5%
+    and the convergence gate exactly as they come out. Stage 3 runs only if
+    the gates pass.
+
 ## WP9 D5 completed: limited k/omega gradients remove ~93–95% of clipping, 2026-11-09
 
 - **D5** `wp9-diag-d5-20261110-a`: completed, exit 0, 21:10Z–23:52Z.
