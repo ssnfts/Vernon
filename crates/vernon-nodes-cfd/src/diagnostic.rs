@@ -195,6 +195,7 @@ impl Variant {
             phases: self.phases(),
             windows: self.windows(),
             force_windows: self.force_windows(),
+            gate_span: None,
             map_iterations: self.map_iterations(),
             write_interval: self.write_interval(),
             solution: Solution::Production,

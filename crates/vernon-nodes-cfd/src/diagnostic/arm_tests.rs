@@ -209,3 +209,60 @@ fn a_preserved_checkpoint_is_complete_and_tamper_evident() {
     assert!(checkpoint_files(&from, 2000).unwrap_err().contains("16"));
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// The extension of the best arm: U relaxation 0.7, 100 settle iterations and
+/// then 2000 samples, scored as two adjacent 1000-sample gate windows.
+#[test]
+fn the_extended_arm_is_urelax_over_two_gate_windows() {
+    let arm = Arm::parse("urelax2k").unwrap();
+    assert_eq!(arm, Arm::URelaxExtended);
+    assert_eq!(arm.solution(), Arm::URelax.solution(), "same single change as the screened arm");
+    assert!(!Arm::ALL.contains(&arm), "the matched 500-iteration set is unchanged");
+    let p = arm.plan(2000);
+    assert_eq!(p.id, "urelax2k");
+    assert_eq!(p.phases, vec![Phase { start: 2000, end: 4100, schemes: Schemes::Production }]);
+    assert_eq!(p.windows, vec![(2001, 2100), (2101, 3100), (3101, 4100), (3851, 4100)]);
+    assert_eq!(p.force_windows, vec![(2101, 3100), (3101, 4100)]);
+    assert_eq!(p.gate_span, Some((2101, 4100)));
+    assert_eq!(p.map_iterations, vec![2001, 2010, 2050, 2100, 2250, 2500, 3100, 4100]);
+    assert_eq!(4100 % p.write_interval, 0, "the extension ends on a write time");
+    assert!(p.monitors);
+    for a in Arm::ALL {
+        assert_eq!(a.plan(2000).gate_span, None, "{}: screening arms are not gate-scored", a.id());
+    }
+}
+
+/// The gate the extension is scored with is the protocol's acceptance gate.
+#[test]
+fn extended_gate_uses_the_protocol_acceptance() {
+    let baseline: serde_json::Value = serde_json::from_str(include_str!("../../../../docs/research/wp9-replication-baseline-v1.json")).unwrap();
+    let a = &baseline["acceptance"];
+    assert_eq!(GATE_SPEC.window as u64, a["window_samples"].as_u64().unwrap());
+    assert_eq!(2 * GATE_SPEC.window as u64, a["minimum_samples"].as_u64().unwrap());
+    assert_eq!(GATE_SPEC.tol_pct, a["maximum_window_change_pct"].as_f64().unwrap());
+    assert_eq!(GATE_SPEC.drift_limit_pct, a["maximum_drift_pct"].as_f64().unwrap());
+    assert_eq!(GATE_SPEC.residual_target, a["maximum_sst_residual_rms"].as_f64().unwrap());
+    let spec = GATE_SPEC;
+    assert!(spec.require_residuals, "complete residual histories are required");
+    assert_eq!(GATE_SPEC.sd_limit_pct, 0.5, "scatter is a flag, not a gate");
+}
+
+#[test]
+fn extended_gate_scores_with_the_production_iteration_gate() {
+    let n = 2 * GATE_SPEC.window;
+    let flat = vec![0.28; n];
+    let small = vec![1e-6; n];
+    let res = |v: &Vec<f64>| vec![("p", v.clone()), ("U", v.clone()), ("k", v.clone()), ("omega", v.clone())];
+    let g = gate_assessment(&flat, &res(&small)).unwrap();
+    assert!(g.converged && g.residuals_checked && g.window == GATE_SPEC.window && g.iterations == n, "{g:?}");
+    // A 1% step between the windows fails the window-change limit.
+    let step: Vec<f64> = (0..n).map(|i| if i < GATE_SPEC.window { 0.28 } else { 0.2828 }).collect();
+    let g = gate_assessment(&step, &res(&small)).unwrap();
+    assert!(!g.converged && g.window_diff_pct > GATE_SPEC.tol_pct, "{g:?}");
+    // Residuals above target fail even with a flat coefficient.
+    let g = gate_assessment(&flat, &res(&vec![1e-3; n])).unwrap();
+    assert!(!g.converged && !g.residuals_ok, "{g:?}");
+    // A missing field or a wrong length is refused, never scored.
+    assert!(gate_assessment(&flat, &res(&small)[..3]).is_err());
+    assert!(gate_assessment(&flat[1..], &res(&small)).is_err());
+}

@@ -7,11 +7,19 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use super::{fnv1a_file, Phase, Schemes};
+use crate::coeffs::{iteration_gate, ConvSpec, Convergence};
+use crate::types::Series;
 
 /// Iterations each arm runs after the checkpoint.
 pub const ARM_ITERATIONS: u32 = 500;
 /// Restarted iterations excluded from comparisons (restarts are not bit-exact).
 pub const ARM_SETTLE: u32 = 100;
+/// Iterations of the extension of the best arm: the settle iterations, then
+/// two adjacent gate windows.
+pub const EXTENDED_ITERATIONS: u32 = ARM_SETTLE + 2 * GATE_SPEC.window as u32;
+/// The production iteration gate (`coeffs::derive_force_qualification`) with
+/// the protocol acceptance of docs/research/wp9-replication-baseline-v1.json.
+pub const GATE_SPEC: ConvSpec = ConvSpec { window: 1000, tol_pct: 0.2, drift_limit_pct: 0.1, sd_limit_pct: 0.5, residual_target: 1e-5, require_residuals: true };
 /// Open boundaries whose flux must balance (walls and the symmetry plane carry none).
 pub const OPEN_PATCHES: [&str; 4] = ["inlet", "outlet", "top", "side"];
 /// Fields every rank must hold at the checkpoint time.
@@ -32,10 +40,15 @@ pub enum Arm {
     URelax,
     /// k and omega `relTol` 0.1 -> 0.01; U unchanged (conditional arm).
     TTight,
+    /// The U-relaxation arm extended to two gate windows after its settle.
+    URelaxExtended,
 }
 
 impl Arm {
+    /// The matched 500-iteration screening arms.
     pub const ALL: [Arm; 6] = [Arm::Control, Arm::PTight, Arm::UTight, Arm::TRelax, Arm::URelax, Arm::TTight];
+    /// Extensions of a screened arm, scored with the production gate.
+    pub const EXTENDED: [Arm; 1] = [Arm::URelaxExtended];
 
     pub fn id(self) -> &'static str {
         match self {
@@ -45,11 +58,12 @@ impl Arm {
             Self::TRelax => "trelax",
             Self::URelax => "urelax",
             Self::TTight => "ttight",
+            Self::URelaxExtended => "urelax2k",
         }
     }
 
     pub fn parse(text: &str) -> Result<Self, String> {
-        Self::ALL.into_iter().find(|a| a.id() == text).ok_or_else(|| format!("unknown checkpoint arm '{text}'"))
+        Self::ALL.into_iter().chain(Self::EXTENDED).find(|a| a.id() == text).ok_or_else(|| format!("unknown checkpoint arm '{text}'"))
     }
 
     pub fn solution(self) -> Solution {
@@ -58,13 +72,30 @@ impl Arm {
             Self::PTight => Solution::PressureRelTol,
             Self::UTight => Solution::VelocityRelTol,
             Self::TRelax => Solution::TurbulenceRelaxation,
-            Self::URelax => Solution::VelocityRelaxation,
+            Self::URelax | Self::URelaxExtended => Solution::VelocityRelaxation,
             Self::TTight => Solution::TurbulenceRelTol,
         }
     }
 
     /// One solver process from the checkpoint, the rerun's own schemes.
     pub fn plan(self, checkpoint: u32) -> Plan {
+        if self == Self::URelaxExtended {
+            let start = checkpoint;
+            let settled = start + ARM_SETTLE + 1;
+            let middle = settled + GATE_SPEC.window as u32;
+            let end = start + EXTENDED_ITERATIONS;
+            return Plan {
+                id: self.id(),
+                phases: vec![Phase { start, end, schemes: Schemes::Production }],
+                windows: vec![(start + 1, start + ARM_SETTLE), (settled, middle - 1), (middle, end), (end - 249, end)],
+                force_windows: vec![(settled, middle - 1), (middle, end)],
+                gate_span: Some((settled, end)),
+                map_iterations: [1, 10, 50, 100, 250, 500, 1100, EXTENDED_ITERATIONS].iter().map(|i| start + i).collect(),
+                write_interval: 820,
+                solution: self.solution(),
+                monitors: true,
+            };
+        }
         let (start, end) = (checkpoint, checkpoint + ARM_ITERATIONS);
         let settled = start + ARM_SETTLE + 1;
         let tail = end - 249;
@@ -73,6 +104,7 @@ impl Arm {
             phases: vec![Phase { start, end, schemes: Schemes::Production }],
             windows: vec![(start + 1, start + ARM_SETTLE), (settled, end), (tail, end)],
             force_windows: vec![(settled, end), (tail, end)],
+            gate_span: None,
             map_iterations: [1, 10, 50, 100, 250, 500].iter().map(|i| start + i).collect(),
             write_interval: 250,
             solution: self.solution(),
@@ -88,6 +120,8 @@ pub struct Plan {
     pub phases: Vec<Phase>,
     pub windows: Vec<(u32, u32)>,
     pub force_windows: Vec<(u32, u32)>,
+    /// Iterations scored with the production gate (two adjacent windows).
+    pub gate_span: Option<(u32, u32)>,
     pub map_iterations: Vec<u32>,
     pub write_interval: u32,
     pub solution: Solution,
@@ -572,4 +606,28 @@ pub fn verify_checkpoint(case: &Path) -> Result<u32, String> {
         }
     }
     Ok(time)
+}
+
+/// Score a coefficient history and its residual histories (the worst
+/// initial residual per iteration, U = worst component) with the production
+/// iteration gate. Exactly two gate windows of p, U, k and omega are required.
+pub fn gate_assessment(cd: &[f64], residuals: &[(&str, Vec<f64>)]) -> Result<Convergence, String> {
+    let n = 2 * GATE_SPEC.window;
+    if cd.len() != n {
+        return Err(format!("the gate needs exactly {n} samples, got {}", cd.len()));
+    }
+    let mut series = Series { time: (1..=n).map(|i| i as f64).collect(), ..Default::default() };
+    series.columns.insert("Cd".into(), cd.to_vec());
+    for field in ["p", "U", "k", "omega"] {
+        let r = residuals.iter().find(|(f, _)| *f == field).ok_or_else(|| format!("no {field} residual history"))?;
+        if r.1.len() != n {
+            return Err(format!("{field} residuals: {} samples, expected {n}", r.1.len()));
+        }
+        series.columns.insert(format!("res_{field}"), r.1.clone());
+    }
+    let g = iteration_gate(&series, "Cd", &GATE_SPEC)?;
+    if !(g.enough_iterations && g.residuals_checked && g.window == GATE_SPEC.window) {
+        return Err("the gate did not score two full windows of every field".into());
+    }
+    Ok(g)
 }

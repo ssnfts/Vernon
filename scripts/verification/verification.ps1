@@ -18,12 +18,18 @@ param(
     [ValidateSet('build', 'tests', 'clippy', 'demo', 'catalogue', 'clean-tests', 'wp6-release', 'wp8-real', 'wp9-tests', 'wp9-perf-tests', 'wp9-extproc', 'wp9-wsl', 'wp9-native', 'wp9-geometry', 'wp9-sizing', 'wp9-solve', 'wp9-diagnostic', 'first', 'failure', 'must-not-run', 'second', 'wait', 'orphan', 'hold')][string]$StepName = 'first'
 )
 $ErrorActionPreference = 'Stop'
-# Outer bounds: sizing and the solver pilot six hours, the protocol solve 48 hours.
-function Get-VerificationDefaultJobTimeout([string]$Name) {
+# Outer bounds: sizing and the solver pilot six hours, the protocol solve 48 hours,
+# a diagnostic eight hours except the 2100-iteration arm extension (fourteen).
+$script:Wp9ExtendedArms = @('urelax2k')
+function Get-VerificationWp9DiagnosticBound([string]$Variant) {
+    if ($Variant -cin $script:Wp9ExtendedArms) { return 50400 }
+    return 28800
+}
+function Get-VerificationDefaultJobTimeout([string]$Name, [string]$Variant = $env:VERNON_DIAG_VARIANT) {
     switch ($Name) {
         { $_ -in @('wp9-sizing', 'wp9-sizing-serial', 'wp9-solve-pilot') } { return 21600 }
         'wp9-solve' { return 172800 }
-        'wp9-diagnostic' { return 28800 }
+        'wp9-diagnostic' { return Get-VerificationWp9DiagnosticBound $Variant }
         default { return 7200 }
     }
 }
@@ -33,7 +39,7 @@ $script:Wp9LinuxProfiles = @('wp9-sizing', 'wp9-sizing-serial', 'wp9-solve-pilot
 # Profiles whose worker runs the read-only memory sampler.
 $script:Wp9SampledProfiles = @('wp9-solve-pilot', 'wp9-solve', 'wp9-diagnostic')
 # Checkpoint arms restart from the preserved Stage 2 rerun checkpoint (2026-11-10 investigation).
-$script:Wp9CheckpointArms = @('s2c', 'ptight', 'utight', 'trelax', 'urelax', 'ttight')
+$script:Wp9CheckpointArms = @('s2c', 'ptight', 'utight', 'trelax', 'urelax', 'ttight', 'urelax2k')
 $script:Wp9DiagnosticVariants = @('smoke', 'c0', 'd1', 'r0', 'r1', 'd4', 'd5', 'm1') + $script:Wp9CheckpointArms
 $script:VerificationScripts = Split-Path $PSScriptRoot -Parent
 $script:VerificationRepo = [IO.Path]::GetFullPath((Split-Path $script:VerificationScripts -Parent))
@@ -249,12 +255,12 @@ function Assert-VerificationResumeInput([string]$Name, [string]$PreviousRun) {
         throw 'External/data checks must execute afresh; prior results cannot be reused.'
     }
 }
-function Assert-VerificationJobTimeout([string]$Name, [int]$Seconds) {
+function Assert-VerificationJobTimeout([string]$Name, [int]$Seconds, [string]$Variant = $env:VERNON_DIAG_VARIANT) {
     if ($Seconds -lt 1) { throw 'The outer deadline must be positive.' }
     if ($Name -in @('wp9-sizing', 'wp9-sizing-serial') -and $Seconds -gt 21600) { throw 'Sizing permits a positive outer deadline of at most 21600 seconds (six hours).' }
     if ($Name -eq 'wp9-solve-pilot' -and $Seconds -gt 21600) { throw 'The solver pilot permits an outer deadline of at most 21600 seconds (six hours).' }
     if ($Name -eq 'wp9-solve' -and $Seconds -gt 172800) { throw 'The protocol solve permits an outer deadline of at most 172800 seconds (48 hours).' }
-    if ($Name -eq 'wp9-diagnostic' -and $Seconds -gt 28800) { throw 'A diagnostic permits an outer deadline of at most 28800 seconds (eight hours).' }
+    if ($Name -eq 'wp9-diagnostic' -and $Seconds -gt (Get-VerificationWp9DiagnosticBound $Variant)) { throw "Diagnostic '$Variant' permits an outer deadline of at most $(Get-VerificationWp9DiagnosticBound $Variant) seconds (eight hours; the arm extension fourteen)." }
     if ($Name -notin $script:Wp9SolveProfiles -and $Seconds -gt 86400) { throw 'Only the solve profiles may run longer than one day.' }
 }
 function Set-VerificationWp9SizingEnvironment([string]$OutputDirectory, [ValidateSet(1,2)][int]$Processes = 2) {
@@ -293,7 +299,7 @@ function Set-VerificationWp9SolveEnvironment([string]$OutputDirectory, [Validate
     foreach ($key in $fixed.Keys) { [Environment]::SetEnvironmentVariable($key, $fixed[$key], 'Process') }
 }
 # Fixed settings of a turbulence diagnostic; the variant is the only choice.
-function Set-VerificationWp9DiagnosticEnvironment([string]$OutputDirectory, [ValidateSet('smoke', 'c0', 'd1', 'r0', 'r1', 'd4', 'd5', 'm1', 's2c', 'ptight', 'utight', 'trelax', 'urelax', 'ttight')][string]$Variant) {
+function Set-VerificationWp9DiagnosticEnvironment([string]$OutputDirectory, [ValidateSet('smoke', 'c0', 'd1', 'r0', 'r1', 'd4', 'd5', 'm1', 's2c', 'ptight', 'utight', 'trelax', 'urelax', 'ttight', 'urelax2k')][string]$Variant) {
     $outputPath = Join-Path $OutputDirectory 'diagnostic.json'
     Assert-VerificationOutputPath $outputPath
     $fixed = [ordered]@{
@@ -315,11 +321,12 @@ function Set-VerificationWp9DiagnosticEnvironment([string]$OutputDirectory, [Val
 function Test-VerificationWp9DiagnosticOutput([string]$Output, [string]$ErrorOutput = '', [string]$RowPath = '', [string]$Variant = '', [string]$CheckpointManifest = '') {
     $shape = @{ smoke = @(4, 2); c0 = @(1000, 1); d1 = @(1000, 2); r0 = @(510, 1); r1 = @(1000, 1); d4 = @(1000, 1); d5 = @(1000, 1); m1 = @(1000, 1) }
     if ($Variant -cin $script:Wp9CheckpointArms) {
-        # A checkpoint arm runs 500 iterations after its preserved checkpoint time.
+        # A checkpoint arm runs 500 iterations after its preserved checkpoint time,
+        # the extension 2100 (100 settle and two 1000-sample gate windows).
         if (-not $CheckpointManifest) { $CheckpointManifest = Join-Path (Get-VerificationWp9DiagnosticSource $Variant) 'vernon_checkpoint.json' }
         try { $time = [int](Get-Content -Raw -LiteralPath $CheckpointManifest | ConvertFrom-Json -ErrorAction Stop).time } catch { return $false }
         if ($time -le 0) { return $false }
-        $shape[$Variant] = @(($time + 500), 1)
+        $shape[$Variant] = @(($time + $(if ($Variant -cin $script:Wp9ExtendedArms) { 2100 } else { 500 })), 1)
     }
     if (-not $shape.ContainsKey($Variant)) { return $false }
     $combined = $Output + "`n" + $ErrorOutput

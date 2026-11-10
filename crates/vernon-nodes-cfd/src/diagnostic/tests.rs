@@ -1022,5 +1022,15 @@ fn arm_windows(case: &Path, full_log: &str, plan: &Plan) -> serde_json::Value {
             })
         })
         .collect();
-    serde_json::json!({ "statistic": "sample standard deviation (n-1); drift = fitted slope x n / |mean| (coeffs::window_stats)", "windows": windows })
+    // An extension is also scored with the production gate over its two
+    // adjacent windows: screening evidence of stationarity, never acceptance.
+    let gate = plan.gate_span.map(|(a, b)| {
+        every_iteration(&worst, a, b, "gate residuals");
+        let its: Vec<u32> = (a..=b).collect();
+        let cd: Vec<f64> = its.iter().map(|i| coeffs[i][0]).collect();
+        let residuals: Vec<(&str, Vec<f64>)> = ["p", "U", "k", "omega"].iter().map(|f| (*f, its.iter().map(|i| worst[i][*f]).collect())).collect();
+        let g = gate_assessment(&cd, &residuals).unwrap_or_else(|e| panic!("production gate: {e}"));
+        serde_json::json!({ "first": a, "last": b, "column": "Cd", "spec": { "window": GATE_SPEC.window, "tol_pct": GATE_SPEC.tol_pct, "drift_limit_pct": GATE_SPEC.drift_limit_pct, "sd_limit_pct": GATE_SPEC.sd_limit_pct, "residual_target": GATE_SPEC.residual_target }, "result": g })
+    });
+    serde_json::json!({ "statistic": "sample standard deviation (n-1); drift = fitted slope x n / |mean| (coeffs::window_stats)", "windows": windows, "production_gate": gate })
 }

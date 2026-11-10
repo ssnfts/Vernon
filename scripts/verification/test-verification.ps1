@@ -407,6 +407,22 @@ foreach ($arm in @('s2c', 'ptight', 'utight', 'trelax', 'urelax', 'ttight')) {
     Assert-True (-not (Test-VerificationWp9DiagnosticOutput $diagPassed $armMarker.Replace('2500', '3000') $diagPath $arm $manifest)) "$arm must end exactly 500 after the checkpoint"
 }
 Assert-True (-not (Test-VerificationWp9DiagnosticOutput $diagPassed $armMarker $diagPath 'ttight' (Join-Path $diagDirectory 'missing.json'))) 'an arm without a checkpoint manifest fails closed'
+# The extension of the best arm: 2100 iterations after the checkpoint (100 settle + two
+# 1000-sample gate windows), the only diagnostic allowed a fourteen-hour outer bound.
+Assert-VerificationWp9Input 'wp9-diagnostic' $sizingDistribution $sizingUser $solveEnvironment '' 'urelax2k'
+Assert-True ((Get-VerificationWp9DiagnosticSource 'urelax2k') -ceq $armCase -and $null -eq (Get-VerificationWp9DiagnosticStartSource 'urelax2k')) 'the extension restarts from the checkpoint itself'
+$d4Row['variant'] = 'urelax2k'; $d4Row['iterations'] = 4100
+Write-VerificationJson $diagPath $d4Row
+$extMarker = 'WP9_DIAGNOSTIC_COMPLETE variant=urelax2k iterations=4100 phases=1 np=16 instrumentation=checked acceptance_evidence=0'
+Assert-True (Test-VerificationWp9DiagnosticOutput $diagPassed $extMarker $diagPath 'urelax2k' $manifest) 'the extension completes 2100 iterations after checkpoint 2000'
+Assert-True (-not (Test-VerificationWp9DiagnosticOutput $diagPassed $extMarker.Replace('4100', '2500') $diagPath 'urelax2k' $manifest)) 'the extension must not stop at the screening length'
+Assert-True ((Get-VerificationDefaultJobTimeout 'wp9-diagnostic' 'urelax2k') -eq 50400 -and (Get-VerificationDefaultJobTimeout 'wp9-diagnostic' 'urelax') -eq 28800 -and (Get-VerificationDefaultJobTimeout 'wp9-diagnostic' '') -eq 28800) 'only the extension defaults to fourteen hours'
+Assert-VerificationJobTimeout 'wp9-diagnostic' 50400 'urelax2k'
+foreach ($case in @(@(50401, 'urelax2k'), @(28801, 'urelax'), @(28801, 's2c'), @(28801, ''))) {
+    $rejected = $false
+    try { Assert-VerificationJobTimeout 'wp9-diagnostic' $case[0] $case[1] } catch { $rejected = $true }
+    Assert-True $rejected "diagnostic bound $($case[0]) s for variant '$($case[1])' is refused"
+}
 Write-VerificationJson $diagPath $validDiagRow
 foreach ($badMarker in @('', $diagMarker.Replace('acceptance_evidence=0', 'acceptance_evidence=1'), $diagMarker.Replace('iterations=1000', 'iterations=999'), $diagMarker.Replace('phases=2', 'phases=1'), $diagMarker.Replace('instrumentation=checked', 'instrumentation=skipped'), ($diagMarker + "`n" + $diagMarker), ($diagMarker + "`nWP9_REPLICATION_SOLVE_COMPLETE x"), ('note ' + $diagMarker))) {
     Assert-True (-not (Test-VerificationWp9DiagnosticOutput $diagPassed $badMarker $diagPath 'd1')) 'only one exact diagnostic marker matching the variant qualifies'
