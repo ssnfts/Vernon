@@ -332,6 +332,54 @@ D5 vs R1 (the restart control), 501–1000:
   `fv_schemes`) and a new protocol run with the intended schemes from
   iteration 0. Stage 3 stays blocked.
 
+### Investigation after D5 (user: "investigate, adopt and rerun", 2026-11-10)
+
+This uses existing histories only: Stage 2 (iterations 1–2546), C0, R1 and D5.
+
+**Force oscillation:**
+- **Body pressure drag.** It carries 89–100% of the Cd variance in every
+  run. Body viscous drag and the wheels contribute almost nothing; the front
+  wheel's pressure drag contributes up to 12%.
+- **Stationary.** Over Stage 2's 501–2546, in 250-iteration windows, the
+  mean stays at 0.273–0.279 and the SD at 0.0073–0.0114. There is no decay
+  and no growth.
+- **Quasi-periodic.** The autocorrelation is 0.84 at lag 5 and about 0 at
+  lag 20. The spectrum is broadband, with peaks at periods of 50–55 (C0, R1)
+  and 90 iterations (Stage 2 late). This is the usual limit cycle of a steady
+  SIMPLE solution around a separated wake. It is not a numerical blow-up.
+- **D5 does not change it.** Cd SD is 0.0087 vs R1's 0.0099, and the same
+  body-pressure share.
+
+**Stage 2's last 2000 iterations, scored with the `iteration_gate` formulas**
+(window 1000; windows 547–1546 and 1547–2546):
+
+| Check | Value | Limit |
+|---|---|---|
+| Cd window-to-window change | 0.61% | 0.2% |
+| Cd drift | 1.76% and 0.17% | 0.1% |
+| Residual RMS, p | 1.6e-3 | 1e-5 |
+| Residual RMS, Ux / Uy / Uz | 7.5e-4 / 8.8e-3 / 2.0e-2 | 1e-5 |
+| Residual RMS, k | 2.2e-4 | 1e-5 |
+| Residual RMS, omega | 4.1e-4 | 1e-5 |
+
+D5's residual RMS is of the same size (U 2.1e-2, p 1.7e-3, k 2.5e-4,
+omega 7.1e-5). The residual gate is 2–3 orders of magnitude away, and D5
+does not close that gap. **Expected outcome of the rerun: "not converged".**
+It is still the first protocol history with the intended schemes from
+iteration 0, and the first to reach 7000 iterations.
+
+**Remaining clipped cells (D5 worst-cell records, 751–1000):**
+- the underside of the nose's front edge (x 0–0.06, y 0.09–0.45,
+  z ≈ 0.20–0.21, wall distance about 3–8 mm);
+- the front wheel's lower front (x ≈ 0.53, z 0.14–0.16).
+
+**Adopted.** `fv_schemes` (the steady recipe) now limits `grad(k)` and
+`grad(omega)` with `cellLimited Gauss linear 1`. The test
+`case::tests::steady_recipe_limits_the_velocity_and_turbulence_gradients`
+was observed failing first. The DDES recipe is unchanged. The diagnostic
+harness still uses Stage 2's own copied fvSchemes, so C0, R1 and D5 stay
+reproducible.
+
 1. If D1 removes the startup blow-up and clipping stays rare after the switch
    back to `limitedLinear`: implement the specified startup in `fv_schemes`
    (production recipe, test first), then plan a new full protocol run.
