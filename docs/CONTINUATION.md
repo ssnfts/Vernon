@@ -54,9 +54,19 @@ evidence. For current commands use docs/SETUP.md and docs/CFD-RUNBOOK.md.
   fixed in advance with a 15 CTU cap, shape comparison as tolerances),
   dropped the global maxCo 0.5 option, and added during-run outputs and
   presentation rules.
-  - Waiting on the user's decisions: baseline v2 (revised), the steady
-    force-based route (open conflict), first production run (open conflict),
-    compute, scope.
+  - Revision 3 (same day) records the user's decisions: **this PC**; the
+    **first production run under v2 is the 25° slant body in DDES** on the
+    existing ~2.0M-cell grid (hours, known answer, G25 evidence, full gate
+    rehearsal), not a car grid. It adds a combined schedule for everything
+    WP9 still owes (plan section 7: all code first, slant-body rehearsal,
+    probe B, steady Estate/Notchback as DDES start fields and trend
+    ordering, fine Fastback, coarse grids, then Estate and Notchback; about
+    6–11 weeks to a certified Fastback with its grid study, 3–5.5 months for
+    the three-shape protocol) and a vehicle-scope section (section 8: what
+    is on disk, two tiers, and three open-dataset additions that each need
+    the user's download OK).
+  - Still waiting on the user: baseline v2 as revised, the steady
+    force-based route (open conflict), and the download list.
   - Nothing has been launched. No gate was changed and no failed run was
     relabelled.
 
