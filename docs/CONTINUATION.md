@@ -6,6 +6,52 @@ Sections are newest first. Older sections use the original machine's paths
 (C:\Users\mabdu\REA\...) and the old flat scripts/ layout, and are kept as
 evidence. For current commands use docs/SETUP.md and docs/CFD-RUNBOOK.md.
 
+## WP9 Stage 2 investigation: steady gate unreachable; DDES route planned (2026-11-10 to 11)
+
+- **Stage 2 rerun** `wp9-solve-fastback-20261110-a`:
+  - Stopped at iteration 2020 on the stop rule at 2000 (`cancelled`, exit
+    130).
+  - The production gate over 17–1016 / 1017–2016 fails on every criterion:
+    window change 2.15%, drift 17.1%, residual RMS p 1.64e-3 and U 2.08e-2.
+  - The checkpoint at 2000 is preserved, with hashes, in
+    `scratch/wp9-investigation-20261110/checkpoint`.
+- **Checkpoint arms**, all diagnostics, none a Stage 2 result:
+  - Code: commit 625a5b2 adds the arms, 0ce43d0 the extension arm.
+  - Tests: crate 386 passed, clippy clean, 8 runner scenarios pass.
+  - **`s2c` (control):** restart variability is p ±4%, U ±12%, Cd SD
+    0.0073–0.0101.
+  - **`ptight` (p relTol 0.01):** refuted. U residual ×1.24 and Cd SD ×1.08.
+  - **`urelax` (U relaxation 0.7):** U residual ×0.32 and Cd SD ×0.46, but
+    the Cd mean moved from 0.2758 to 0.2870 and kept drifting.
+  - **`urelax2k`:** stopped by the user at about iteration 2920 (`cancelled`,
+    exit 130, source unchanged) once Cd had settled at 0.2854 for about 800
+    iterations. The residuals were unchanged (U 6.1e-3, p 1.6e-3).
+  - Launcher note: the launcher's 30-second check always reports "has not
+    published status", but the worker publishes at about 80 s, so this is
+    harmless. An earlier stray smoke launch was refused by the lock and left
+    only a launch log.
+- **Residual map:**
+  - Run as a diagnostic outside the runner: 30 production iterations from the
+    checkpoint, writing per-cell residuals.
+  - The plateau is spread over many cells, not a few: the worst 1% of cells
+    hold only 32–46% of it.
+  - U and k peak in the near wake, on good cells. p and omega peak at the
+    front wheel and near-wall layers, where the mesh is poorer, but that is a
+    minor share.
+  - **Conclusion:** the steady gate's 1e-5 target is out of reach for this
+    case. No mesh, scheme or relaxation change gives the 2–3 orders of
+    magnitude needed.
+- **DDES timing probe** (diagnostic, recipe defaults, 50 steps):
+  - Peak Courant 4.24 at Δt 1e-4 s, so maxCo 0.5 needs Δt ≈ 1.18e-5 s.
+  - 32 s per step; 18.8 GB resident.
+  - That works out to about 72 days per 8-convective-unit run at the recipe
+    default.
+- **Plan:** [docs/research/wp9-ddes-route-plan.md](research/wp9-ddes-route-plan.md).
+  - Waiting on the user's decisions: baseline v2 transient acceptance,
+    time-step policy, compute, scope.
+  - Nothing has been launched. No gate was changed and no failed run was
+    relabelled.
+
 ## WP9 D5 adopted; Stage 2 rerun launched (user: "investigate, adopt and rerun"), 2026-11-10
 
 - **Investigation** (existing histories; details in the diagnostics plan):
