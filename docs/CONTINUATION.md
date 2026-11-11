@@ -46,9 +46,17 @@ evidence. For current commands use docs/SETUP.md and docs/CFD-RUNBOOK.md.
   - 32 s per step; 18.8 GB resident.
   - That works out to about 72 days per 8-convective-unit run at the recipe
     default.
-- **Plan:** [docs/research/wp9-ddes-route-plan.md](research/wp9-ddes-route-plan.md).
-  - Waiting on the user's decisions: baseline v2 transient acceptance,
-    time-step policy, compute, scope.
+- **Plan:** [docs/research/wp9-ddes-route-plan.md](research/wp9-ddes-route-plan.md),
+  revision 2 after a three-perspective review (engineering, racing,
+  aesthetics; plan section 6). The review rewrote the draft v2 acceptance
+  (significant-and-large trend and halves tests, per-step residual
+  reduction instead of absolute limits, a required Δt/2 segment, a stop rule
+  fixed in advance with a 15 CTU cap, shape comparison as tolerances),
+  dropped the global maxCo 0.5 option, and added during-run outputs and
+  presentation rules.
+  - Waiting on the user's decisions: baseline v2 (revised), the steady
+    force-based route (open conflict), first production run (open conflict),
+    compute, scope.
   - Nothing has been launched. No gate was changed and no failed run was
     relabelled.
 
