@@ -4,6 +4,7 @@
 | Document | For |
 |---|---|
 | [../README.md](../README.md) | What Vernon does, step by step, and how to build it |
+| [PLAN.md](PLAN.md) | The project plan: goal, intended users, the free-software landscape, local-AI roadmap, road to a release |
 | [SETUP.md](SETUP.md) | A new Windows PC: toolchain, build, WSL/OpenFOAM, DrivAer data |
 | [CFD-RUNBOOK.md](CFD-RUNBOOK.md) | The next CFD validation stages (0–3) and their run commands |
 | [AI and machine plan](superpowers/plans/2026-11-04-ai-assistant-and-machine-split.md) | Which PC runs the CFD stages, and the plan for AI models, terminal and chat assistant |
@@ -32,6 +33,7 @@ Clean-room behaviour contracts, the source of truth for each node group:
 [structural FEA](specs/structural-fea.md),
 [solar and thermal](specs/solar-thermal.md),
 [performance validation](specs/performance-validation.md),
+[AI models](specs/ai-models.md),
 [UI conventions](specs/ui-dcc-conventions.md).
 
 ## Plans and hand-off (development history)
@@ -46,4 +48,8 @@ Clean-room behaviour contracts, the source of truth for each node group:
 - [wp9-reference-baselines.md](research/wp9-reference-baselines.md) and
   [wp9-replication-baseline-v1.json](research/wp9-replication-baseline-v1.json):
   the accepted DrivAer reference, targets and input checksums.
+- [wp9-ddes-route-plan.md](research/wp9-ddes-route-plan.md): why the steady
+  convergence gate is out of reach and the planned transient route.
+- [free-software-landscape.md](research/free-software-landscape.md): what free and
+  AI-assisted tools exist per stage, surveyed 2026-11-11.
 - [k2/](research/k2/): vetted external review notes per stage (suggestions only).
