@@ -6,6 +6,719 @@ Sections are newest first. Older sections use the original machine's paths
 (C:\Users\mabdu\REA\...) and the old flat scripts/ layout, and are kept as
 evidence. For current commands use docs/SETUP.md and docs/CFD-RUNBOOK.md.
 
+## WP9 Stage 2 investigation: steady gate unreachable; DDES route planned (2026-11-10 to 11)
+
+- **Stage 2 rerun** `wp9-solve-fastback-20261110-a`:
+  - Stopped at iteration 2020 on the stop rule at 2000 (`cancelled`, exit
+    130).
+  - The production gate over 17–1016 / 1017–2016 fails on every criterion:
+    window change 2.15%, drift 17.1%, residual RMS p 1.64e-3 and U 2.08e-2.
+  - The checkpoint at 2000 is preserved, with hashes, in
+    `scratch/wp9-investigation-20261110/checkpoint`.
+- **Checkpoint arms**, all diagnostics, none a Stage 2 result:
+  - Code: commit 625a5b2 adds the arms, 0ce43d0 the extension arm.
+  - Tests: crate 386 passed, clippy clean, 8 runner scenarios pass.
+  - **`s2c` (control):** restart variability is p ±4%, U ±12%, Cd SD
+    0.0073–0.0101.
+  - **`ptight` (p relTol 0.01):** refuted. U residual ×1.24 and Cd SD ×1.08.
+  - **`urelax` (U relaxation 0.7):** U residual ×0.32 and Cd SD ×0.46, but
+    the Cd mean moved from 0.2758 to 0.2870 and kept drifting.
+  - **`urelax2k`:** stopped by the user at about iteration 2920 (`cancelled`,
+    exit 130, source unchanged) once Cd had settled at 0.2854 for about 800
+    iterations. The residuals were unchanged (U 6.1e-3, p 1.6e-3).
+  - Launcher note: the launcher's 30-second check always reports "has not
+    published status", but the worker publishes at about 80 s, so this is
+    harmless. An earlier stray smoke launch was refused by the lock and left
+    only a launch log.
+- **Residual map:**
+  - Run as a diagnostic outside the runner: 30 production iterations from the
+    checkpoint, writing per-cell residuals.
+  - The plateau is spread over many cells, not a few: the worst 1% of cells
+    hold only 32–46% of it.
+  - U and k peak in the near wake, on good cells. p and omega peak at the
+    front wheel and near-wall layers, where the mesh is poorer, but that is a
+    minor share.
+  - **Conclusion:** the steady gate's 1e-5 target is out of reach for this
+    case. No mesh, scheme or relaxation change gives the 2–3 orders of
+    magnitude needed.
+- **DDES timing probe** (diagnostic, recipe defaults, 50 steps):
+  - Peak Courant 4.24 at Δt 1e-4 s, so maxCo 0.5 needs Δt ≈ 1.18e-5 s.
+  - 32 s per step; 18.8 GB resident.
+  - That works out to about 72 days per 8-convective-unit run at the recipe
+    default.
+- **Plan:** [docs/research/wp9-ddes-route-plan.md](research/wp9-ddes-route-plan.md),
+  revision 2 after a three-perspective review (engineering, racing,
+  aesthetics; plan section 6). The review rewrote the draft v2 acceptance
+  (significant-and-large trend and halves tests, per-step residual
+  reduction instead of absolute limits, a required Δt/2 segment, a stop rule
+  fixed in advance with a 15 CTU cap, shape comparison as tolerances),
+  dropped the global maxCo 0.5 option, and added during-run outputs and
+  presentation rules.
+  - Revision 3 (same day) records the user's decisions: **this PC**; the
+    **first production run under v2 is the 25° slant body in DDES** on the
+    existing ~2.0M-cell grid (hours, known answer, G25 evidence, full gate
+    rehearsal), not a car grid. It adds a combined schedule for everything
+    WP9 still owes (plan section 7: all code first, slant-body rehearsal,
+    probe B, steady Estate/Notchback as DDES start fields and trend
+    ordering, fine Fastback, coarse grids, then Estate and Notchback; about
+    6–11 weeks to a certified Fastback with its grid study, 3–5.5 months for
+    the three-shape protocol) and a vehicle-scope section (section 8: what
+    is on disk, two tiers, and three open-dataset additions that each need
+    the user's download OK).
+  - Still waiting on the user: baseline v2 as revised, the steady
+    force-based route (open conflict), and the download list.
+  - Nothing has been launched. No gate was changed and no failed run was
+    relabelled.
+
+## WP9 D5 adopted; Stage 2 rerun launched (user: "investigate, adopt and rerun"), 2026-11-10
+
+- **Investigation** (existing histories; details in the diagnostics plan):
+  - The Cd oscillation is body pressure drag: 89–100% of the variance.
+  - It is stationary through Stage 2's 2546 iterations: Cd SD 0.007–0.011
+    in every 250-iteration window, with no decay.
+  - It is quasi-periodic, with periods of 50–90 iterations. This is a
+    steady-solver limit cycle around the separated wake, and D5 does not
+    change it.
+- **Gate check on Stage 2's last 2000 iterations**, with the
+  `iteration_gate` formulas:
+  - Cd window change 0.61% (limit 0.2%); drift 1.76% (limit 0.1%);
+  - residual RMS p 1.6e-3, U up to 2.0e-2, k 2.2e-4, omega 4.1e-4
+    (limit 1e-5).
+  - D5's residuals are of the same size. **Expected outcome: "not
+    converged"**, to be reported as such if it happens.
+- **Remaining clipped cells:** the underside of the nose's front edge
+  (x 0–0.06, z ≈ 0.20) and the front wheel's lower front.
+- **Adopted** in 29ddb55:
+  - Change: the steady `fv_schemes` has `grad(k)` and `grad(omega)` set to
+    `cellLimited Gauss linear 1`. The DDES recipe is unchanged.
+  - Test: `case::tests::steady_recipe_limits_the_velocity_and_turbulence_gradients`,
+    observed failing first.
+  - Crate: 373 passed. Workspace: 1655 passed, 0 failed. Clippy clean.
+- **Stage 2 rerun** `wp9-solve-fastback-20261110-a`:
+  - Started 2026-11-10T00:22:51Z from 29ddb55 on a clean tree, profile
+    `wp9-solve`, sourceBefore 3dbd5412….
+  - Expected end: about 2026-11-11 13:00–15:00Z (remesh about 40 min, then
+    7000 iterations at about 18.6 s/it). The outer bound expires
+    2026-11-12 00:22Z.
+  - Pre-flight: on AC; sleep on AC "never" (read only); E: 539 GB free;
+    host 22 GB free.
+  - **Do not edit scripts/, crates/, Cargo.*, AGENTS.md or CLEAN_ROOM.md
+    while it runs.**
+  - To check: `verification-status.ps1 -RunId wp9-solve-fastback-20261110-a`.
+  - When it ends: verify from the artifacts and report Cd against 0.275 ± 5%
+    and the convergence gate exactly as they come out. Stage 3 runs only if
+    the gates pass.
+
+## WP9 D5 completed: limited k/omega gradients remove ~93–95% of clipping, 2026-11-09
+
+- **D5** `wp9-diag-d5-20261110-a`: completed, exit 0, 21:10Z–23:52Z.
+  - Source unchanged; no swap; cleanup confirmed.
+  - fvSchemes FNV d9febec1b6f9dad9, with the `grad(k)`/`grad(omega)`
+    `cellLimited Gauss linear 1` lines present.
+  - 18.62 s/it, against R1's 17.48.
+- **D5 vs R1, 501–1000:**
+  - k clipped cells: 43.0 vs 609.9 per iteration. Lowest k −0.156 vs −1.49.
+  - omega clipped cells: 4.2 vs 89.5.
+  - The front-wheel, nose and mirror hotspots almost disappear. What is left
+    is about 35 k cells in the underbody band, and k is still clipped in
+    500/500 iterations.
+  - Residual RMS: U and p unchanged; k 2.52e-4 vs 2.28e-4; omega 7.09e-5 vs
+    5.95e-5.
+  - Screening Cd 0.2759 ± 0.0087 vs 0.2764 ± 0.0099. The force oscillation
+    is essentially unchanged.
+- **Verdict:** unlimited k/omega gradients are the main source of the
+  clipping. Limiting them does not by itself steady the forces. Stage 3 stays
+  blocked.
+- **Next, the user's choice:**
+  - adopt the limited gradients in production `fv_schemes` (test first) and
+    plan a new Stage 2 protocol run from iteration 0; or
+  - first investigate the remaining force oscillation (decision 5 in the
+    diagnostics plan) or the underbody-band cells.
+- Full tables are in
+  `docs/superpowers/plans/2026-11-08-wp9-turbulence-diagnostics.md`.
+
+## WP9 mesh fix: no candidate qualifies, no M1 solve; D5 running, 2026-11-09
+
+- **Mesh fix (M1):** three candidates changed only `addLayersControls`
+  (`scripts/cfd/wp9-mesh-fix.sh`). They were scored with `wp9MeshMetricDict`
+  against the Stage 2 mesh. The selection rules were committed in 2b9c72d
+  before any mesh was built.
+  - Outputs: `scratch/wp9-diagnostics/mesh-fix-20261109/`.
+  - The full table is in
+    `docs/superpowers/plans/2026-11-08-wp9-turbulence-diagnostics.md`.
+- **Results:**
+  - **A** (smoothing) is eligible, but cuts rough cells in the hotspot boxes
+    only from 19,455 to 17,345 (−10.8%). It needed 20%.
+  - **B** (+ buffer cells) is ineligible: 11.93M cells, below the 12.0M floor.
+  - **C** (+ nOuterIter 5) is ineligible: snappy finished with 125 illegal
+    faces after 7.5 h. Its informational score was −12.0%.
+- **Verdict:** no M1 solve. Layer-control smoothing does not remove the rough
+  layer cells at the front wheel, nose and mirror. Remeshing costs about
+  1 h and 20.6 GB peak RSS per candidate (C: 7.5 h, 21.5 GB).
+- **D5** `wp9-diag-d5-20261110-a`: running since 21:10:52Z, about 2.6 h.
+  - Settings: `grad(k)`/`grad(omega)` `cellLimited Gauss linear 1`,
+    restarted from C0's 500, compared with R1.
+  - Launch note: the launcher reports "Worker … has not published status"
+    after 30 s because the worker is still scanning `target/`. The status
+    appeared after about 80 s. Use the bundled pwsh 7
+    (`E:\REA\tools\pwsh\7.6.9\pwsh.exe`), not Windows PowerShell 5.1.
+
+## WP9 R1 completed: D4 (limited correction) does not reduce clipping, 2026-11-09
+
+- **R1** `wp9-diag-r1-20261109-a`: completed, exit 0, 08:06Z–10:36Z.
+  - Linux cleanup confirmed; source unchanged; no swap.
+  - fvSchemes FNV 41ad9d1f665715c3, the same as C0.
+  - 17.48 s/it.
+- **Restart perturbation (R1 vs C0):** the runs diverge from iteration 501.
+  - The maximum relative difference is 0.96 for the initial residuals and
+    1.0 for the bounding minimum.
+  - Clipping statistics are unchanged: k 609.9 vs 610.8, omega 89.5 vs 90.1
+    cells per iteration.
+  - The omega residual RMS is 5.95e-5 vs C0's 8.75e-5. So the restart alone
+    gives D4's lower omega RMS.
+  - The extreme omega minimum moves a lot (−7.3e5 vs −9.9e5), so it is not a
+    usable comparison metric.
+  - Screening Cd moves by +0.0011 (501–1000) and +0.0021 (751–1000).
+- **D4 vs R1, the controlled comparison, over 501–1000:**
+  - k: clipped in 500/500 iterations in both; 607.5 vs 609.9 cells per
+    iteration; 901–1000: 600.1 vs 604.0.
+  - omega: 90.8 vs 89.5; 901–1000: 92.4 vs 88.2.
+  - Regions and wall bands are within a few cells of each other.
+  - Residual RMS: U 0.0208 vs 0.0207; p 1.63e-3 vs 1.69e-3;
+    k 2.23e-4 vs 2.28e-4; omega 5.57e-5 vs 5.95e-5.
+  - Worst cells at maps 750 and 1000: the top three k cells (4/52986,
+    4/640618, 4/693410) are the same in C0, R1 and D4. Overlap of the
+    worst-cell sets: D4–R1 0.60 (k) and 0.43 (omega); R1–C0 0.54 and 0.38.
+  - Screening Cd: 0.2750 ± 0.0081 vs 0.2764 ± 0.0099 (501–1000), and
+    0.2728 vs 0.2758 (751–1000). Both differences are within one SD.
+  - Cost: 18.88 vs 17.48 s/it (+8%).
+- **Conclusion:**
+  - The limited non-orthogonal correction (0.33) does not reduce the k/omega
+    clipping. Every difference from R1 is the size of the restart
+    perturbation (R1 vs C0) or smaller.
+  - Non-orthogonal correction is ruled out as the driver.
+  - Stage 3 stays blocked.
+  - The next step is the user's choice: D5 (cellLimited gradients for k/omega,
+    a restart from C0's 500, compared with R1), mesh fixes for the recurring
+    cells (layers 2–4 at the mirror, front wheel and nose), or D2/D3.
+
+## WP9 D4 completed; R1 running, 2026-11-09
+
+- **D4** `wp9-diag-d4-20261109-a`: completed, exit 0, 05:20Z–08:04Z. Linux
+  cleanup was confirmed and the source was unchanged (checked by the chain).
+  fvSchemes FNV f74960fa38e257d5, `Gauss linear limited corrected 0.33` and
+  `limited corrected 0.33`. The solve took 18.88 s/it, against Stage 2's
+  16.99 s/it over the same window.
+- **Clipping, 501–1000 (D4 vs C0):** k clipped in 500/500 iterations in both.
+  - Mean k cells: 607.5 vs 610.8.
+  - Mean omega cells: 90.8 vs 90.1.
+  - 901–1000: k 600.1 vs 612.0; omega 92.4 vs 87.9.
+  - Lowest k: −1.86 vs −1.83. Lowest omega: −2.0e5 vs −9.9e5.
+  - Region and wall-band means are within a few cells of C0's.
+- **Residual RMS, 501–1000 (D4 vs C0):** U 0.0208 vs 0.0203; p 1.63e-3 vs
+  1.65e-3; k 2.23e-4 vs 2.24e-4; omega 5.6e-5 vs 8.8e-5.
+- **Screening forces (not results):** Cd 0.2750 ± 0.0081 (501–1000) and
+  0.2728 ± 0.0080 (751–1000). C0 had 0.2753 ± 0.0097 and 0.2737 ± 0.0101.
+- **Reading so far:** limited non-orthogonal correction did not change the
+  clipping. The omega differences may come from the restart itself, which R0
+  showed is not exact. R1 (same restart, production schemes) decides that. No
+  verdict until R1 is in.
+- **R1** `wp9-diag-r1-20261109-a` launched at 08:06Z and reached 672 at
+  08:59Z. Expect it at about 10:35Z.
+
+## WP9 D4 running, R1 restart control queued (user chose the control), 2026-11-09
+
+- **R1** (commit 9e27d78): production schemes from C0's iteration 500 for
+  501–1000. It is the same restart as D4, so D4 is compared with R1. R1 against
+  C0 measures the restart perturbation; that comparison is recorded, not
+  asserted.
+- **Tests:** crate 370/0, clippy clean, runner self-test 8/8.
+- **D4** `wp9-diag-d4-20261109-a` started about 05:20Z. The case's fvSchemes
+  shows the two limited lines. There was no compile in the timed solve, and it
+  runs at about 18 s per iteration.
+- **The chain:** a background script waits for D4's final status. If D4's
+  cleanup is confirmed and the source is unchanged, it launches
+  `wp9-diag-r1-20261109-a`. Expect D4 at about 08:00Z and R1 at about 10:40Z.
+- **If the chain is lost:** launch R1 with VERNON_DIAG_VARIANT=r1 and
+  `start-verification.ps1 -Profile wp9-diagnostic -RunId wp9-diag-r1-20261109-a`,
+  with the same WSL variables as before.
+- Do not edit `scripts/`, `crates/`, `Cargo.*`, `AGENTS.md` or `CLEAN_ROOM.md`
+  while these runs are going.
+
+## WP9 D4 prepared; R0 restart check failed its exactness gate, D4 not launched, 2026-11-09
+
+The user chose D4 (limited non-orthogonal correction).
+
+Tooling, commit 751f09f, not pushed:
+- New variants `r0` and `d4` in `crates/vernon-nodes-cfd/src/diagnostic.rs`.
+  Both restart from C0's written iteration 500. `VERNON_DIAG_START_SOURCE` is
+  set by the runner to the C0 case; the mesh is checked to be identical.
+- **D4:** 501–1000 with `laplacianSchemes default Gauss linear limited
+  corrected 0.33` and `snGradSchemes default limited corrected 0.33`. Nothing
+  else in fvSchemes changes, which a unit test checks.
+- **R0:** 501–510 with production schemes. It must reproduce C0's log within
+  1e-6, so that D4's differences can be attributed to its schemes.
+- **Tests:** unit tests 9/0; crate 370 passed, 0 failed, 17 ignored; clippy
+  clean; C0 gate tests 22/0.
+- **Runner self-test:** passes, 8 durable scenarios, twice in a row. Before that
+  it failed three times, at different places: twice when reading status.json
+  while the worker replaced it atomically (a sharing violation, once in the
+  launcher itself), and once when a 3 s timeout fired early. The status-reader
+  race is fixed with `Read-VerificationJson` (a 5 s retry) in the launcher,
+  status, stop and self-test scripts. The early timeout was not changed.
+- **AGENTS.md's test count was not updated.** It needs a full workspace run.
+
+R0 `wp9-diag-r0-20261109-a`:
+- The runner recorded `failed`, exit 101 (the test's own assertion), cleanup
+  confirmed, source unchanged.
+- The restart ran iterations 501–510 exactly, and it loaded the precompiled
+  counter.
+- **It is not bit-exact with C0:**
+  - most initial residuals differ by 1e-8 to 5e-6 relative;
+  - omega at 508 differs by 1.8e-3;
+  - bounding minima differ by up to 2.8e-3 (k at 501: −0.72077 against
+    −0.71872).
+  - The gate is 1e-6.
+- **Likely cause, inferred from the code and not proven:** the
+  nutUSpaldingWallFunction solves for uTau with Newton iterations, tolerance
+  0.01 and at most 10 iterations, starting from the current wall nut. A restart
+  evaluates the wall function once more at startup than a continuous run does,
+  so wall nut moves within that 1% tolerance. The fixture restart test was exact
+  because the fixture does not use this wall function.
+
+Not launched: D4, waiting for the user's decision on its control. Options:
+- **Use C0 as the statistical control over 751–1000.** D1 reached C0's per-cell
+  clip counts from a completely different history, so these statistics do not
+  depend on small differences in state. A 1e-6–3e-3 perturbation at 501 should
+  not change them, but this is an argument, not a measurement.
+- **Run a production restart from 500 to 1000 (R0 extended) as an exact
+  control** alongside D4. This costs about 2.5 h more.
+
+## WP9 location analysis of the clipped cells (user chose it), 2026-11-09
+
+How it was run:
+- The tool is `scripts/cfd/wp9-location-analysis.sh` with the read-only coded
+  function object `scripts/cfd/wp9-location/wp9LocationDict`.
+- It runs postProcess on 16 ranks, in WSL, outside the runner. It is not a
+  solve.
+- It works on a separate copy, `scratch/wp9-diagnostics/location-20261109-a/case`,
+  holding the mesh, D1's fields at 1000 and the clip maps of both runs. The D1
+  and C0 cases are untouched. The processor meshes were checked to be
+  identical between the two runs, so processor-local cell indices match.
+- Total time 525 s, mostly the copy.
+- **Outputs:** `postProcessing/wp9Location/summary.txt` (histograms),
+  `cells_proc*.tsv` (persistent and named cells) and `neighbours_proc*.txt`
+  (the named cells' faces).
+- A second pass added clip-count histograms. Its other sections are identical
+  to the first pass, which is kept as `wp9Location.run1`.
+
+How many cells, over iterations 751–1000:
+- **k:** D1 clipped 2,765 distinct cells and C0 2,674. 1,909 are common; the
+  union is 3,530.
+- **omega:** 938 and 925, with 568 common.
+- **Persistent:** 154 k cells and 17 omega cells were clipped in all 250
+  iterations in both runs.
+- **Every other iteration:** 177 k cells (6.4%) were clipped exactly 125 times,
+  a strict alternation (period 2), with the same per-cell counts in both runs.
+  The forces oscillate with a different, slow period.
+- These are 0.02% of the 12.06M cells.
+
+What the clipped cells look like (persistent k; reference values are all cells
+within 5 cm of a wall):
+- **Inside the prism-layer stack, but not at the wall:** wall-layer index 2–4
+  for 91% (omega: index 2–3 for 94%). They are almost never wall-adjacent, so
+  the wall-function cells themselves are not where clipping happens. The median
+  wall distance is 7.9 mm (omega 3.4 mm). The layer settings are 5 layers,
+  expansion 1.2, final layer 0.5 of the local cell size.
+- **Non-hex cells are over-represented:** 40% are not hexahedra, against 5%
+  near walls. For omega it is 62% of the omega cells clipped at least once in
+  751–1000 (the 938 D1 cells). 4- and 5-face cells are 18–28% against 1.4%.
+- **Volume jumps to a neighbour:**
+  - jumps of 1.5× or more: 81% against 22%;
+  - jumps of 6× or more, which mark refinement-level interfaces, among cells
+    clipped at least once: 28% of the 2,765 k cells.
+- **Moderate non-orthogonality, never extreme:** 20–40° for 51–54% of the
+  clipped cells against 8%. The maximum is 64°, and none is over 65°.
+- **Skewness of 0.5 or more:** 40% against 3%. The face-weight minimum is lower
+  than near-wall cells in general.
+- **Wall-adjacent cells clipped at least once:** they lean towards the buffer
+  layer, y+ 1–11, at 6.1% of clipped cells against 1.0% of near-wall cells.
+
+Where the 154 persistent k cells are (0.2 m clusters):
+- **Side mirror / A-pillar, about x 1.8, y 0.8–1.0, z 1.0:** 49 cells.
+  - It includes processor 4 cell 52986, a level-4 cell 6.7 cm from the wall
+    with a 7.7× volume jump at a refinement interface. It was clipped in all
+    250 iterations in both runs.
+- **Front wheel, lower front and ground contact, x about 0.6, z 0–0.2:** 37
+  cells. The contact cells at z 0.012–0.014 are 4-face cells with
+  non-orthogonality of 48–55° and volume jumps of 3.7–7.4×.
+- **Nose, lower lip and front face, x about 0:** about 57 cells. 12 of the 17
+  persistent omega cells are here.
+- **Underbody floor:** for example processor 6 cell 7463, wall-adjacent with
+  y+ 17.
+
+Mesh context, from the Stage 2 mesh build log:
+- **Layer coverage** averaged 4.64 of 5 layers on the body (89% of the
+  thickness). On wheel_fr it was 3.07 (66%) and on wheel_rr 3.26 (69%).
+- 97.3% of wall faces were extruded.
+- checkMesh: OK, non-orthogonality maximum 65.0° (average 5.8), skewness
+  maximum 3.45.
+
+Production numerics relevant to these cells:
+- `laplacianSchemes Gauss linear corrected` and `snGradSchemes corrected`:
+  full explicit non-orthogonal correction.
+- `gradSchemes default Gauss linear`: k and omega gradients are unlimited.
+- `div(phi,k|omega) bounded Gauss limitedLinear 1`.
+
+Reading:
+- The persistent clipping is a local discretisation defect at a fixed set of
+  cells: non-hex and transition cells inside the layer stack, at three
+  geometric features.
+- It is identical in C0 and D1. Part of it is a strict two-iteration limit
+  cycle, which points to numerics, not to physics.
+- The force oscillation is a separate, slower behaviour that this analysis does
+  not explain.
+
+Candidate experiments, each one change, a diagnostic restart from C0's
+iteration 500 (the user decides):
+- **D4:** `limited corrected 0.33` for the laplacian and snGrad terms, the usual
+  treatment for meshes with non-orthogonality near 65°.
+- **D5:** `cellLimited Gauss linear 1` for grad(k) and grad(omega).
+- **Mesh changes**, costlier because they need a re-mesh and a new Stage 1:
+  - layer coverage on the wheels;
+  - mirror-area refinement;
+  - the treatment of the wheel contact patch.
+- **D2 and D3** remain open, but neither targets these cells.
+
+Any production change needs its own justification and an accuracy assessment
+before it is used for acceptance.
+
+## WP9 turbulence diagnostics: C0 and D1 done, upwind startup does not fix clipping, 2026-11-09
+
+Both runs completed under the runner with exit 0, cleanup confirmed and source
+fingerprint c263f467…8779 unchanged. The diagnostics are not acceptance evidence
+and have no gate verdict. Forces below are screening numbers only.
+
+**C0** `wp9-diag-c0-20261108-a`: production numerics, iterations 0–1000.
+- It passed the C0 gate (`WP9_C0_GATE pass`).
+- It reproduces the Stage 2 log exactly over 1–1000: 6,000 initial residuals and
+  2,000 bounding minima, maximum relative difference 0.0, nothing missing.
+- 17.05 s per iteration against Stage 2's 16.83. No swap, at least 3.1 GB free.
+
+**D1** `wp9-diag-d1-20261109-a`: upwind k/omega for 1–500, then a restart with
+`limitedLinear 1` for 501–1000.
+- 17.17 and then 17.49 s per iteration.
+- No swap, no probe loss, at least 2.9 GB free.
+
+Clipping, mean cells per iteration (every clipped cell was negative):
+
+| | C0 1–100 | C0 501–1000 | D1 1–500 | D1 501–600 | D1 901–1000 | D1 501–1000 |
+|---|---|---|---|---|---|---|
+| k | 2,808 | 611 | 0 (min +2.5e-6) | 501 | 609 | 586 |
+| omega | 672 | 90 | 0 (min +1.05) | 87 | 87 | 88 |
+
+- **Frequency:** C0 clipped k and omega in every iteration. D1 clipped in none
+  of 1–500, then in every one of 501–1000.
+- **Where clipped k cells are, 501–1000, C0 / D1:**
+  - near the body 222 / 218;
+  - underbody band 158 / 156;
+  - front wheel 137 / 124;
+  - rear wheel 6 / 5.
+  - **By wall distance:** 2 mm–1 cm holds 337 / 326, under 2 mm 67 / 67.
+- **Clipped omega cells, both runs:** front wheel about 21, rear wheel 17,
+  underbody 35, near the body 15. By wall distance, about 66 are 2 mm–1 cm from
+  a wall and 20 are under 2 mm.
+- **The same cells recur in both runs.** Cell indices are processor-local, and
+  both runs use the same decomposition.
+  - k: processor 4 cell 52986 (near the body, 6.7 cm from a wall, the worst
+    cell at 501 and 1000 in D1); processor 3 cell 13176 (front wheel).
+  - omega: processor 3 cells 13176, 14639, 14858 (front wheel, about 1 mm from
+    a wall).
+  - Worst-cell lists are in `postProcessing/wp9ClipCounter/clip_*_worst.dat` in
+    each run's `temp/.../case`.
+- **Residual RMS, 501–1000, C0 / D1:**
+  - U 0.0203 / 0.0201;
+  - p 1.65e-3 / 1.58e-3;
+  - k 2.24e-4 / 2.18e-4;
+  - omega 8.8e-5 / 4.3e-4, raised by D1's 501–600 transient; 901–1000 is
+    1.5e-4 / 5.6e-5.
+- **Screening forces, C0 / D1:**
+  - Cd over 501–1000: 0.2753 ± 0.0097 / 0.2763 ± 0.0090 (one standard deviation).
+  - Cd over 751–1000: 0.2737 ± 0.0101 / 0.2741 ± 0.0094.
+  - Cl over 501–1000: 0.018 ± 0.028 / 0.001 ± 0.027.
+
+Reading:
+- The missing upwind startup is a real deviation from the spec. It is not the
+  cause of the persistent clipping: under `limitedLinear 1`, clipping returns
+  within one iteration from an unclipped upwind state. It reaches C0's count,
+  in the same regions and the same cells, within about 100 iterations for omega
+  and about 400 for k.
+- Implementing the startup in `fv_schemes` alone would therefore not make
+  Stage 2 pass.
+
+Next choices (the user decides):
+- the location analysis of the recurring cells: mesh quality, layer structure,
+  y+ and the wall functions there;
+- D2, stronger turbulence relaxation;
+- D3, relTol 0.01.
+
+Stage 3 stays blocked.
+
+Run cases are kept in each run's `temp/` until cleanup is decided, about 9.6 GB
+each. `docs/superpowers/plans/2026-11-09-domino-cfd-warm-start.md` is an
+untracked file that this work did not create; it was left alone.
+
+## WP9 turbulence diagnostics: harness proven, C0 running, D1 queued, 2026-11-08
+
+What exists: profile `wp9-diagnostic` (variants `smoke`, `c0`, `d1`), module
+`crates/vernon-nodes-cfd/src/diagnostic.rs`, fixture env
+`scripts/cfd/wp9-diagnostic-fixture-env.sh`, gate
+`scripts/cfd/wp9-diagnostic-c0-gate.ps1`. Commits 6d50694, 29080d7, 9cce32d and
+91d4789 on `claude/wp9-solve-stages`, not pushed. The plan and its revision are in
+[docs/superpowers/plans/2026-11-08-wp9-turbulence-diagnostics.md](superpowers/plans/2026-11-08-wp9-turbulence-diagnostics.md).
+
+Proven before the large case:
+- **Fixture tests:** the three `diagnostic::tests::fixture_*` tests, run with
+  `VERNON_DIAG_FIXTURE_ENV` set, pass. Logs are in `scratch/wp9-diagnostics/`.
+  - Injected values give 104 negative and 120 below-floor cells, with exact
+    volumes, regions, wall bands and worst-cell locations, in serial and on 4
+    ranks.
+  - The floor is 1e-15 from the model, and the counter minimum equals
+    OpenFOAM's bounding minimum.
+  - Fields are byte-identical with and without the counter.
+  - A restart is exact. A switched run equals pure upwind through the switch
+    and differs after it.
+- **Other checks:**
+  - Unit tests pass 7/0, crate tests 368/0, clippy clean.
+  - Fixture policy 21/0, C0 gate tests 22/0.
+  - Runner self-test passes, including its 8 durable scenarios. A race in its
+    `Wait-State` helper was fixed.
+- **Large-case smoke:** `wp9-diag-smoke-20261108-a` passed its test, but the
+  runner rejected the marker, which shared cargo's line; that is fixed.
+  `wp9-diag-smoke-20261108-b` completed with exit 0 and cleanup confirmed.
+  - Both phases loaded the precompiled counter, with no compile in a timed
+    solve.
+  - Upwind iterations 1–2 clipped 0 k cells. Production iterations 3–4 clipped
+    1,756 and then 4,475, mostly within 1 cm of walls, in the underbody band,
+    at the wheels and near the body. This is four iterations only.
+  - The counter's own work is 3–6 ms per field per iteration.
+  - The one memory-probe timeout happened during the case copy, not while the
+    solver ran.
+
+Running: `wp9-diag-c0-20261108-a` (production numerics, iterations 0–1000),
+started about 15:45Z from 91d4789. A background chain then runs the C0 gate.
+If the gate passes, it launches `wp9-diag-d1-20261109-a`: upwind 1–500, then a
+restart with production for 501–1000.
+
+The gate requires:
+- completed, exit 0, cleanup confirmed and unchanged source;
+- C0 reproducing the Stage 2 log over 1–1000, initial residuals and bounding
+  minima within 1e-6;
+- seconds per iteration within 10% of Stage 2;
+- no swap, at least 1 GiB available, and no probe loss while the solver runs.
+
+If the chain is lost, run the gate by hand:
+`pwsh scripts/cfd/wp9-diagnostic-c0-gate.ps1 -RunId wp9-diag-c0-20261108-a`.
+If it passes, launch with VERNON_WSL_DISTRO, VERNON_WSL_USER, VERNON_WSL_ENV_FILE
+(the solve env) and `VERNON_DIAG_VARIANT=d1` set, using
+`start-verification.ps1 -Profile wp9-diagnostic -RunId <new id>`.
+
+Do not edit `scripts/`, `crates/`, `Cargo.*`, `AGENTS.md` or `CLEAN_ROOM.md`
+while these runs are going: that marks the run `source-changed`.
+
+## WP9 Stage 2 stopped for turbulence diagnostics (user decision), 2026-11-08
+
+Run `wp9-solve-fastback-20261108-a` was **stopped by the user's decision** at
+iteration 2546 of 7000. Status `cancelled`, exit 130, finished 14:42:02Z, Linux
+cleanup success (attempted 1, marker `VERNON_WSL_GROUP_STOPPED`), no OpenFOAM
+process left. **There is no gate verdict.** It is not a converged or a failed
+protocol run. It is a cancelled one and cannot be resumed or certified.
+
+What the history showed when it was stopped:
+
+- k and omega were clipped (`bounding k`, `bounding omega`) in **every**
+  iteration. The mean per-iteration k minimum was about -0.7 m²/s² (worst
+  -2.5), with k maximum 36–50 against a freestream 0.0024. Omega minima stayed
+  around -6e3 to -2e4, and omega reached 4.5e22 in iterations 1–200.
+- RMS initial residuals over iterations 1546–2545: p 1.58e-3, U 2.03e-2,
+  k 2.18e-4, omega 4.14e-4. They had been flat since about iteration 400, and
+  the gate is 1e-5.
+- Cd (screening only): 0.2736 over 1046–1545 and 0.2760 over 1546–2546, a
+  change of 0.85% (gate 0.2%), sd 0.0080.
+- y+ at 2000: body 0.32–802 (mean 24), ground 0.36–1795, wheels 0.97–423.
+  Spalding nut, omega and kqR wall functions.
+- Throughput: 17.0 s per iteration (pilot 18.7). Rank peak 1.64 GiB, solver
+  total RSS peak 22.4 GB, WSL MemAvailable min 3.9 GiB, no swap, run folder
+  peak 10.8 GB.
+- **Recipe deviation:** `docs/specs/automotive-cfd.md` specifies upwind k/omega
+  for the first 500 iterations. `fv_schemes` (`crates/vernon-nodes-cfd/src/foam.rs`)
+  writes `limitedLinear 1` from iteration 1. The pilot and Stage 2 both lacked
+  the specified startup.
+
+Kept for diagnostics: the decomposed 12M case with times 0, 1000 and 2000 in
+`scratch\continuation\runs\wp9-solve-fastback-20261108-a\temp\vernon-cfd-98196-cfd.solve_steady-8\native\case\`,
+plus logs, `memory-summary.json` and `status.json`. The pilot's case is also
+kept, under its own run folder.
+
+Environment change, approved by the user: `openfoam2606-dev` 2606.0~rc2-1
+(with `-tools` and `-source`, 79 packages, 64 MB) is installed in
+`Vernon-Ubuntu-24.04` so that coded fvOptions compile. The v2606 source confirms
+`solve → fvOptions.correct → bound` for both k and omega (`kOmegaSSTBase.C`
+593–595 and 618–620), so a `codeCorrect` hook sees fields before clipping.
+
+Next: the diagnostic screen in
+[docs/superpowers/plans/2026-11-08-wp9-turbulence-diagnostics.md](superpowers/plans/2026-11-08-wp9-turbulence-diagnostics.md).
+Stage 3 stays blocked. Another full protocol run waits until the screen shows
+stable k/omega with the intended production numerics.
+
+## WP9 Stage 2 launched (user approved "start stage 2"), 2026-11-08
+
+Run `wp9-solve-fastback-20261108-a`, profile `wp9-solve` (Fastback, dx0 0.32,
+serial mesh, 16 ranks, 7000 iterations, window 1000; mesh limit 100 min, solver
+2700 min, outer 172800 s). Started 2026-11-08T01:51:04Z from commit 160b280,
+clean tree, sourceBefore 1f8d03eb…a6f6 (same as the pilot). Launched as is: no
+automatic resume. Expected end ~2026-11-09 15:00–17:00 UTC (37–39 h); outer bound
+expires 2026-11-10 01:51 UTC.
+Pre-flight: on AC; Windows idle sleep and hibernate on AC are "never" (powercfg
+read only); host free 20.7 GB; ChatGPT, Codex and the AI-3D download closed; WSL
+freshly started (MemAvailable 24.6 GiB); E: 611 GB free.
+To check: `verification-status.ps1 -RunId wp9-solve-fastback-20261108-a` (shows
+the memory line). To stop: `stop-verification.ps1 -RunId … -Reason …`. If the
+worker dies without a final status, run the Linux cleanup in the runbook first.
+When it ends: verify from the artifacts (marker, replication-solve.json, solver
+log End and iteration count, force/convergence/benchmark reports), report Cd vs
+0.275 with the 5% band, convergence pass/fail and residuals exactly as the gates
+say; "not converged" is reported as such. Stage 3 only if Stage 2 passes its gates.
+
+## WP9 Stage 1 pilot measured; Stage 2 awaiting the user's approval, 2026-11-04
+
+Run `wp9-solve-pilot-20261104-a` (profile wp9-solve-pilot, commit b2a5a31, clean
+tree): status completed, exit 0, step wp9-solve passed; runner accepted the marker
+`WP9_SOLVE_PILOT_COMPLETE rear=Fastback cells=12056197 iterations=200 np=16 mesh_np=1
+seconds_per_iteration=18.65829145728643 coefficients_reported=0` and the saved row
+(replication-solve.json). sourceBefore = sourceAfter = 1f8d03eb…a6f6. 14:36:21 ->
+16:38:05 UTC (2 h 02 min). linuxCleanup success, attempted 0. Diagnostic only: no
+Cd, no convergence verdict, nothing for the benchmark or study.
+
+Measured (from the case logs and memory-samples.jsonl, 92 samples, ~80 s apart):
+- Mesh rebuilt identically: 12,056,197 cells, non-ortho 64.996, skew 3.452,
+  layers 97.33%. mesh_build wall 2917 s (48.6 min; 41 min on 11-04 sizing run).
+  snappyHexMesh peak HWM 19.8 GiB; WSL MemAvailable fell to 6.0 GiB, host free 0.6 GB.
+- potentialFoam 72 s wall, ≥2.0 GiB (one sample). decomposePar ~112 s (log mtimes),
+  peak 5.9 GiB. reconstructPar ~134 s, peak 7.1 GiB. (Neither utility prints ClockTime.)
+- simpleFoam, 16 ranks: 200 iterations, clean End, 3737 s clock. 18.66 s/it mean
+  after the first; per 25-iteration blocks 17.2, 18.6, 18.7, 18.8, 18.9, 18.8, 18.8,
+  19.5 (last block includes the 1 GB write). GAMG p iterations flat (2.3 -> 2.0), so
+  the drift is not solver work. The plan's linear-scaling guess was 14.3 s/it.
+- Solver memory flat, no growth: total RSS 17.9–20.9 GiB, peak rank HWM 1.49 GiB
+  (cap 4 GiB address space), sum of rank HWMs 22.4 GiB. WSL MemAvailable min 4.0 GiB;
+  host free 3.4–6.3 GB during the solve. No swap used.
+- Disk: one write = 1.01 GB decomposed (processor*/200) or 0.99 GB reconstructed;
+  polyMesh 1.5 GB; solved case 6.3 GB; run folder peak 10.8 GB. E: 909 GB free.
+- Residuals (initial) at 1/51/101/151/200: p 1, 7.1e-3, 4.2e-3, 3.3e-3, 2.5e-3;
+  U 0.27, 0.034, 0.028, 0.018, 0.020; k 1, 8.8e-4, 4.6e-4, 3.3e-4, 2.8e-4; omega
+  3.6e-3, 1.9e-4, 1.1e-4, 8.7e-5, 7.6e-5. U is flattening near 0.02 (the old
+  3.76M run sat at 0.018 after 3000 iterations): "not converged" is a real risk.
+- Log warnings: 6 FOAM warnings that monitor patches wheel_fl/wheel_rl don't exist
+  (half model keeps only the right wheels); pre-existing recipe, forces unaffected.
+
+Stage 2 estimate from these numbers: solver 7000 x 18.7–19.5 s = 36.4–37.9 h; plus
+mesh 0.8 h and pre/post ~0.1 h => about 37–39 h wall (above the runbook's 30–36 h).
+Solver node limit 2700 min (45 h) is hit only if the mean exceeds 23.1 s/it (+23%).
+Memory fits (flat ~21 GiB of 25.4 GiB) but leaves only ~4 GiB in WSL and a few GB
+on the host: close large apps for the run. Disk ~15 GB. No automatic resume.
+
+Next: Stage 2 (`wp9-solve`) only after the user approves. Command in the runbook.
+**2026-11-04: the user deferred Stage 2 until Sunday 2026-11-08.** Not approved yet:
+ask again before launching. Open choice from the gate: start as is, or add
+automatic resume support first. Before launch: close large apps, keep the machine
+plugged in with the lid open, request keep-awake, and use a fresh run id
+(e.g. `wp9-solve-fastback-20261108-a`).
+
+## WP9 Stage 0 built (solve profiles, pilot mode, sampler, stop), 2026-11-04
+
+The user asked to execute CFD validation Stages 0–3 per docs/CFD-RUNBOOK.md, stopping
+for approval after the Stage 1 pilot. Branch `claude/wp9-solve-stages` (from
+`claude/ai-models` dd89e58), in E:\REA\vernon. Owner for this work: Claude session
+(the user's request overrides the "Codex owns WP9" note for these stages).
+
+Built (each RED then GREEN; logs in `scratch/wp9-stage0/`, not committed):
+- Harness `real_openfoam_road_car_run`: `RoadCarMode` separates mesh np
+  (`VERNON_CAR_MESH_NP`, default 1) from solve np, adds pilot mode and per-node
+  time limits; pilot row has no Cd/convergence/benchmark keys; protocol prints
+  `WP9_REPLICATION_SOLVE_COMPLETE` after readback; `solve_diagnostics` (log
+  timing, disk) and `residual_trend` in every solve row. New unit tests:
+  `tests::road_car_run_mode_keeps_the_pilot_apart_from_the_protocol`,
+  `tests::solver_log_timing_reads_iterations_clock_and_a_clean_end`.
+- `scripts/cfd/wp9-replication-solve-env.sh` + `test-wp9-solve-policy.sh` (40/0)
+  + `test-wp9-solve-environment.sh` (live in WSL: 17/0; the sizing env fails it 11/6).
+  Live 16-rank probe through the real env file (box case, 256k cells): 30
+  iterations, End, exit 0 under 4 GiB RLIMIT_AS; peak rank VmPeak 0.40 GB.
+- Runner: profiles `wp9-solve-pilot` (outer 6 h; mesh 100 min, solve 180 min,
+  200 iterations) and `wp9-solve` (outer 48 h; mesh 100, solve 2700 min, 7000
+  iterations); 16 ranks, serial mesh, Fastback, dx0 0.32; output/row acceptance;
+  Linux cleanup on exit; memory sampler (`scripts/cfd/wp9-memory-sampler.ps1`,
+  test 18/0); graceful stop `scripts/verification/stop-verification.ps1`
+  (status `cancelled`, exit 130, not resumable); `smoke-cancel` profile.
+- Fixed a pre-existing runner bug: `Test-VerificationProcess` never matched a live
+  worker after a JSON round-trip (PowerShell 7 parses the ISO stamp as DateTime),
+  so `verification-status.ps1` showed `running-visibility-unknown` for live runs.
+- Runner self-test: library checks PASS; 8 durable scenarios PASS (incl. cancel).
+  Sizing cleanup 55 PASS; replication-inputs PASS; sizing policy 27/0; clippy -p
+  vernon-nodes-cfd clean.
+- Not built: automatic resume from a checkpoint (see runbook "As built").
+
+Environment: i9-13900HX 24C/32T, 31.8 GB, WSL cap 26 GB (25.4 GiB visible), on AC,
+power plan "Legion Performance Mode"; WSL 3.0.3, kernel 6.18.54.1; Ubuntu 24.04.5;
+OpenFOAM v2606 (openfoam2606 2606.0~rc2-1, build _481094f-20260618); Open MPI
+4.1.6; rustc/cargo 1.99.1. E: 978 GB free at start. pwsh 7.6.9 is at
+E:\REA\tools\pwsh\7.6.9\pwsh.exe (not on PATH; Windows PowerShell 5.1 can't run the
+runner scripts).
+
+## AI parts and aero preview added; OpenFOAM Stages 0–3 DEFERRED, 2026-11-04
+
+The user asked to use the installed open-weight models (E:\AI-3D: PartCrafter,
+DoMINO DrivAerML) inside Vernon instead of running the long OpenFOAM stages
+now. Ownership: Codex still owns WP9 CFD source; this work touched no
+`vernon-nodes-cfd` file, only a new crate plus two registry lines.
+
+Done:
+- New crate `crates/vernon-nodes-ai`: `geo.ai_partcrafter`,
+  `geo.ai_select_part`, `cfd.ai_aero_preview`, `cfd.ai_aero_compare`. Models
+  run as separate processes in the `AI-3D` WSL distribution through bridges in
+  `scripts/ai/` (embedded in the crate), with JSON-lines progress, time limit,
+  cancel (app cook cancel and `bridge::request_cancel`), GPU/RAM preflight,
+  per-run artifact folders with provenance (inputs, seed, settings, weight
+  revisions, checkpoint SHA-256, timings, memory).
+- DoMINO outputs are dimensionless model units (min–max scaling inverted),
+  labelled "AI prediction — CFD validation pending", `cfd_validation =
+  DEFERRED`; no force/drag is shown; only `ai_*` metrics, which no gate reads.
+  Geometry outside the checkpoint box is refused before inference; out of the
+  training span is labelled. Meshes over 20,000 triangles are refused
+  (33,540 crashed the model on the 16 GB GPU).
+- Spec with contract, licences and measured resources: docs/specs/ai-models.md.
+  README, CLEAN_ROOM.md (external programs), CFD-RUNBOOK (deferral banner),
+  NODES.md and AGENT_GUIDE.md (201 node types) updated.
+
+Evidence: crate tests 31 passed; the 3 ignored real-model tests were run and
+passed (DoMINO surface+volume on stand-in ellipsoids plus a compare; DoMINO
+19,800-triangle surface; PartCrafter object, draft, 3 parts, whose
+63k-triangle part the aero preview correctly refused). Workspace clippy
+`-D warnings` clean. Full workspace: 1763 passed, 0 failed, 38 ignored
+(after adding help text the catalogue test asked for); demo cook 0 failing
+gates, 5 expected; NODES.md and AGENT_GUIDE.md regenerate unchanged.
+No manual UI check was done; the app was not launched.
+
+Remaining / blockers:
+- OpenFOAM Stages 0–3 are deferred, not cancelled: still the only validation,
+  and needed to measure the surrogate's error (compare on the Stage 2 shape;
+  do not tune the surrogate to agree).
+- Not built: viewport legend widget (legend is in the summary JSON; colour via
+  `Cd`), a resident model service (each run reloads the model: DoMINO ~2.5 min
+  end to end for `both`, PartCrafter 73–434 s load).
+- PartCrafter `standard` quality and scene mode were not re-measured through
+  the node.
+
 ## Side branches merged into main, 2026-11-04
 
 The user asked to merge and push the work that was only on side branches.

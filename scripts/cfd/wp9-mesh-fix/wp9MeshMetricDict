@@ -1,0 +1,164 @@
+/*--------------------------------*- C++ -*----------------------------------*\
+  WP9 turbulence diagnostics: mesh-only scoring of a candidate mesh.
+  Read-only; run with postProcess on an undecomposed mesh (see
+  ../wp9-mesh-fix.sh). For cells within six cell layers of the vehicle walls
+  (body*, wheel*), it counts the features the persistently clipped k cells
+  share (location analysis, 2026-11-09): neighbour volume jumps, skewness,
+  non-orthogonality, non-hex shape. It counts over all such cells and inside
+  three boxes around the clusters of persistently clipped cells (front-wheel
+  lower front, nose, mirror/A-pillar). Nothing is written into field files.
+\*---------------------------------------------------------------------------*/
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       dictionary;
+    object      wp9MeshMetricDict;
+}
+
+functions
+{
+    wp9MeshMetric
+    {
+        type            coded;
+        libs            (utilityFunctionObjects);
+        name            wp9MeshMetric;
+        executeControl  timeStep;
+        writeControl    timeStep;
+
+        codeOptions
+        #{
+            -I$(LIB_SRC)/finiteVolume/lnInclude \
+            -I$(LIB_SRC)/meshTools/lnInclude
+        #};
+        codeLibs
+        #{
+            -lfiniteVolume \
+            -lmeshTools
+        #};
+        codeInclude
+        #{
+            #include "fvCFD.H"
+            #include "polyMeshTools.H"
+            #include "hexMatcher.H"
+            #include "OFstream.H"
+            #include <vector>
+            #include <string>
+        #};
+
+        codeExecute
+        #{
+            const fvMesh& m = mesh();
+            const label nC = m.nCells();
+            const label nF = m.nFaces();
+            const label nIF = m.nInternalFaces();
+            const labelUList& own = m.faceOwner();
+            const labelUList& nei = m.faceNeighbour();
+            const polyBoundaryMesh& pbm = m.boundaryMesh();
+            if (Pstream::parRun())
+            {
+                FatalErrorInFunction << "wp9MeshMetric runs on an undecomposed mesh" << exit(FatalError);
+            }
+
+            // Face metrics reduced to cells (as the location analysis).
+            const scalarField ortho(polyMeshTools::faceOrthogonality(m, m.faceAreas(), m.cellCentres()));
+            const scalarField skew(polyMeshTools::faceSkewness(m, m.points(), m.faceCentres(), m.faceAreas(), m.cellCentres()));
+            const scalarField wts(polyMeshTools::faceWeights(m, m.faceCentres(), m.faceAreas(), m.cellCentres()));
+            const scalarField vrat(polyMeshTools::volRatio(m, m.cellVolumes()));
+            scalarField nonO(nC, 0), skw(nC, 0), vjump(nC, 1), wmin(nC, 0.5);
+            for (label f = 0; f < nIF; ++f)
+            {
+                const scalar a = radToDeg(Foam::acos(Foam::min(scalar(1), Foam::max(scalar(-1), ortho[f]))));
+                for (const label c : {own[f], nei[f]})
+                {
+                    nonO[c] = Foam::max(nonO[c], a);
+                    skw[c] = Foam::max(skw[c], skew[f]);
+                    vjump[c] = Foam::max(vjump[c], 1.0/Foam::max(vrat[f], VSMALL));
+                    wmin[c] = Foam::min(wmin[c], Foam::min(wts[f], 1 - wts[f]));
+                }
+            }
+
+            // Topological cell-layer index from the vehicle walls only (the
+            // ground has no layers): 1 = wall-adjacent. Exact up to 16.
+            scalarField layer(nC, GREAT);
+            label vehicleFaces = 0;
+            forAll(pbm, pi)
+            {
+                const word& n = pbm[pi].name();
+                if (!n.starts_with("body") && !n.starts_with("wheel")) continue;
+                vehicleFaces += pbm[pi].size();
+                for (const label c : pbm[pi].faceCells()) layer[c] = 1;
+            }
+            for (int it = 0; it < 16; ++it)
+            {
+                for (label f = 0; f < nIF; ++f)
+                {
+                    layer[own[f]] = Foam::min(layer[own[f]], layer[nei[f]] + 1);
+                    layer[nei[f]] = Foam::min(layer[nei[f]], layer[own[f]] + 1);
+                }
+            }
+
+            hexMatcher hex;
+            const vectorField& C = m.cellCentres();
+            struct Box { std::string name; vector lo, hi; };
+            const std::vector<Box> boxes
+            ({
+                {"wheelFront", vector(0.45, 0.65, 0.00), vector(0.65, 0.90, 0.25)},
+                {"nose",       vector(-0.05, 0.00, 0.15), vector(0.12, 0.45, 0.70)},
+                {"mirror",     vector(1.38, 0.68, 0.88), vector(1.95, 1.10, 1.15)}
+            });
+            auto inBox = [&](const Box& b, label c)
+            {
+                const vector& x = C[c];
+                return x.x() >= b.lo.x() && x.x() <= b.hi.x() && x.y() >= b.lo.y() && x.y() <= b.hi.y()
+                    && x.z() >= b.lo.z() && x.z() <= b.hi.z();
+            };
+
+            // Groups: layers 1-6 near the vehicle, layers 2-4, the three boxes
+            // (layers 1-6), and each layer index 1..6.
+            std::vector<std::string> groups({"layers1-6", "layers2-4"});
+            for (const auto& b : boxes) groups.push_back(b.name + "_layers1-6");
+            for (int l = 1; l <= 6; ++l) groups.push_back("layer" + std::to_string(l));
+            const std::vector<std::string> counts
+            ({
+                "cells", "volJump>=1.5", "volJump>=2", "volJump>=3", "skew>=0.5", "skew>=1",
+                "nonOrtho>=20", "nonOrtho>=40", "nonHex", "faceWeight<0.3", "rough"
+            });
+            const label G = groups.size(), K = counts.size();
+            std::vector<label> h(G*K, 0);
+            for (label c = 0; c < nC; ++c)
+            {
+                const scalar L = layer[c];
+                if (L > 6) continue;
+                const bool nh = !hex.isA(m, c);
+                const bool rough = vjump[c] >= 1.5 && (skw[c] >= 0.5 || nonO[c] >= 20);
+                const bool flags[] =
+                {
+                    true, vjump[c] >= 1.5, vjump[c] >= 2, vjump[c] >= 3, skw[c] >= 0.5, skw[c] >= 1,
+                    nonO[c] >= 20, nonO[c] >= 40, nh, wmin[c] < 0.3, rough
+                };
+                std::vector<label> gs({0});
+                if (L >= 2 && L <= 4) gs.push_back(1);
+                for (std::size_t b = 0; b < boxes.size(); ++b) if (inBox(boxes[b], c)) gs.push_back(2 + label(b));
+                gs.push_back(2 + label(boxes.size()) + label(L) - 1);
+                for (const label g : gs) for (label k = 0; k < K; ++k) if (flags[k]) ++h[g*K + k];
+            }
+
+            const fileName outDir = m.time().globalPath()/"postProcessing"/"wp9MeshMetric";
+            mkDir(outDir);
+            OFstream os(outDir/"summary.txt");
+            os  << "# WP9 mesh metric (cells within 6 layers of body*/wheel* walls; counts)\n";
+            os  << "cells_total " << nC << "\nvehicle_wall_faces " << vehicleFaces << "\n";
+            os  << "group";
+            for (const auto& k : counts) os << '\t' << k;
+            os  << '\n';
+            for (label g = 0; g < G; ++g)
+            {
+                os << groups[g];
+                for (label k = 0; k < K; ++k) os << '\t' << h[g*K + k];
+                os << '\n';
+            }
+            Info<< "WP9_MESH_METRIC_DONE cells=" << nC << endl;
+        #};
+    }
+}

@@ -786,10 +786,167 @@ fn real_slant_body_runs_through_the_study_and_benchmark() {
     assert!((r.metrics["slant_share_pct_ahmed_35"].value - finest[1]["slant_share_pct"].as_f64().unwrap()).abs() < 1e-9);
 }
 
+/// Timing an OpenFOAM log reports: iterations (`Time = ` lines), the first and
+/// last wall-clock and CPU stamps, and whether the program reached its `End`.
+#[derive(Debug, Default, PartialEq)]
+struct LogTiming {
+    iterations: usize,
+    first_clock_s: Option<f64>,
+    last_clock_s: Option<f64>,
+    last_execution_s: Option<f64>,
+    ended: bool,
+}
+
+impl LogTiming {
+    /// Wall seconds per iteration after the first, so start-up (mesh read,
+    /// field creation) does not count as solver throughput.
+    fn seconds_per_iteration(&self) -> Option<f64> {
+        let (first, last) = (self.first_clock_s?, self.last_clock_s?);
+        (self.iterations >= 2 && last > first).then(|| (last - first) / (self.iterations - 1) as f64)
+    }
+
+    fn to_json(&self) -> Value {
+        serde_json::json!({
+            "iterations": self.iterations, "first_clock_s": self.first_clock_s, "last_clock_s": self.last_clock_s,
+            "last_execution_s": self.last_execution_s, "ended": self.ended,
+            "seconds_per_iteration": self.seconds_per_iteration(),
+        })
+    }
+}
+
+fn log_timing(text: &str) -> LogTiming {
+    let mut t = LogTiming::default();
+    for line in text.lines() {
+        let line = line.trim_end();
+        if line.strip_prefix("Time = ").is_some_and(|v| v.trim().parse::<f64>().is_ok()) {
+            t.iterations += 1;
+        } else if let Some(rest) = line.strip_prefix("ExecutionTime = ") {
+            let mut parts = rest.split("ClockTime = ");
+            let execution = parts.next().and_then(|v| v.trim().trim_end_matches('s').trim().parse::<f64>().ok());
+            let clock = parts.next().and_then(|v| v.trim().trim_end_matches('s').trim().parse::<f64>().ok());
+            if let (Some(execution), Some(clock)) = (execution, clock) {
+                if t.first_clock_s.is_none() {
+                    t.first_clock_s = Some(clock);
+                }
+                t.last_clock_s = Some(clock);
+                t.last_execution_s = Some(execution);
+            }
+        } else if line == "End" {
+            t.ended = true;
+        }
+    }
+    t
+}
+
+/// The fixed run settings a verification profile hands the road-car harness.
+/// Meshing and solving use separate process counts: the fine grid only fits a
+/// serial mesh, while the solver is decomposed. A pilot is a short diagnostic
+/// that can never pass for a protocol run.
+#[derive(Debug, Clone, PartialEq)]
+struct RoadCarMode {
+    np: i64,
+    mesh_np: i64,
+    n_iter: i64,
+    pilot: bool,
+    mesh_only: bool,
+    mesh_timeout_min: i64,
+    solve_timeout_min: i64,
+}
+
+impl RoadCarMode {
+    fn from_lookup(get: impl Fn(&str) -> Option<String>) -> Result<Self, String> {
+        let int = |key: &str, default: Option<i64>| -> Result<i64, String> {
+            match get(key) {
+                Some(v) => v.parse::<i64>().map_err(|_| format!("{key} must be an integer, not {v:?}")),
+                None => default.ok_or_else(|| format!("set {key}")),
+            }
+        };
+        let flag = |key: &str| -> Result<bool, String> {
+            match get(key).as_deref() {
+                None | Some("0") => Ok(false),
+                Some("1") => Ok(true),
+                Some(other) => Err(format!("{key} must be absent, 0 or 1, not {other:?}")),
+            }
+        };
+        let mode = RoadCarMode {
+            np: int("VERNON_CAR_NP", None)?,
+            mesh_np: int("VERNON_CAR_MESH_NP", Some(1))?,
+            n_iter: int("VERNON_CAR_ITER", Some(7000))?,
+            pilot: flag("VERNON_CAR_PILOT")?,
+            mesh_only: flag("VERNON_CAR_MESH_ONLY")?,
+            mesh_timeout_min: int("VERNON_CAR_MESH_TIMEOUT_MIN", Some(300))?,
+            solve_timeout_min: int("VERNON_CAR_SOLVE_TIMEOUT_MIN", Some(2700))?,
+        };
+        if !(1..=512).contains(&mode.np) || !(1..=512).contains(&mode.mesh_np) {
+            return Err("process counts must be 1..=512".into());
+        }
+        if mode.mesh_timeout_min < 1 || mode.solve_timeout_min < 1 {
+            return Err("time limits must be positive minutes; 0 would mean the runner's one-day default".into());
+        }
+        if mode.pilot {
+            if mode.mesh_only {
+                return Err("a pilot runs the solver; it cannot be mesh-only".into());
+            }
+            if !(50..2000).contains(&mode.n_iter) {
+                return Err("a pilot runs 50..2000 iterations, below every protocol run".into());
+            }
+        } else if !(2000..=7000).contains(&mode.n_iter) {
+            return Err("two fixed 1000-sample windows need at least 2000 iterations; writer maximum is 7000".into());
+        }
+        Ok(mode)
+    }
+}
+
+/// Bytes under a directory (regular files only; links are not followed).
+fn dir_bytes(path: &std::path::Path) -> u64 {
+    let Ok(entries) = std::fs::read_dir(path) else { return 0 };
+    entries.flatten().map(|e| match e.file_type() {
+        Ok(t) if t.is_dir() => dir_bytes(&e.path()),
+        Ok(t) if t.is_file() => e.metadata().map(|m| m.len()).unwrap_or(0),
+        _ => 0,
+    }).sum()
+}
+
+/// Timing and disk evidence of one solved case, read from its own step logs
+/// and directories. Diagnostic only: nothing here is a coefficient.
+fn solve_diagnostics(case: &std::path::Path, np: i64, n_iter: i64) -> Value {
+    let step = |name: &str| log_timing(&std::fs::read_to_string(case.join(format!("logs/{name}.log"))).unwrap_or_default());
+    let processors: u64 = (0..np).map(|i| dir_bytes(&case.join(format!("processor{i}")))).sum();
+    let written_per_rank: u64 = (0..np).map(|i| dir_bytes(&case.join(format!("processor{i}/{n_iter}")))).sum();
+    serde_json::json!({
+        "solver": step("solver").to_json(),
+        "potentialFoam": step("potentialFoam").to_json(),
+        "decomposePar": step("decomposePar").to_json(),
+        "reconstructPar": step("reconstructPar").to_json(),
+        "topoSet": step("topoSet").to_json(),
+        "disk_bytes": {
+            "case_total": dir_bytes(case), "processor_dirs": processors,
+            "final_write_decomposed": written_per_rank, "final_write_reconstructed": dir_bytes(&case.join(n_iter.to_string())),
+            "polymesh": dir_bytes(&case.join("constant/polyMesh")),
+        },
+    })
+}
+
+/// Initial-residual samples of a history at a few iterations, for the trend.
+fn residual_trend(history: &Value) -> Value {
+    let Ok(series) = serde_json::from_value::<Series>(history.clone()) else { return Value::Null };
+    let n = series.time.len();
+    let picks: Vec<usize> = if n == 0 { vec![] } else { [0, n / 4, n / 2, 3 * n / 4, n - 1].into_iter().collect::<std::collections::BTreeSet<_>>().into_iter().collect() };
+    let mut out = serde_json::Map::new();
+    out.insert("iteration".into(), serde_json::json!(picks.iter().map(|&i| series.time[i]).collect::<Vec<_>>()));
+    for field in ["p", "U", "k", "omega"] {
+        if let Some(col) = series.columns.get(&format!("res_{field}")) {
+            out.insert(format!("res_{field}"), serde_json::json!(picks.iter().map(|&i| col.get(i).copied()).collect::<Vec<_>>()));
+        }
+    }
+    Value::Object(out)
+}
+
 /// One road-car rear shape with the real tools, from the six original surface
 /// files kept outside the repository. Setting `VERNON_CAR_MESH_ONLY` stops after
-/// the mesh checks. This runs the accepted published-replication recipe, not an
-/// independently authenticated reconstruction of the original experiment.
+/// the mesh checks; `VERNON_CAR_PILOT` runs a short diagnostic solve that never
+/// computes a coefficient. This runs the accepted published-replication recipe,
+/// not an independently authenticated reconstruction of the original experiment.
 #[test]
 #[ignore = "needs WSL, OpenFOAM and the local road-car surfaces"]
 fn real_openfoam_road_car_run() {
@@ -797,20 +954,14 @@ fn real_openfoam_road_car_run() {
     let dir = std::path::PathBuf::from(var("VERNON_CAR_DIR"));
     let rear = var("VERNON_CAR_REAR");
     let dx0: f64 = var("VERNON_CAR_DX0").parse().unwrap();
-    let n_iter: i64 = std::env::var("VERNON_CAR_ITER").unwrap_or_else(|_| "7000".into()).parse().unwrap();
-    let np: i64 = var("VERNON_CAR_NP").parse().unwrap();
+    let mode = RoadCarMode::from_lookup(|k| std::env::var(k).ok()).unwrap_or_else(|e| panic!("{e}"));
+    let RoadCarMode { np, mesh_np, n_iter, pilot, mesh_only, mesh_timeout_min, solve_timeout_min } = mode;
     let out_file = var("VERNON_CAR_OUT");
-    let window = 1000;
-    let mesh_only = match std::env::var("VERNON_CAR_MESH_ONLY") {
-        Ok(value) if value == "1" => true,
-        Ok(value) if value == "0" => false,
-        Err(std::env::VarError::NotPresent) => false,
-        _ => panic!("VERNON_CAR_MESH_ONLY must be absent, 0 or 1"),
-    };
+    let window = if pilot { 100 } else { 1000 };
+    let write_interval = if pilot { n_iter } else { 1000 };
     assert!(matches!(rear.as_str(), "Fastback" | "Estate" | "Notchback"));
     assert!(dx0.is_finite() && dx0 > 0.0);
-    assert!((2000..=7000).contains(&n_iter), "two fixed 1000-sample windows need at least 2000 iterations; writer maximum is 7000");
-    assert!((1..=512).contains(&np));
+    println!("run mode: {mode:?}");
     let read = |name: &str| vernon_io::read(&dir.join(format!("part_{name}.stl")), &Default::default()).unwrap();
     let mut body = read("01_Body");
     for part in ["02_UB_Detailed", &format!("03_{rear}"), "07_Mirror"] {
@@ -850,18 +1001,20 @@ fn real_openfoam_road_car_run() {
     let dicts = cook(&reg, "cfd.mesh_setup", vec![j(&plan[0]), j(&domain[0]), Some(prep[0].clone())], &[
         ("flavour", ParamValue::Str("opencfd2606".into())),
         ("n_layers", ParamValue::Int(5)),
-        ("np", ParamValue::Int(np)),
+        ("np", ParamValue::Int(mesh_np)),
         ("max_global_cells_m", ParamValue::Float(14.0)),
         ("ram_gb", ParamValue::Float(15.52)),
     ]);
     print_report("mesh setup", &dicts[1]);
-    let long = |minutes: i64| {
-        let mut run = wsl_params(np);
+    let long = |processes: i64, minutes: i64| {
+        let mut run = wsl_params(processes);
         run.iter_mut().find(|(k, _)| *k == "timeout_min").unwrap().1 = ParamValue::Int(minutes);
         run
     };
-    // Leave one hour for outer-worker cleanup within the fixed six-hour sizing bound.
-    let built = cook(&reg, "cfd.mesh_build", vec![Some(dicts[0].clone())], &long(300));
+    // Each profile fixes these limits inside its outer bound with time left for cleanup.
+    let mesh_started = std::time::Instant::now();
+    let built = cook(&reg, "cfd.mesh_build", vec![Some(dicts[0].clone())], &long(mesh_np, mesh_timeout_min));
+    let mesh_wall_s = mesh_started.elapsed().as_secs_f64();
     print_report("mesh build", &built[1]);
     println!("mesh case: {}", built[0].as_file().unwrap().display());
     assert!(built[1].as_report().unwrap().passes(), "the built mesh must pass its gates");
@@ -876,8 +1029,9 @@ fn real_openfoam_road_car_run() {
         "a_front_measured_m2": measured["a_front_m2"],
         "profile": "road_car_detailed_gs_16ms_v1", "scope": "published_replication",
         "original_experiment_authenticated": false, "physical_validation": false,
-        "mesh_only": mesh_only, "solver_ran": false, "np": np,
-        "n_iter": n_iter, "window": window, "write_interval": 1000,
+        "mesh_only": mesh_only, "solver_ran": false, "np": np, "mesh_np": mesh_np, "pilot": pilot,
+        "n_iter": n_iter, "window": window, "write_interval": write_interval,
+        "mesh_timeout_min": mesh_timeout_min, "solve_timeout_min": solve_timeout_min, "mesh_wall_s": mesh_wall_s,
         "air": air_value, "boundary": bc[0].as_json().unwrap().as_ref(),
         "reference": reference.as_ref().unwrap().as_json().unwrap().as_ref(),
         "domain": domain[0].as_json().unwrap().as_ref(),
@@ -894,7 +1048,7 @@ fn real_openfoam_road_car_run() {
         let case = cook(&reg, "cfd.case_setup", vec![Some(built[0].clone()), j(&air), j(&bc[0]), None, reference.clone(), j(&domain[0])], &[
             ("n_iter", ParamValue::Int(n_iter)),
             ("window", ParamValue::Int(window)),
-            ("write_interval", ParamValue::Int(1000)),
+            ("write_interval", ParamValue::Int(write_interval)),
             ("np", ParamValue::Int(np)),
             ("solver_mode", ParamValue::Str("steady_sst".into())),
             ("u_ms", ParamValue::Float(16.0)), ("rho_inf", ParamValue::Float(1.184)), ("nu", ParamValue::Float(1.567e-5)),
@@ -902,10 +1056,34 @@ fn real_openfoam_road_car_run() {
             ("residual_target", ParamValue::Float(1e-5)),
         ]);
         print_report("case setup", &case[1]);
-        let solve = cook(&reg, "cfd.solve_steady", vec![Some(case[0].clone())], &long(1800));
+        let solve_started = std::time::Instant::now();
+        let solve = cook(&reg, "cfd.solve_steady", vec![Some(case[0].clone())], &long(np, solve_timeout_min));
+        row["solve_wall_s"] = serde_json::json!(solve_started.elapsed().as_secs_f64());
         print_report("solve", &solve[2]);
-        println!("solved case: {}", solve[0].as_file().unwrap().display());
+        let solved = solve[0].as_file().unwrap().clone();
+        println!("solved case: {}", solved.display());
+        // Logs and timing are kept even when the history cannot be certified.
+        let diagnostics = solve_diagnostics(&solved, np, n_iter);
+        println!("solve diagnostics: {diagnostics}");
         assert!(solve[2].as_report().unwrap().passes(), "the solver must leave a certified history");
+        let iterations_read = solve[2].as_report().unwrap().metrics["iterations_read"].value;
+        row["solver_ran"] = serde_json::json!(true);
+        row["iterations_read"] = serde_json::json!(iterations_read);
+        row["solve_diagnostics"] = diagnostics;
+        row["residual_trend"] = residual_trend(solve[1].as_json().unwrap());
+        row["case"] = serde_json::json!(solved.display().to_string());
+        if pilot {
+            // Diagnostic only: throughput, memory (sampled outside) and a clean End.
+            // No coefficient is computed, so nothing here can feed a benchmark or study.
+            let solver = &row["solve_diagnostics"]["solver"];
+            assert_eq!(solver["ended"], true, "the pilot solver must reach a clean End");
+            assert_eq!(solver["iterations"].as_u64(), Some(n_iter as u64), "the pilot must run every requested iteration");
+            assert_eq!(iterations_read, n_iter as f64);
+            assert!(solver["seconds_per_iteration"].as_f64().is_some_and(|s| s.is_finite() && s > 0.0));
+            row["scope"] = serde_json::json!("solver_pilot_diagnostic");
+            row["diagnostic_only"] = serde_json::json!(true);
+            row["coefficients_reported"] = serde_json::json!(false);
+        } else {
         let fc = cook(&reg, "cfd.force_coeffs", vec![j(&solve[1]), reference, j(&air)], &[("window", ParamValue::Int(window)), ("half_model", ParamValue::Bool(true))]);
         print_report("forces", &fc[1]);
         let res = ForceResult::from_json(fc[0].as_json().unwrap()).unwrap();
@@ -937,19 +1115,92 @@ fn real_openfoam_road_car_run() {
         row["normalization_stage"] = serde_json::json!("force_result");
         row["normalization"] = serde_json::json!({"u_ms": res.u_ms, "rho": res.rho, "q_pa": res.q_pa, "a_front_m2": res.a_front_m2, "aref_m2": res.aref_m2, "half_model": res.half_model});
         row["result"] = fc[0].as_json().unwrap().as_ref().clone();
-        row["case"] = serde_json::json!(solve[0].as_file().unwrap().display().to_string());
+        row["coefficients_reported"] = serde_json::json!(true);
+        }
     }
     println!("{row}");
     std::fs::write(&out_file, serde_json::to_string_pretty(&row).unwrap()).unwrap();
     let saved: Value = serde_json::from_slice(&std::fs::read(&out_file).unwrap()).unwrap();
     assert_eq!(saved, row, "the saved run summary must match the diagnostic row");
-    assert_eq!(saved["window"], 1000);
+    assert_eq!(saved["window"], window);
     assert_eq!(saved["physical_validation"], false);
+    let cells = saved["cells"].as_f64().filter(|c| c.is_finite() && *c > 0.0).expect("a positive cell count");
+    let object = saved.as_object().unwrap();
     if mesh_only {
         assert_eq!(saved["solver_ran"], false);
-        assert!(saved["cells"].as_f64().is_some_and(|cells| cells.is_finite() && cells > 0.0));
-        assert!(!saved.as_object().unwrap().contains_key("result"));
+        assert!(!object.contains_key("result"));
         println!("WP9_REPLICATION_MESH_ONLY_COMPLETE rear={rear} cells={} solver_runs=0", saved["cells"]);
+    } else if pilot {
+        assert_eq!(saved["solver_ran"], true);
+        assert_eq!(saved["scope"], "solver_pilot_diagnostic");
+        for key in ["result", "cd", "cl", "converged", "benchmark_validated", "within_band", "coefficient_band_ok", "convergence"] {
+            assert!(!object.contains_key(key), "a pilot never reports {key}");
+        }
+        let spi = saved["solve_diagnostics"]["solver"]["seconds_per_iteration"].as_f64().unwrap();
+        println!("WP9_SOLVE_PILOT_COMPLETE rear={rear} cells={cells} iterations={n_iter} np={np} mesh_np={mesh_np} seconds_per_iteration={spi} coefficients_reported=0");
+    } else {
+        assert_eq!(saved["solver_ran"], true);
+        assert_eq!(saved["scope"], "published_replication");
+        let converged = saved["converged"].as_bool().expect("a protocol row records convergence");
+        let validated = saved["benchmark_validated"].as_bool().expect("a protocol row records the benchmark gate");
+        let cd = saved["cd"].as_f64().filter(|c| c.is_finite()).expect("a protocol row records Cd");
+        println!("WP9_REPLICATION_SOLVE_COMPLETE rear={rear} cells={cells} iterations={n_iter} np={np} mesh_np={mesh_np} converged={converged} benchmark_validated={validated} cd={cd}");
+    }
+}
+
+#[test]
+fn solver_log_timing_reads_iterations_clock_and_a_clean_end() {
+    let log = "Starting time loop\n\nTime = 1\n\nsmoothSolver:  Solving for Ux, Initial residual = 1, Final residual = 0.01, No Iterations 2\n\
+ExecutionTime = 20.5 s  ClockTime = 22 s\n\nTime = 2\n\nExecutionTime = 35.1 s  ClockTime = 37 s\n\nTime = 3\n\n\
+ExecutionTime = 49.9 s  ClockTime = 52 s\n\nEnd\n\nFinalising parallel run\n";
+    let t = log_timing(log);
+    assert_eq!(t.iterations, 3);
+    assert_eq!(t.first_clock_s, Some(22.0));
+    assert_eq!(t.last_clock_s, Some(52.0));
+    assert_eq!(t.last_execution_s, Some(49.9));
+    assert!(t.ended);
+    assert_eq!(t.seconds_per_iteration(), Some(15.0), "steady-state rate excludes start-up");
+
+    // A log cut off by a timeout or a crash has no End and must say so.
+    let cut = log_timing(&log.replace("\nEnd\n", "\n"));
+    assert!(!cut.ended);
+    // Utilities print one timing line and End but no iterations.
+    let utility = log_timing("Reconstructing fields\nExecutionTime = 310.2 s  ClockTime = 333 s\n\nEnd\n");
+    assert_eq!((utility.iterations, utility.last_clock_s, utility.ended), (0, Some(333.0), true));
+    assert_eq!(utility.seconds_per_iteration(), None);
+    // "Time = " inside other text, or End inside a word, never counts.
+    let noisy = log_timing("Create time\nDeltaT = 1\nstartTime = 0\nEndTime = 3\nTime = 1\n");
+    assert_eq!((noisy.iterations, noisy.ended), (1, false));
+}
+
+#[test]
+fn road_car_run_mode_keeps_the_pilot_apart_from_the_protocol() {
+    let env = |pairs: &[(&str, &str)]| {
+        let map: std::collections::HashMap<String, String> = pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        move |k: &str| map.get(k).cloned()
+    };
+    let protocol = RoadCarMode::from_lookup(env(&[("VERNON_CAR_NP", "16"), ("VERNON_CAR_ITER", "7000")])).unwrap();
+    assert_eq!(protocol, RoadCarMode { np: 16, mesh_np: 1, n_iter: 7000, pilot: false, mesh_only: false, mesh_timeout_min: 300, solve_timeout_min: 2700 });
+    let pilot = RoadCarMode::from_lookup(env(&[
+        ("VERNON_CAR_NP", "16"), ("VERNON_CAR_MESH_NP", "1"), ("VERNON_CAR_ITER", "200"), ("VERNON_CAR_PILOT", "1"),
+        ("VERNON_CAR_MESH_TIMEOUT_MIN", "100"), ("VERNON_CAR_SOLVE_TIMEOUT_MIN", "180"),
+    ])).unwrap();
+    assert_eq!(pilot, RoadCarMode { np: 16, mesh_np: 1, n_iter: 200, pilot: true, mesh_only: false, mesh_timeout_min: 100, solve_timeout_min: 180 });
+    // The sizing profiles keep meshing on their own rank count.
+    let sizing = RoadCarMode::from_lookup(env(&[("VERNON_CAR_NP", "2"), ("VERNON_CAR_MESH_NP", "2"), ("VERNON_CAR_MESH_ONLY", "1")])).unwrap();
+    assert_eq!((sizing.mesh_np, sizing.mesh_only, sizing.n_iter), (2, true, 7000));
+    for bad in [
+        vec![("VERNON_CAR_NP", "16"), ("VERNON_CAR_ITER", "200")],                                    // short run without the pilot label
+        vec![("VERNON_CAR_NP", "16"), ("VERNON_CAR_ITER", "2000"), ("VERNON_CAR_PILOT", "1")],      // a pilot long enough to pass for a protocol run
+        vec![("VERNON_CAR_NP", "16"), ("VERNON_CAR_ITER", "200"), ("VERNON_CAR_PILOT", "1"), ("VERNON_CAR_MESH_ONLY", "1")],
+        vec![("VERNON_CAR_NP", "16"), ("VERNON_CAR_PILOT", "yes")],
+        vec![("VERNON_CAR_NP", "0")],
+        vec![("VERNON_CAR_NP", "16"), ("VERNON_CAR_MESH_NP", "0")],
+        vec![("VERNON_CAR_NP", "16"), ("VERNON_CAR_SOLVE_TIMEOUT_MIN", "0")],
+        vec![("VERNON_CAR_NP", "16"), ("VERNON_CAR_ITER", "7001")],
+        vec![],
+    ] {
+        assert!(RoadCarMode::from_lookup(env(&bad)).is_err(), "{bad:?}");
     }
 }
 

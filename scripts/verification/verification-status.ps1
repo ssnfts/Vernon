@@ -13,7 +13,7 @@ if (-not $RunId) {
     $RunId = $latest.runId
 }
 $path = Join-Path (Get-VerificationPath $RunId) 'status.json'
-$state = Get-Content -Raw -LiteralPath $path | ConvertFrom-Json
+$state = Read-VerificationJson $path
 $alive = Test-VerificationProcess $state.workerPid $state.workerStartedUtc
 $childAlive = Test-VerificationProcess $state.childPid $state.childStartedUtc
 $lockState = Get-VerificationLockState
@@ -52,5 +52,12 @@ else {
     Write-Output "Started: $($state.startedUtc); finished: $($state.finishedUtc)"
     foreach ($step in $state.steps) { Write-Output "  $($step.name): $($step.status); exit $($step.exitCode); reused $($step.reused)" }
     if ($state.message) { Write-Output $state.message }
+    $memoryPath = Join-Path (Get-VerificationPath $RunId) 'memory-summary.json'
+    if (Test-Path -LiteralPath $memoryPath) {
+        $memory = Get-Content -Raw -LiteralPath $memoryPath | ConvertFrom-Json
+        $solver = $memory.programs.simpleFoam
+        Write-Output ("Memory: {0} samples, last {1}; lowest WSL MemAvailable {2:N1} GiB; simpleFoam ranks {3}, peak rank {4:N2} GiB, peak total RSS {5:N1} GiB; run folder {6:N1} GiB" -f
+            $memory.samples, $memory.lastUtc, ($memory.minMemAvailableKiB / 1MB), $solver.maxProcesses, ($solver.peakRankHwmKiB / 1MB), ($solver.peakSumRssKiB / 1MB), ($memory.maxRunDirectoryBytes / 1GB))
+    }
     Write-Output "Logs and status: $($state.runDirectory)"
 }

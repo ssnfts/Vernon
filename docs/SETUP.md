@@ -56,7 +56,7 @@ WinLibs' `gcc` and `dlltool`. It only does this when that file doesn't exist yet
 ```powershell
 . .\scripts\dev-env.ps1        # in every new shell
 cargo build --workspace
-cargo test --workspace         # expect about 1732 passed, 0 failed, 35 ignored
+cargo test --workspace         # expect about 1763 passed, 0 failed, 38 ignored
 cargo clippy --workspace --all-targets -- -D warnings
 cargo run -p vernon-cli -- cook examples/bodykit_pipeline.vrn   # 40 nodes, 0 failing, 5 expected gates
 cargo run -p vernon            # opens the app

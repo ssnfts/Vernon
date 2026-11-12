@@ -615,7 +615,10 @@ pub fn fv_schemes(c: &CaseSpec) -> String {
     let lap = if c.nonortho_over_70 { "limited corrected 0.5" } else { "corrected" };
     let mut o = header("dictionary", "system", "fvSchemes");
     o += "ddtSchemes\n{\n    default         steadyState;\n}\n\n";
-    o += "gradSchemes\n{\n    default         Gauss linear;\n    grad(U)         cellLimited Gauss linear 1;\n}\n\n";
+    // grad(k)/grad(omega) are limited like grad(U): unlimited, they overshoot
+    // on rough prism-layer cells and drove most of the k/omega clipping
+    // (WP9 diagnostic D5, 2026-11-09).
+    o += "gradSchemes\n{\n    default         Gauss linear;\n    grad(U)         cellLimited Gauss linear 1;\n    grad(k)         cellLimited Gauss linear 1;\n    grad(omega)     cellLimited Gauss linear 1;\n}\n\n";
     o += "divSchemes\n{\n    default         none;\n    div(phi,U)      bounded Gauss linearUpwind grad(U);\n    div(phi,k)      bounded Gauss limitedLinear 1;\n    div(phi,omega)  bounded Gauss limitedLinear 1;\n    div((nuEff*dev2(T(grad(U))))) Gauss linear;\n}\n\n";
     o += &format!("laplacianSchemes\n{{\n    default         Gauss linear {lap};\n}}\n\n");
     o += &format!("interpolationSchemes\n{{\n    default         linear;\n}}\n\nsnGradSchemes\n{{\n    default         {lap};\n}}\n\nwallDist\n{{\n    method          meshWave;\n}}\n");

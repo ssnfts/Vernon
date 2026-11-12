@@ -1124,6 +1124,23 @@ mod tests {
     }
 
     #[test]
+    fn steady_recipe_limits_the_velocity_and_turbulence_gradients() {
+        // WP9 diagnostic D5 (2026-11-09): unlimited grad(k)/grad(omega) on the
+        // rough near-wall layer cells drove most of the k/omega clipping.
+        let (case, _) = setup(
+            &[],
+            &[("flavour", ParamValue::Str("opencfd2606".into()))],
+            "steady-gradients",
+        );
+        let schemes = read(&case, "system/fvSchemes");
+        assert!(schemes.contains(
+            "gradSchemes\n{\n    default         Gauss linear;\n    grad(U)         cellLimited Gauss linear 1;\n    grad(k)         cellLimited Gauss linear 1;\n    grad(omega)     cellLimited Gauss linear 1;\n}\n"
+        ), "{schemes}");
+        // The convection schemes are unchanged.
+        assert!(schemes.contains("    div(phi,k)      bounded Gauss limitedLinear 1;\n    div(phi,omega)  bounded Gauss limitedLinear 1;\n"));
+    }
+
+    #[test]
     fn transient_recipe_writes_ddes_and_maps_its_settings_exactly() {
         let (case, r) = ddes(
             &[
