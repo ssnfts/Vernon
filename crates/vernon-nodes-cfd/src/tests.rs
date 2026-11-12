@@ -722,6 +722,12 @@ struct FastTier {
     steady_iter: i64,
     out_file: String,
     label: String,
+    /// A verified checkpoint (`crate::fast_seed`) to continue from.
+    seed_dir: Option<String>,
+    /// Where this run preserves its end state for the next hour.
+    checkpoint_dir: Option<String>,
+    /// Checkpoint an already finished case instead of running anything.
+    preserve_case: Option<String>,
 }
 
 impl FastTier {
@@ -744,7 +750,11 @@ impl FastTier {
             steady_iter: num("VERNON_FAST_STEADY_ITER", 600.0) as i64,
             out_file: need("VERNON_FAST_OUT"),
             label: get("VERNON_FAST_LABEL").unwrap_or_else(|| "fast".into()),
+            seed_dir: get("VERNON_FAST_SEED_DIR"),
+            checkpoint_dir: get("VERNON_FAST_CHECKPOINT_DIR"),
+            preserve_case: get("VERNON_FAST_PRESERVE_CASE"),
         };
+        assert!(cfg.preserve_case.is_none() || (cfg.checkpoint_dir.is_some() && cfg.seed_dir.is_none()), "preserving needs VERNON_FAST_CHECKPOINT_DIR and no seed");
         assert!(cfg.budget_min > 0.0 && cfg.budget_min <= 60.0, "the fast tier is bounded at one hour");
         assert!((500..=2000).contains(&cfg.steady_iter), "the steady start runs 500..=2000 iterations");
         cfg
@@ -782,6 +792,30 @@ fn numeric_time_dirs(case: &std::path::Path) -> Vec<(f64, std::path::PathBuf)> {
         .unwrap_or_default();
     v.sort_by(|a, b| a.0.total_cmp(&b.0));
     v
+}
+
+/// The fixed time step of a fast-tier run: an integer number of steps per
+/// convective unit, so segment ends and write times coincide.
+fn fast_step(length_m: f64, u_ms: f64, requested: Option<f64>) -> (f64, f64, f64) {
+    let ctu = length_m / u_ms;
+    let steps_per_ctu = (ctu / requested.unwrap_or(ctu / 100.0)).round().max(10.0);
+    (ctu, steps_per_ctu, ctu / steps_per_ctu)
+}
+
+/// A per-run work directory for files the harness writes itself.
+fn case_root_for(label: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("vernon-fast-{label}"));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+#[test]
+fn fast_tier_step_is_an_integer_fraction_of_the_convective_unit() {
+    let (ctu, steps, dt) = fast_step(1.044, 40.0, None);
+    assert!((ctu - 0.0261).abs() < 1e-12 && steps == 100.0 && (dt - 2.61e-4).abs() < 1e-12);
+    let (_, steps, dt) = fast_step(1.044, 40.0, Some(2.0e-4));
+    assert!(steps == 131.0 && (dt * steps - 0.0261).abs() < 1e-12);
 }
 
 #[test]
@@ -851,6 +885,7 @@ fn real_openfoam_fast_tier_run() {
     };
     reference["a_front_m2"] = serde_json::json!(a_front);
     reference["length_m"] = serde_json::json!(length);
+    let reference_value = reference.clone();
     let reference = Some(Data::json(reference));
     let rho = 1.225;
     let air_value = serde_json::json!({"rho": rho, "nu": cfg.nu, "mu": rho * cfg.nu, "u_ms": cfg.u_ms, "q": 0.5 * rho * cfg.u_ms * cfg.u_ms});
@@ -873,63 +908,133 @@ fn real_openfoam_fast_tier_run() {
         ("near_wake_level", ParamValue::Int(3)),
         ("far_wake_level", ParamValue::Int(2)),
     ]);
-    let dicts = cook(&reg, "cfd.mesh_setup", vec![j(&plan[0]), j(&domain[0]), Some(mesh_geometry)], &[
-        ("flavour", ParamValue::Str("opencfd2606".into())),
-        ("n_layers", ParamValue::Int(5)),
-        ("np", ParamValue::Int(cfg.np)),
-    ]);
-    print_report("mesh setup", &dicts[1]);
     let bounded = |processes: i64, minutes: i64| {
         let mut run = wsl_params(processes);
         run.iter_mut().find(|(k, _)| *k == "timeout_min").unwrap().1 = ParamValue::Int(minutes.max(1));
         run
     };
-    let mesh_started = Instant::now();
-    let built = cook(&reg, "cfd.mesh_build", vec![Some(dicts[0].clone())], &bounded(cfg.np, 12));
-    let mesh_wall_s = mesh_started.elapsed().as_secs_f64();
-    print_report("mesh build", &built[1]);
-    assert!(built[1].as_report().unwrap().passes(), "the built mesh must pass its gates");
-    let quality = cook(&reg, "cfd.mesh_quality", vec![Some(built[0].clone())], &[]);
-    print_report("mesh quality", &quality[0]);
-    let q = quality[0].as_report().unwrap().as_ref().clone();
 
-    // Steady start: a short SST run whose end state seeds the time-resolved run.
-    let steady_window = (cfg.steady_iter / 3).max(100);
-    let steady = cook(&reg, "cfd.case_setup", vec![Some(built[0].clone()), j(&air), j(&bc[0]), None, reference.clone(), j(&domain[0])], &[
-        ("n_iter", ParamValue::Int(cfg.steady_iter)),
-        ("window", ParamValue::Int(steady_window)),
-        ("write_interval", ParamValue::Int(cfg.steady_iter)),
-        ("np", ParamValue::Int(cfg.np)),
-        ("solver_mode", ParamValue::Str("steady_sst".into())),
-        ("u_ms", ParamValue::Float(cfg.u_ms)), ("rho_inf", ParamValue::Float(rho)), ("nu", ParamValue::Float(cfg.nu)),
-    ]);
-    print_report("steady case", &steady[1]);
-    let steady_minutes = (remaining(started).as_secs() / 60).min(15) as i64;
-    let steady_started = Instant::now();
-    let solve = cook(&reg, "cfd.solve_steady", vec![Some(steady[0].clone())], &bounded(cfg.np, steady_minutes));
-    let steady_wall_s = steady_started.elapsed().as_secs_f64();
-    print_report("steady solve", &solve[2]);
-    assert!(solve[2].as_report().unwrap().passes(), "the steady start must finish");
-    let steady_case = solve[0].as_file().unwrap().clone();
-    let (steady_time, steady_dir) = numeric_time_dirs(&steady_case).into_iter().rfind(|(t, _)| *t > 0.0).expect("the steady start wrote a time directory");
-    let steady_series = Series::from_json(solve[1].as_json().unwrap()).unwrap();
-    let steady_cd_tail = steady_series.col("Cd").map(|c| c[c.len().saturating_sub(steady_window as usize)..].to_vec()).unwrap_or_default();
-    let steady_cd = crate::coeffs::window_stats(&steady_cd_tail);
-
-    // Time step from the convective unit: an integer number of steps per CTU
-    // so that segment ends and write times coincide. Requested from the wake
-    // Courant number (about one at level-3 wake cells), never from Cd.
-    let ctu = length / cfg.u_ms;
-    let dt_request = cfg.delta_t_s.unwrap_or(ctu / 100.0);
-    let steps_per_ctu = (ctu / dt_request).round().max(10.0);
-    let dt = ctu / steps_per_ctu;
+    // Identity of this run, as a checkpoint must match it: the body, every
+    // mesh input, the solver recipe (filled in once the case is written) and
+    // the flow state. `crate::fast_seed` compares these before any seed is used.
+    let (ctu, steps_per_ctu, dt) = fast_step(length, cfg.u_ms, cfg.delta_t_s);
+    let body_key = crate::fast_seed::body_key(&cfg.geometry).unwrap();
+    let mesh_inputs_fnv1a64 = crate::fast_seed::mesh_inputs_fingerprint(&serde_json::json!({
+        "body": body_key, "angle_deg": if is_slant { Some(cfg.angle_deg) } else { None },
+        "plan": plan[0].as_json().unwrap().as_ref(), "domain": domain[0].as_json().unwrap().as_ref(),
+        "reference": reference_value, "flavour": "opencfd2606", "n_layers": 5, "np": cfg.np,
+    }));
+    let identity = |recipe: &str| crate::fast_seed::SeedIdentity {
+        body: body_key.clone(), angle_deg: if is_slant { Some(cfg.angle_deg) } else { None }, np: cfg.np,
+        mesh_inputs_fnv1a64: mesh_inputs_fnv1a64.clone(), recipe_fnv1a64: recipe.to_string(),
+        u_ms: cfg.u_ms, nu: cfg.nu, rho, delta_t_s: dt, ctu_s: ctu,
+    };
     // Fast-tier rule (user decision 2026-11-12): stationarity and per-step
     // convergence are gated; ESS and the standard error are reported with
     // the mean as its interval.
     let p = crate::transient::TransientParams::fast_tier(ctu);
-    let washout_s = p.washout_ctu * ctu;
-    let first_end = (p.washout_ctu + p.min_average_ctu) * ctu;
-    let ddes = cook(&reg, "cfd.case_setup", vec![Some(built[0].clone()), j(&air), j(&bc[0]), None, reference.clone(), j(&domain[0])], &[
+
+    // Checkpoint an already finished run (no solver runs): its latest written
+    // time, with the identity this harness computes for the same settings.
+    if let Some(from) = &cfg.preserve_case {
+        let from = std::path::PathBuf::from(from);
+        let dir = std::path::PathBuf::from(cfg.checkpoint_dir.as_deref().expect("set VERNON_FAST_CHECKPOINT_DIR"));
+        let (time, time_dir) = numeric_time_dirs(&from.join("processor0")).pop().expect("the case has decomposed time directories");
+        let time_name = time_dir.file_name().unwrap().to_string_lossy().to_string();
+        let row: Value = serde_json::from_slice(&std::fs::read(&cfg.out_file).expect("VERNON_FAST_OUT names the run's row")).unwrap();
+        assert_eq!(row["label"].as_str(), Some(cfg.label.as_str()), "the row must be the preserved run's own");
+        assert!((row["transient"]["delta_t_s"].as_f64().unwrap() - dt).abs() < 1e-15, "the run's time step must be this harness's");
+        let recipe = crate::fast_seed::recipe_fingerprint(&from).unwrap();
+        let mesh: Value = ["cells", "max_non_ortho_deg", "max_skewness", "layer_coverage_pct"].iter().map(|k| (k.to_string(), row[*k].clone())).collect::<serde_json::Map<_, _>>().into();
+        let record = crate::fast_seed::SeedRecord {
+            label: cfg.label.clone(), identity: identity(&recipe), transient_start_s: 0.0, time_s: time,
+            ctu_reached: time / ctu, seed_chain: Vec::new(),
+            stop: row["stop_reason"].as_str().filter(|s| !s.is_empty()).map_or_else(|| format!("{:?}", row["transient"]["assessment"]["verdict"]), String::from),
+            mesh,
+        };
+        let to = dir.join(&cfg.label);
+        let manifest = crate::fast_seed::preserve(&from, &to, &time_name, cfg.np as usize, &record).unwrap_or_else(|e| panic!("preserve: {e}"));
+        crate::fast_seed::Seed::open(&to, cfg.np as usize).unwrap_or_else(|e| panic!("the new checkpoint does not verify: {e}"));
+        println!("FAST_TIER_PRESERVED label={} time={time_name} ctu_reached={:.2} files={} to={}", cfg.label, time / ctu, manifest["files"].as_object().map_or(0, |m| m.len()), to.display());
+        return;
+    }
+
+    // Start: a verified checkpoint of the same body and settings, or a mesh
+    // and a short steady solution.
+    let seed = cfg.seed_dir.as_deref().map(|d| crate::fast_seed::Seed::open(std::path::Path::new(d), cfg.np as usize).unwrap_or_else(|e| panic!("seed: {e}")));
+    let cont = match &seed {
+        Some(s) => crate::transient::Continuation::resume(s.record.transient_start_s, s.record.time_s, &p),
+        None => crate::transient::Continuation::fresh(0.0, &p),
+    }
+    .unwrap_or_else(|e| panic!("continuation: {e}"));
+    let first_end = cont.first_end_s(&p);
+    let washout_s = cont.window_start_s;
+    let (mesh_case, mesh_row, start_row, steady_dir) = match &seed {
+        Some(s) => {
+            let restored = case_root_for(&cfg.label).join("seed-mesh");
+            let n = s.restore_mesh_case(&restored).unwrap_or_else(|e| panic!("restore: {e}"));
+            println!("seed {} at {} s ({:.2} CTU since its switch), {n} case files restored", s.record.label, s.time_name, s.record.ctu_reached);
+            let start = serde_json::json!({
+                "kind": "checkpoint", "seed_label": s.record.label, "seed_dir": s.dir.display().to_string(),
+                "seed_time_s": s.record.time_s, "seed_ctu_reached": s.record.ctu_reached, "seed_chain": s.record.seed_chain,
+                "seed_stop": s.record.stop, "transient_start_s": s.record.transient_start_s, "polymesh_fnv1a64": s.polymesh_fnv1a64(),
+                "washout_done_by_seed": cont.washout_done_by_seed,
+                "role": "restart state only; no sample of the seed run is reused",
+            });
+            (Data::File(restored), s.record.mesh.clone(), start, None)
+        }
+        None => {
+            let dicts = cook(&reg, "cfd.mesh_setup", vec![j(&plan[0]), j(&domain[0]), Some(mesh_geometry)], &[
+                ("flavour", ParamValue::Str("opencfd2606".into())),
+                ("n_layers", ParamValue::Int(5)),
+                ("np", ParamValue::Int(cfg.np)),
+            ]);
+            print_report("mesh setup", &dicts[1]);
+            let mesh_started = Instant::now();
+            let built = cook(&reg, "cfd.mesh_build", vec![Some(dicts[0].clone())], &bounded(cfg.np, 12));
+            let mesh_wall_s = mesh_started.elapsed().as_secs_f64();
+            print_report("mesh build", &built[1]);
+            assert!(built[1].as_report().unwrap().passes(), "the built mesh must pass its gates");
+            let quality = cook(&reg, "cfd.mesh_quality", vec![Some(built[0].clone())], &[]);
+            print_report("mesh quality", &quality[0]);
+            let q = quality[0].as_report().unwrap().as_ref().clone();
+            let mesh = serde_json::json!({
+                "cells": q.metrics["cells"].value, "max_non_ortho_deg": q.metrics["max_non_ortho_deg"].value,
+                "max_skewness": q.metrics["max_skewness"].value, "layer_coverage_pct": q.metrics.get("layer_coverage_pct").map(|m| m.value),
+                "mesh_wall_s": mesh_wall_s,
+            });
+            // Steady start: a short SST run whose end state seeds the time-resolved run.
+            let steady_window = (cfg.steady_iter / 3).max(100);
+            let steady = cook(&reg, "cfd.case_setup", vec![Some(built[0].clone()), j(&air), j(&bc[0]), None, reference.clone(), j(&domain[0])], &[
+                ("n_iter", ParamValue::Int(cfg.steady_iter)),
+                ("window", ParamValue::Int(steady_window)),
+                ("write_interval", ParamValue::Int(cfg.steady_iter)),
+                ("np", ParamValue::Int(cfg.np)),
+                ("solver_mode", ParamValue::Str("steady_sst".into())),
+                ("u_ms", ParamValue::Float(cfg.u_ms)), ("rho_inf", ParamValue::Float(rho)), ("nu", ParamValue::Float(cfg.nu)),
+            ]);
+            print_report("steady case", &steady[1]);
+            let steady_minutes = (remaining(started).as_secs() / 60).min(15) as i64;
+            let steady_started = Instant::now();
+            let solve = cook(&reg, "cfd.solve_steady", vec![Some(steady[0].clone())], &bounded(cfg.np, steady_minutes));
+            let steady_wall_s = steady_started.elapsed().as_secs_f64();
+            print_report("steady solve", &solve[2]);
+            assert!(solve[2].as_report().unwrap().passes(), "the steady start must finish");
+            let steady_case = solve[0].as_file().unwrap().clone();
+            let (steady_time, steady_dir) = numeric_time_dirs(&steady_case).into_iter().rfind(|(t, _)| *t > 0.0).expect("the steady start wrote a time directory");
+            let steady_series = Series::from_json(solve[1].as_json().unwrap()).unwrap();
+            let steady_cd_tail = steady_series.col("Cd").map(|c| c[c.len().saturating_sub(steady_window as usize)..].to_vec()).unwrap_or_default();
+            let steady_cd = crate::coeffs::window_stats(&steady_cd_tail);
+            let start = serde_json::json!({
+                "kind": "steady", "iterations": cfg.steady_iter, "wall_s": steady_wall_s, "end_time": steady_time,
+                "cd_tail": steady_cd.map(|s| serde_json::json!({"mean": s.mean, "sd": s.sd, "window": steady_window})),
+                "role": "start field and trend only",
+            });
+            (built[0].clone(), mesh, start, Some(steady_dir))
+        }
+    };
+
+    let ddes = cook(&reg, "cfd.case_setup", vec![Some(mesh_case), j(&air), j(&bc[0]), None, reference.clone(), j(&domain[0])], &[
         ("solver_mode", ParamValue::Str("transient_ddes".into())),
         ("end_time_s", ParamValue::Float(first_end)),
         ("delta_t_s", ParamValue::Float(dt)),
@@ -947,17 +1052,28 @@ fn real_openfoam_fast_tier_run() {
     let half_average_ctu = 1.0;
     let half_total_ctu = 0.5 + half_average_ctu;
     let case = ddes[0].as_file().unwrap().clone();
-    // The steady end state becomes the initial field of the time-resolved run.
+    let recipe = crate::fast_seed::recipe_fingerprint(&case).unwrap();
     let mut seeded = Vec::new();
-    for field in ["U", "p", "k", "omega", "nut", "phi"] {
-        let from = steady_dir.join(field);
-        if from.is_file() {
-            std::fs::copy(&from, case.join("0").join(field)).unwrap();
-            seeded.push(field);
+    match (&seed, &steady_dir) {
+        (Some(s), _) => {
+            s.check(&identity(&recipe), &cfg.label).unwrap_or_else(|e| panic!("{e}"));
+            seeded = s.install(&case).unwrap_or_else(|e| panic!("install: {e}"));
+            println!("installed {} restart files from {}", seeded.len(), s.record.label);
         }
+        (None, Some(steady_dir)) => {
+            // The steady end state becomes the initial field of the time-resolved run.
+            for field in ["U", "p", "k", "omega", "nut", "phi"] {
+                let from = steady_dir.join(field);
+                if from.is_file() {
+                    std::fs::copy(&from, case.join("0").join(field)).unwrap();
+                    seeded.push(field.to_string());
+                }
+            }
+            assert!(seeded.iter().any(|f| f == "U") && seeded.iter().any(|f| f == "p"), "the steady start must provide U and p");
+            println!("seeded from the steady start: {seeded:?}");
+        }
+        (None, None) => unreachable!(),
     }
-    assert!(seeded.contains(&"U") && seeded.contains(&"p"), "the steady start must provide U and p");
-    println!("seeded from steady time {steady_time}: {seeded:?}");
 
     let var = |k: &str| std::env::var(k).unwrap_or_else(|_| panic!("set {k}"));
     let wsl = crate::extproc::WslOpts { distribution: var("VERNON_WSL_DISTRO"), user: var("VERNON_WSL_USER"), environment_file: var("VERNON_WSL_ENV_FILE") };
@@ -974,10 +1090,12 @@ fn real_openfoam_fast_tier_run() {
         std::fs::write(&control_dict, set_dict_entry(&text, key, &format!("{value}"))).unwrap();
     };
     let latest_processor_time = || -> f64 { numeric_time_dirs(&case.join("processor0")).last().map(|(t, _)| *t).unwrap_or(0.0) };
+    // Only this run's own samples, strictly after its restart.
     let read_history = || -> (Vec<f64>, Vec<f64>) {
         let s = crate::coeffs::load_case_series(&case);
         let cd = s.col("Cd").expect("the coefficient history has Cd").to_vec();
-        (s.time.clone(), cd)
+        let (t, v) = cont.own_samples(&s.time, &cd);
+        (t.to_vec(), v.to_vec())
     };
 
     // Segments under the stop rule, each ending on a check boundary.
@@ -986,7 +1104,9 @@ fn real_openfoam_fast_tier_run() {
     let mut report = None;
     let mut stop_reason = String::new();
     let mut end_s = first_end;
-    let mut steps = vec![("decomposePar".to_string(), vec!["decomposePar".to_string(), "-force".to_string()]), solver_step("solver_seg01")];
+    // A seeded case already holds its decomposed mesh and restart fields.
+    let mut steps = if seed.is_some() { Vec::new() } else { vec![("decomposePar".to_string(), vec!["decomposePar".to_string(), "-force".to_string()])] };
+    steps.push(solver_step("solver_seg01"));
     for segment in 1.. {
         let name = format!("solver_seg{segment:02}");
         let seg_started = Instant::now();
@@ -998,7 +1118,7 @@ fn real_openfoam_fast_tier_run() {
             seconds_per_step = s;
         }
         let (time, cd) = read_history();
-        let r = crate::transient::assess(&time, &cd, 0.0, &p).unwrap_or_else(|e| panic!("assessment: {e}"));
+        let r = crate::transient::assess(&time, &cd, cont.assess_switch_s, &p).unwrap_or_else(|e| panic!("assessment: {e}"));
         println!("segment {segment}: end {end_s:.4} s, {} steps, {:.2} s/step, verdict {:?}, mean {:.5} ± {:.5}, ess {:.0}, reasons {:?}", timing.iterations, seconds_per_step, r.verdict, r.mean, r.std_err, r.ess, r.reasons);
         segments.push(serde_json::json!({
             "segment": segment, "end_s": end_s, "steps": timing.iterations, "ended_cleanly": timing.ended,
@@ -1010,7 +1130,7 @@ fn real_openfoam_fast_tier_run() {
             report = Some(r);
             break;
         }
-        match crate::transient::next_segment_end_s(&r, 0.0, &p) {
+        match crate::transient::next_segment_end_s(&r, cont.assess_switch_s, &p) {
             None => {
                 report = Some(r);
                 break;
@@ -1032,6 +1152,29 @@ fn real_openfoam_fast_tier_run() {
     }
     let report = report.unwrap();
     let main_pass = report.verdict == crate::transient::Verdict::Pass && stop_reason.is_empty();
+
+    // Preserve the end of the main window for the next hour, before the
+    // half-step segment changes the step and purges this write.
+    let checkpoint = cfg.checkpoint_dir.as_deref().map(|dir| {
+        let (time, time_dir) = numeric_time_dirs(&case.join("processor0")).pop().expect("decomposed time directories");
+        let time_name = time_dir.file_name().unwrap().to_string_lossy().to_string();
+        let mut chain = seed.as_ref().map(|s| s.record.seed_chain.clone()).unwrap_or_default();
+        if let Some(s) = &seed {
+            chain.push(s.record.label.clone());
+        }
+        let record = crate::fast_seed::SeedRecord {
+            label: cfg.label.clone(), identity: identity(&recipe), transient_start_s: cont.switch_time_s, time_s: time,
+            ctu_reached: cont.cumulative_ctu(time, &p), seed_chain: chain,
+            stop: if stop_reason.is_empty() { format!("{:?}", report.verdict) } else { stop_reason.clone() },
+            mesh: mesh_row.clone(),
+        };
+        let to = std::path::Path::new(dir).join(&cfg.label);
+        match crate::fast_seed::preserve(&case, &to, &time_name, cfg.np as usize, &record) {
+            Ok(_) => serde_json::json!({"dir": to.display().to_string(), "time_s": time, "ctu_reached": record.ctu_reached}),
+            Err(e) => serde_json::json!({"error": e}),
+        }
+    });
+    println!("checkpoint: {checkpoint:?}");
 
     // Per-step rule over every main segment after the wash-out.
     let mut solver_log = String::new();
@@ -1109,20 +1252,12 @@ fn real_openfoam_fast_tier_run() {
         "length_m": length, "a_front_m2": a_front, "aref_m2": 0.5 * a_front, "half_model": true,
         "dx0_m": cfg.dx0_m, "np": cfg.np,
     });
-    let mesh = serde_json::json!({
-        "cells": q.metrics["cells"].value, "max_non_ortho_deg": q.metrics["max_non_ortho_deg"].value,
-        "max_skewness": q.metrics["max_skewness"].value, "layer_coverage_pct": q.metrics.get("layer_coverage_pct").map(|m| m.value),
-        "mesh_wall_s": mesh_wall_s,
-    });
-    let steady_row = serde_json::json!({
-        "iterations": cfg.steady_iter, "wall_s": steady_wall_s, "end_time": steady_time, "seeded_fields": seeded,
-        "cd_tail": steady_cd.map(|s| serde_json::json!({"mean": s.mean, "sd": s.sd, "window": steady_window})),
-        "role": "start field and trend only",
-    });
     let transient_row = serde_json::json!({
         "ctu_s": ctu, "delta_t_s": dt, "steps_per_ctu": steps_per_ctu, "seconds_per_step": seconds_per_step,
         "acceptance": p, "segments": segments, "assessment": report, "per_step": step_report, "step_rule": step_rule,
         "half_step": half, "half_step_agreement": half_agreement,
+        "continuation": cont, "averaged_from_ctu": cont.cumulative_ctu(report.window_start_s, &p),
+        "averaged_to_ctu": cont.cumulative_ctu(report.window_end_s, &p), "checkpoint": checkpoint,
     });
     let verdict_row = serde_json::json!({
         "stop_reason": stop_reason, "gate_passed": gate_passed,
@@ -1132,18 +1267,18 @@ fn real_openfoam_fast_tier_run() {
         "reconstructed": reconstructed, "wall_s": started.elapsed().as_secs_f64(), "budget_min": cfg.budget_min,
         "case": case.display().to_string(),
     });
-    for part in [mesh, verdict_row] {
+    for part in [mesh_row.clone(), verdict_row] {
         for (k, v) in part.as_object().unwrap() {
             row[k] = v.clone();
         }
     }
-    row["steady"] = steady_row;
+    row["start"] = start_row;
     row["transient"] = transient_row;
     println!("{row}");
     std::fs::write(&cfg.out_file, serde_json::to_string_pretty(&row).unwrap()).unwrap();
     println!(
         "FAST_TIER_COMPLETE label={} cells={} dt={dt} ctu_averaged={:.2} cd={:.5} se={:.5} gate_passed={gate_passed} within_band={:?} stop_reason={:?} wall_s={:.0}",
-        cfg.label, q.metrics["cells"].value, report.averaged_ctu, report.mean, report.std_err, within_band, stop_reason, started.elapsed().as_secs_f64()
+        cfg.label, mesh_row["cells"], report.averaged_ctu, report.mean, report.std_err, within_band, stop_reason, started.elapsed().as_secs_f64()
     );
 }
 

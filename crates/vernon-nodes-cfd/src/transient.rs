@@ -347,6 +347,76 @@ pub fn next_segment_end_s(report: &TransientReport, switch_time_s: f64, p: &Tran
     Some(start + next_ctu.min(p.max_average_ctu) * p.ctu_s)
 }
 
+/// Time bookkeeping of a run that may continue an earlier run's preserved
+/// state (`docs/research/wp9-fast-tier-plan.md`, section 6, "Seeded runs").
+///
+/// The wash-out is counted on the continuous solution's clock from the
+/// original switch off the steady start, through every continuation: a seed
+/// that has already run past the wash-out needs none, and averaging starts at
+/// the restart. A seed short of it finishes the remaining wash-out first.
+/// Samples are never shared between runs: a seeded run's statistics use only
+/// its own samples after the restart. Nothing in [`TransientParams`] changes.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Continuation {
+    /// Where the time-resolved solution left the steady start (s).
+    pub switch_time_s: f64,
+    /// Where this run starts: the checkpoint time, or the switch itself.
+    pub resume_time_s: f64,
+    /// Convective units already run before `resume_time_s`.
+    pub seed_ctu: f64,
+    /// Start of this run's averaging window.
+    pub window_start_s: f64,
+    /// The switch time to hand to [`assess`] and [`next_segment_end_s`] so
+    /// that their wash-out ends at `window_start_s`.
+    pub assess_switch_s: f64,
+    /// True when the seed had already completed the wash-out.
+    pub washout_done_by_seed: bool,
+}
+
+impl Continuation {
+    /// A run started from the steady solution at `switch_time_s`.
+    pub fn fresh(switch_time_s: f64, p: &TransientParams) -> Result<Self, String> {
+        Self::resume(switch_time_s, switch_time_s, p)
+    }
+
+    /// A run continuing at `resume_time_s` a solution that left the steady
+    /// start at `switch_time_s`.
+    pub fn resume(switch_time_s: f64, resume_time_s: f64, p: &TransientParams) -> Result<Self, String> {
+        p.validate()?;
+        if !switch_time_s.is_finite() || !resume_time_s.is_finite() || resume_time_s < switch_time_s {
+            return Err(format!("resume time {resume_time_s} s lies before the switch at {switch_time_s} s"));
+        }
+        let washout_end = switch_time_s + p.washout_ctu * p.ctu_s;
+        let window_start_s = washout_end.max(resume_time_s);
+        Ok(Self {
+            switch_time_s,
+            resume_time_s,
+            seed_ctu: (resume_time_s - switch_time_s) / p.ctu_s,
+            window_start_s,
+            assess_switch_s: window_start_s - p.washout_ctu * p.ctu_s,
+            washout_done_by_seed: resume_time_s > switch_time_s && resume_time_s >= washout_end,
+        })
+    }
+
+    /// Convective units since the original switch at time `t`.
+    pub fn cumulative_ctu(&self, t: f64, p: &TransientParams) -> f64 {
+        (t - self.switch_time_s) / p.ctu_s
+    }
+
+    /// End of the first segment: the minimum averaging after the window start.
+    pub fn first_end_s(&self, p: &TransientParams) -> f64 {
+        self.window_start_s + p.min_average_ctu * p.ctu_s
+    }
+
+    /// The samples of `(time, value)` strictly after the restart: what this
+    /// run computed itself.
+    pub fn own_samples<'a>(&self, time: &'a [f64], value: &'a [f64]) -> (&'a [f64], &'a [f64]) {
+        let eps = 1e-9 * self.resume_time_s.abs().max(1.0);
+        let first = time.partition_point(|t| *t <= self.resume_time_s + eps).min(value.len());
+        (&time[first..], &value[first..])
+    }
+}
+
 /// Does the half-step segment agree with the main window? Returns the
 /// decision, the difference of the means and the allowed difference.
 pub fn dt_half_agrees(main: &TransientReport, half: &TransientReport, confidence: f64) -> (bool, f64, f64) {
@@ -704,6 +774,46 @@ mod tests {
         let r = assess(&t, &v, SWITCH, &p).unwrap();
         assert!((r.mean - 0.30).abs() < 0.01, "time-weighted mean {}", r.mean);
         assert!(r.resampled > r.samples / 2);
+    }
+
+    #[test]
+    fn transient_seeded_run_continues_the_clock_and_uses_only_its_own_samples() {
+        let p = TransientParams::fast_tier(CTU);
+        // A fresh run: wash-out after the switch, unchanged behaviour.
+        let fresh = Continuation::fresh(0.0, &p).unwrap();
+        assert_eq!((fresh.assess_switch_s, fresh.seed_ctu, fresh.washout_done_by_seed), (0.0, 0.0, false));
+        assert!((fresh.window_start_s - 2.0 * CTU).abs() < 1e-15);
+        assert!((fresh.first_end_s(&p) - 8.0 * CTU).abs() < 1e-12);
+        // Seeded at 14 CTU: the wash-out is done, averaging starts at the restart.
+        let resume = 14.0 * CTU;
+        let c = Continuation::resume(0.0, resume, &p).unwrap();
+        assert!(c.washout_done_by_seed);
+        assert!((c.seed_ctu - 14.0).abs() < 1e-12);
+        assert!((c.window_start_s - resume).abs() < 1e-15);
+        assert!((c.first_end_s(&p) - 20.0 * CTU).abs() < 1e-12);
+        assert!((c.cumulative_ctu(20.0 * CTU, &p) - 20.0).abs() < 1e-12);
+        // The earlier run's samples (to 14 CTU) and this run's (14 to 21 CTU):
+        // only the latter are assessed, the window is 6..7 CTU long, never 19.
+        let (t_abs, v_all) = stationary(21.0, 13);
+        let t_all: Vec<f64> = t_abs.iter().map(|x| x - SWITCH).collect();
+        let (t, v) = c.own_samples(&t_all, &v_all);
+        assert!(t[0] > resume && t.len() == v.len());
+        assert_eq!(t.len(), t_all.len() - (14.0 * 200.0) as usize);
+        let r = assess(t, v, c.assess_switch_s, &p).unwrap();
+        assert!((r.window_start_s - resume).abs() < 1e-12, "{}", r.window_start_s);
+        assert!((r.averaged_ctu - 7.0).abs() < 0.02, "{}", r.averaged_ctu);
+        assert_eq!(r.samples, t.len(), "every own sample counts, none of the seed's");
+        // Segment ends keep the check grid of this run's window.
+        let mut short = r.clone();
+        short.verdict = Verdict::Continue;
+        short.averaged_ctu = 3.0;
+        assert!((next_segment_end_s(&short, c.assess_switch_s, &p).unwrap() - 20.0 * CTU).abs() < 1e-12);
+        // A seed short of the wash-out (1.5 CTU) finishes it first.
+        let early = Continuation::resume(0.0, 1.5 * CTU, &p).unwrap();
+        assert!(!early.washout_done_by_seed);
+        assert!((early.window_start_s - 2.0 * CTU).abs() < 1e-15 && early.assess_switch_s == 0.0);
+        // A resume before the switch is refused.
+        assert!(Continuation::resume(1.0, 0.5, &p).is_err());
     }
 
     #[test]

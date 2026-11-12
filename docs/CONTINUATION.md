@@ -48,6 +48,20 @@ evidence. For current commands use docs/SETUP.md and docs/CFD-RUNBOOK.md.
   work: seed each hour from the previous run's preserved checkpoint (the
   Stage 2 restart mechanism) so the wash-out is already done. Details and
   per-CTU histories in the plan's section 6.
+- **Checkpoint seeding (user: "Checkpoint seeding", 2026-11-12/13).** The
+  hash-verified checkpoint with identity checks (`fast_seed.rs`,
+  `diagnostic/arms.rs` generalised, `transient::Continuation`) was written by
+  a parallel session in this checkout; this session wired it into the
+  harness (preserve-only mode, seeded start, checkpoint before the half-step)
+  and checkpointed `-d` and `-e` at 14 CTU. `-f` (seeded) was starved by a
+  saturated external E: drive (other processes; 5.3 s/step) and timed out;
+  working cases moved to the internal disk (`C:\Users\mabdu\vernon-fast`).
+  **First passing fast-tier rows:** `-g` (25°, seeded from `-d`, 24.6 min):
+  Cd 0.304 ± 0.003 vs 0.285 (+6.7%, interval overlaps the 5% band); `-h`
+  (35°, seeded from `-e`, 24.4 min): Cd 0.303 ± 0.005 vs 0.260 (+16.7%, no
+  overlap). Both: stationary over 14–21 CTU, per-step rule on every step,
+  half-step check agrees. The experimental 25° > 35° ordering is not
+  reproduced (equal within intervals). Checkpoints at 21 CTU are on C:.
 - Nothing was launched through the runner; no gate was lowered; no run was
   relabelled.
 

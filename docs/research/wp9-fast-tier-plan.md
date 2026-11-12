@@ -212,6 +212,69 @@ end-of-run checkpoint and start the next hour from it, so the wash-out is
 already done. That is the next piece of work, and it reuses the checkpoint
 restart mechanism the road-car Stage 2 already has.
 
+**2026-11-12/13, checkpoint seeding wired (user: "Checkpoint seeding").**
+The checkpoint itself (`crate::fast_seed`: per-file hashes, identity of body,
+mesh inputs, solver recipe and flow state, refusal of any mismatch or reused
+label; `transient::Continuation`: the wash-out counted on the continuous
+clock, only the run's own samples assessed) was written by a parallel session
+in this checkout; this session wired it into the harness: a preserve-only
+mode for finished runs, a seeded start (restore the mesh case, write the
+case, check identity, install the decomposed mesh and restart fields, no
+decomposition), and a checkpoint of every run's main-window end before the
+half-step segment. Runs `-d` and `-e` were checkpointed at 14 CTU (507 hashed
+files each).
+
+**`fast-slant25-20261113-f` (seeded from `-d`): no result, I/O starvation.**
+The seed verified and installed (112 restart files), but the external drive
+holding the case (E:) was saturated by other processes (320% busy, queue 9,
+165 KB/s written): steps took 5.3 s instead of 1.5, a field write took
+minutes, and the chain timed out at the end of segment 1 with 5.99 of 6 CTU
+in the history and the checkpoint write interrupted. Per-step rule met on all
+600 steps. Not a solver result. Working cases now go to the internal disk
+(`C:\Users\mabdu\vernon-fast`), the seed copied there first; rerun as `-g`.
+
+**`fast-slant25-20261113-g` (seeded from `-d`): first fast-tier PASS, 24.6
+min. Cd 0.304 ± 0.003 (1 s.e.; 95% interval ±0.0055) against the experiment's
+0.285: +6.7%, mean outside the 5% band, interval overlapping it.**
+
+| Item | Value |
+|---|---|
+| Start | checkpoint of `-d` at 14 CTU since the switch (verified, identity matched, 112 restart files installed) |
+| Averaging | cumulative 14 → 21 CTU (7 CTU, this run's own samples only); stop rule passed at the second check |
+| Stationarity | trend 0.67%/CTU, not significant; halves 3.2% apart, not significant |
+| Interval | s.e. 0.0028 (autocorrelation) / 0.0025 (batch means); ESS 5.6 — reported, not gated |
+| Per-step rule | met on all 700 steps; p last-loop median 1.9e-3; Courant peak 7.4 |
+| Half-step (Δt/2, 0.5 + 1 CTU) | 0.307 ± 0.003; difference 0.0032, allowed 0.0082: agrees; its per-step rule met |
+| Cost | 1.41–1.43 s/step on the internal disk; 24.6 min including the half-step |
+| Checkpoint | written at 21 CTU for the next hour |
+
+The drag history through the chain: steady seed 0.395, then 0.388 → 0.336
+(`-d`, 2–14 CTU, falling) → 0.304 (`-g`, 14–21 CTU, settled). The
+time-resolved solution has moved from the steady RANS value (+39%) to +6.7%
+of the experiment on a 0.5M-cell half model. What this does and does not
+establish: the fast-tier gates pass for this body; the mean is not within
+5% of the experiment, and the remaining gap is consistent with the grid,
+the half model and the setup items listed above.
+
+**`fast-slant35-20261113-h` (seeded from `-e`): PASS, 24.4 min. Cd 0.303 ±
+0.005 (1 s.e.; 95% ±0.0095) against the experiment's 0.260: +16.7%, interval
+not overlapping the band.** Averaging cumulative 14 → 21 CTU; trend 0.93%/CTU
+and halves 3.1%, neither significant; ESS 4.6; per-step rule met on all 700
+steps; half-step 0.301 ± 0.002, difference 0.0027, allowed 0.0099: agrees.
+Chain: steady seed 0.49 → 0.332 (`-e`, falling) → 0.303 (`-h`). Checkpoint at
+21 CTU.
+
+**Reading the pair.** Both bodies pass the fast-tier gates. Against the
+experiment: 25° +6.7%, 35° +16.7%. The experimental ordering Cd(25°) >
+Cd(35°) (0.285 > 0.260) is not reproduced: 0.304 vs 0.303 are equal within
+their intervals. The 35° body, whose flow fully separates at the slant edge,
+is over-predicted the most; candidates are the same as before (0.5M cells,
+half model, wall functions at y+ ≈ 46, the 2% blockage domain), and the
+35° value may still be drifting slowly (0.93%/CTU, below significance).
+Next options, for the user: another seeded hour on each from the 21 CTU
+checkpoints (tests the residual drift), a finer grid for the 35° body, or
+the dataset bodies.
+
 What this adds: the honest fast-tier statement for this body is a trend,
 not a value: the wash-out needed is longer than the budget allows at 0.5M
 cells and 16 ranks. Any pass within the hour would need either a converged

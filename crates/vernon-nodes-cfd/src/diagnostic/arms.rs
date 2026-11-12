@@ -499,71 +499,136 @@ pub fn check_rel_tol(log: &str, field: &str, tight: bool) -> Result<serde_json::
 
 // ----------------------------------------------------------- checkpoint
 
-/// Every file a restart from `time` needs, relative to the case: each rank's
-/// mesh and its `time` directory (fields and `uniform/`), and the case's
-/// `system/`, `constant/` settings and logs. Sorted.
-pub fn checkpoint_files(case: &Path, time: u32) -> Result<Vec<String>, String> {
-    fn walk(root: &Path, dir: &Path, out: &mut Vec<String>) -> Result<(), String> {
-        let entries = std::fs::read_dir(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-        for e in entries {
-            let e = e.map_err(|e| e.to_string())?;
-            let kind = e.file_type().map_err(|e| e.to_string())?;
-            if kind.is_dir() {
-                walk(root, &e.path(), out)?;
-            } else if kind.is_file() {
-                let rel = e.path().strip_prefix(root).map_err(|e| e.to_string())?.to_string_lossy().replace('\\', "/");
-                out.push(rel);
-            } else {
-                return Err(format!("link or special file in a checkpoint: {}", e.path().display()));
-            }
+/// What a checkpoint holds besides each rank's mesh and time directory. The
+/// Stage 2 steady restart and the fast-tier transient seed differ only here.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CheckpointSpec {
+    /// Written to the manifest and required on verification.
+    pub scope: &'static str,
+    pub diagnostic_only: bool,
+    /// Number of `processorN` directories, exactly.
+    pub ranks: usize,
+    /// Case-level files that must exist.
+    pub case_files: Vec<&'static str>,
+    /// Case-level directories copied whole: (path, required).
+    pub case_dirs: Vec<(&'static str, bool)>,
+}
+
+impl CheckpointSpec {
+    /// The steady Stage 2 restart (16 ranks, one solver log).
+    pub fn stage2() -> Self {
+        Self {
+            scope: "wp9_stage2_checkpoint",
+            diagnostic_only: true,
+            ranks: 16,
+            case_files: vec!["system/controlDict", "system/fvSchemes", "system/fvSolution", "system/decomposeParDict", "constant/transportProperties", "constant/turbulenceProperties", "logs/solver.log"],
+            case_dirs: vec![("constant/triSurface", false)],
         }
-        Ok(())
     }
+
+    /// The fast-tier transient seed: the whole case settings, the
+    /// reconstructed mesh, the initial fields and every segment log, so the
+    /// next run can be set up from the checkpoint alone.
+    pub fn fast_tier(ranks: usize) -> Self {
+        Self {
+            scope: "wp9_fast_tier_checkpoint",
+            diagnostic_only: false,
+            ranks,
+            case_files: vec!["system/controlDict", "system/fvSchemes", "system/fvSolution", "system/decomposeParDict", "constant/transportProperties", "constant/turbulenceProperties", "constant/polyMesh/boundary", "vernon_case.json"],
+            case_dirs: vec![("system", true), ("constant", true), ("0.orig", true), ("logs", true)],
+        }
+    }
+}
+
+/// A time directory name: a plain, finite, non-negative number as the solver
+/// writes it (`2000`, `0.3915`, `1.5e-05`). Anything else is refused, so a
+/// manifest can never point outside the rank directory.
+fn check_time_name(time: &str) -> Result<(), String> {
+    let plain = !time.is_empty() && time.chars().all(|c| c.is_ascii_digit() || matches!(c, '.' | 'e' | 'E' | '-' | '+'));
+    match time.parse::<f64>() {
+        Ok(t) if plain && t.is_finite() && t >= 0.0 => Ok(()),
+        _ => Err(format!("not a time directory name: {time:?}")),
+    }
+}
+
+fn walk_checkpoint(root: &Path, dir: &Path, out: &mut Vec<String>) -> Result<(), String> {
+    let entries = std::fs::read_dir(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    for e in entries {
+        let e = e.map_err(|e| e.to_string())?;
+        let kind = e.file_type().map_err(|e| e.to_string())?;
+        if kind.is_dir() {
+            walk_checkpoint(root, &e.path(), out)?;
+        } else if kind.is_file() {
+            let rel = e.path().strip_prefix(root).map_err(|e| e.to_string())?.to_string_lossy().replace('\\', "/");
+            out.push(rel);
+        } else {
+            return Err(format!("link or special file in a checkpoint: {}", e.path().display()));
+        }
+    }
+    Ok(())
+}
+
+/// Every file a restart from `time` needs under `spec`, relative to the
+/// case: each rank's mesh and its `time` directory (fields and `uniform/`),
+/// and the spec's case-level files and directories. Sorted.
+pub fn checkpoint_files_in(case: &Path, time: &str, spec: &CheckpointSpec) -> Result<Vec<String>, String> {
+    check_time_name(time)?;
     let mut out = Vec::new();
     let ranks = super::processor_dirs(case).map_err(|e| e.to_string())?;
-    if ranks.len() != 16 {
-        return Err(format!("expected 16 processor directories, found {}", ranks.len()));
+    if ranks.len() != spec.ranks {
+        return Err(format!("expected {} processor directories, found {}", spec.ranks, ranks.len()));
     }
     for (n, rank) in ranks.iter().enumerate() {
         if rank.file_name().and_then(|f| f.to_str()) != Some(format!("processor{n}").as_str()) {
-            return Err(format!("processor directories are not processor0..15: {}", rank.display()));
+            return Err(format!("processor directories are not processor0..{}: {}", spec.ranks - 1, rank.display()));
         }
-        for sub in ["constant/polyMesh".to_string(), time.to_string()] {
-            let d = rank.join(&sub);
+        for sub in ["constant/polyMesh", time] {
+            let d = rank.join(sub);
             if !d.is_dir() {
                 return Err(format!("missing {}", d.display()));
             }
-            walk(case, &d, &mut out)?;
+            walk_checkpoint(case, &d, &mut out)?;
         }
         for f in CHECKPOINT_FIELDS {
-            if !rank.join(time.to_string()).join(f).is_file() {
+            if !rank.join(time).join(f).is_file() {
                 return Err(format!("processor{n}/{time} has no {f}"));
             }
         }
     }
-    for f in ["system/controlDict", "system/fvSchemes", "system/fvSolution", "system/decomposeParDict", "constant/transportProperties", "constant/turbulenceProperties", "logs/solver.log"] {
+    for f in &spec.case_files {
         if !case.join(f).is_file() {
             return Err(format!("missing {f}"));
         }
         out.push(f.to_string());
     }
-    let tri = case.join("constant/triSurface");
-    if tri.is_dir() {
-        walk(case, &tri, &mut out)?;
+    for (d, required) in &spec.case_dirs {
+        let dir = case.join(d);
+        if dir.is_dir() {
+            walk_checkpoint(case, &dir, &mut out)?;
+        } else if *required {
+            return Err(format!("missing {d}/"));
+        }
     }
+    // The manifest itself is written after the walk and never listed.
+    out.retain(|f| f != CHECKPOINT_FILE);
     out.sort();
     out.dedup();
     Ok(out)
 }
 
+/// The Stage 2 file list at an integer iteration.
+pub fn checkpoint_files(case: &Path, time: u32) -> Result<Vec<String>, String> {
+    checkpoint_files_in(case, &time.to_string(), &CheckpointSpec::stage2())
+}
+
 /// Copy a stopped run's checkpoint to an empty directory and write its
 /// manifest: every file is hashed in the source and in the copy, and the two
 /// must agree. The source is only read.
-pub fn preserve_checkpoint(from: &Path, to: &Path, time: u32, provenance: serde_json::Value) -> Result<serde_json::Value, String> {
+pub fn preserve_checkpoint_in(from: &Path, to: &Path, time: &str, spec: &CheckpointSpec, provenance: serde_json::Value) -> Result<serde_json::Value, String> {
     if to.exists() && std::fs::read_dir(to).map_err(|e| e.to_string())?.next().is_some() {
         return Err(format!("{} is not empty", to.display()));
     }
-    let files = checkpoint_files(from, time)?;
+    let files = checkpoint_files_in(from, time, spec)?;
     let mut hashes = serde_json::Map::new();
     let mut bytes = 0u64;
     for rel in &files {
@@ -577,24 +642,40 @@ pub fn preserve_checkpoint(from: &Path, to: &Path, time: u32, provenance: serde_
         }
         hashes.insert(rel.clone(), serde_json::json!(format!("{copied:016x}")));
     }
+    // An integer time stays a JSON integer (the Stage 2 manifests); the
+    // directory name is always recorded as written.
+    let time_value = time.parse::<u64>().map(serde_json::Value::from).unwrap_or_else(|_| serde_json::json!(time.parse::<f64>().unwrap_or(f64::NAN)));
     let doc = serde_json::json!({
-        "scope": "wp9_stage2_checkpoint", "diagnostic_only": true, "time": time,
-        "source_case": from, "file_count": files.len(), "bytes": bytes,
+        "scope": spec.scope, "diagnostic_only": spec.diagnostic_only, "time": time_value, "time_name": time,
+        "ranks": spec.ranks, "source_case": from, "file_count": files.len(), "bytes": bytes,
         "hash": "fnv1a64", "provenance": provenance, "files": hashes,
     });
     std::fs::write(to.join(CHECKPOINT_FILE), serde_json::to_string_pretty(&doc).unwrap()).map_err(|e| e.to_string())?;
-    verify_checkpoint(to)?;
+    verify_checkpoint_in(to, spec)?;
     Ok(doc)
 }
 
-/// Re-hash every file named by the copy's `vernon_checkpoint.json` and
-/// return the checkpoint time. Any missing or changed file is refused.
-pub fn verify_checkpoint(case: &Path) -> Result<u32, String> {
+/// The Stage 2 preservation at an integer iteration.
+pub fn preserve_checkpoint(from: &Path, to: &Path, time: u32, provenance: serde_json::Value) -> Result<serde_json::Value, String> {
+    preserve_checkpoint_in(from, to, &time.to_string(), &CheckpointSpec::stage2(), provenance)
+}
+
+/// Re-hash every file named by the copy's `vernon_checkpoint.json`, check its
+/// scope against `spec`, and return the manifest with the checkpoint's time
+/// directory name. Any missing, extra or changed file is refused.
+pub fn verify_checkpoint_in(case: &Path, spec: &CheckpointSpec) -> Result<(String, serde_json::Value), String> {
     let text = std::fs::read_to_string(case.join(CHECKPOINT_FILE)).map_err(|e| format!("{CHECKPOINT_FILE}: {e}"))?;
     let doc: serde_json::Value = serde_json::from_str(&text).map_err(|e| format!("{CHECKPOINT_FILE}: {e}"))?;
-    let time = doc["time"].as_u64().and_then(|t| u32::try_from(t).ok()).ok_or("checkpoint time missing")?;
+    if doc["scope"].as_str() != Some(spec.scope) {
+        return Err(format!("checkpoint scope is {}, expected {}", doc["scope"], spec.scope));
+    }
+    let time = match (doc["time_name"].as_str(), doc["time"].as_u64()) {
+        (Some(name), _) => name.to_string(),
+        (None, Some(t)) => t.to_string(),
+        _ => return Err("checkpoint time missing".into()),
+    };
     let files = doc["files"].as_object().ok_or("checkpoint file list missing")?;
-    let wanted = checkpoint_files(case, time)?;
+    let wanted = checkpoint_files_in(case, &time, spec)?;
     let listed: Vec<&String> = files.keys().collect();
     if listed.len() != wanted.len() || listed.iter().zip(&wanted).any(|(a, b)| *a != b) {
         return Err("the checkpoint holds files other than those listed".into());
@@ -605,7 +686,13 @@ pub fn verify_checkpoint(case: &Path) -> Result<u32, String> {
             return Err(format!("{rel} changed since it was preserved"));
         }
     }
-    Ok(time)
+    Ok((time, doc))
+}
+
+/// The Stage 2 verification: returns the checkpoint iteration.
+pub fn verify_checkpoint(case: &Path) -> Result<u32, String> {
+    let (time, _) = verify_checkpoint_in(case, &CheckpointSpec::stage2())?;
+    time.parse::<u32>().map_err(|_| format!("checkpoint time {time} is not an iteration"))
 }
 
 /// Score a coefficient history and its residual histories (the worst
