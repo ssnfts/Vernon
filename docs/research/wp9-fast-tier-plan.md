@@ -168,5 +168,52 @@ the 35° body, on a dataset body (reference 20M-cell DDES at the same Re,
 published full setup), or on the 30% offset itself (domain, reference area,
 full model) before more bodies.
 
-**Not yet done:** the 35° body and the dataset rows; the full AGENTS.md
-checks on the new code; the CONTINUATION entry; committing.
+Committed as 6b3e573 after the full checks (build, clippy, workspace tests,
+demo cook 40/0/5, NODES.md unchanged, app opens).
+
+**2026-11-12, user decision: "Reported interval".** The fast tier delivers
+the time-weighted mean with its 95% interval; ESS and the standard error are
+reported, not gated (`TransientParams::fast_tier`; the v2 limits stay for the
+road-car contract). Gates that remain: no significant-and-large trend or
+half-drift, the per-step drop rule, the half-step agreement, mesh quality,
+the one-hour budget. Recorded in `wp9-fast-tier-v1.json`. Next: rerun the 25°
+body under this rule (the half-step check did not run in `-c` because the
+main window had not passed), then the 35° body.
+
+**2026-11-12, `fast-slant25-20261112-d` (interval rule): not passed, budget
+stop at 12 CTU; Cd 0.336 ± 0.017 (1 s.e.), trend 2.4%/CTU significant.**
+Same mesh (502,853 cells) and steady seed (0.395 ± 0.006 over the last 200
+iterations). The drag fell steadily through the whole run: 0.388 at the
+switch, 0.36 at 5 CTU, 0.32 at 8, 0.307 at 10, 0.336 averaged over 2–14 CTU.
+Run `-c` on the same grid had held 0.375 for 15 CTU. So two realisations
+from near-identical steady seeds take different slow paths: a 600-iteration
+steady start plus 2 CTU of wash-out does not settle this wake, and the
+spread between runs (0.37 vs a still-falling 0.31) is larger than any
+reported interval. Per-step rule met on all 1,201 steps (p drop, Courant
+peak 7.6). Error of the mean against 0.285: +18%, interval not overlapping
+the band. Budget: steps ran 1.5–2.3 s (another process shared the machine
+for part of the run), so the half-step reserve stopped it at 50.4 min.
+
+**2026-11-12, `fast-slant35-20261112-e` (35°, reference 0.260): not passed,
+budget stop at 12 CTU; Cd 0.332 ± 0.022 (1 s.e.), trend 3.4%/CTU
+significant.** 500,834 cells (same quality). The steady seed sat at 0.49
+(the steady 35° solution is far off), and the time-resolved drag fell the
+whole way: 0.51, 0.53, 0.44, 0.40, 0.36, 0.33, 0.33, 0.32, 0.31, 0.31, 0.30,
+0.30, 0.30, 0.29 per CTU — at 13 CTU it is 0.286, approaching the experiment's
+0.260 from above and still falling. Per-step rule met on all 1,201 steps
+(Courant peak 7.9). Error of the 2–14 CTU mean against 0.260: +27.6%,
+interval not overlapping; 49.8 min.
+
+Read together, `-d` and `-e` say the same thing: the time-resolved solution
+leaves the steady state over 10–15 CTU and heads toward the measured drag,
+but the one-hour budget spends most of that time inside the transition. The
+remedy is not a looser rule but a better seed: preserve each body's
+end-of-run checkpoint and start the next hour from it, so the wash-out is
+already done. That is the next piece of work, and it reuses the checkpoint
+restart mechanism the road-car Stage 2 already has.
+
+What this adds: the honest fast-tier statement for this body is a trend,
+not a value: the wash-out needed is longer than the budget allows at 0.5M
+cells and 16 ranks. Any pass within the hour would need either a converged
+seed carried over between runs (a preserved checkpoint, as the road-car
+Stage 2 did) or a coarser, cheaper body.

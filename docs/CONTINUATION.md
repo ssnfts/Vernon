@@ -34,10 +34,20 @@ evidence. For current commands use docs/SETUP.md and docs/CFD-RUNBOOK.md.
   **`fast-slant25-20261112-c` completed in 49.8 min: gate not passed (15 CTU
   cap), time-weighted Cd 0.369 ± 0.008 against the experiment's 0.285
   (+29.5%)**; per-step rule met on all 1,501 steps; ESS 9.6 against 50; the
-  steady start on the same grid gave 0.391 (October: 0.394). The 30% offset
-  predates the solver mode; see the plan's section 6 for the candidate causes
-  and the two decisions left to the user (standard-error limit vs reported
-  interval; next hour's target).
+  steady start on the same grid gave 0.391 (October: 0.394).
+- **User decision "Reported interval" (2026-11-12):** the fast tier delivers
+  the time-weighted mean with its 95% interval; ESS and the standard error
+  are reported, not gated (`TransientParams::fast_tier`; the v2 limits stay
+  for the road-car contract). Under that rule: **`-d` (25°)** budget stop at
+  12 CTU, Cd 0.336 ± 0.017, still falling 2.4%/CTU (0.388 → 0.307 over the
+  run; `-c` had held 0.375); **`-e` (35°)** budget stop at 12 CTU, Cd
+  0.332 ± 0.022 against 0.260, falling from a 0.49 steady seed to 0.286 at
+  13 CTU and still dropping. Per-step rule met on every step in both. The
+  time-resolved solution leaves the steady state over 10–15 CTU toward the
+  measured drag; the hour is spent inside that transition. Next piece of
+  work: seed each hour from the previous run's preserved checkpoint (the
+  Stage 2 restart mechanism) so the wash-out is already done. Details and
+  per-CTU histories in the plan's section 6.
 - Nothing was launched through the runner; no gate was lowered; no run was
   relabelled.
 

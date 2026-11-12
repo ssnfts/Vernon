@@ -42,10 +42,11 @@ pub struct TransientParams {
     pub max_rel_slope_per_ctu: f64,
     /// Largest accepted difference of the half means relative to `|mean|`.
     pub max_rel_half_diff: f64,
-    /// Smallest accepted effective sample size.
-    pub min_ess: f64,
-    /// Largest accepted standard error of the mean relative to `|mean|`.
-    pub max_rel_std_err: f64,
+    /// Smallest accepted effective sample size; `None` reports it only.
+    pub min_ess: Option<f64>,
+    /// Largest accepted standard error of the mean relative to `|mean|`;
+    /// `None` reports the interval instead of gating on it.
+    pub max_rel_std_err: Option<f64>,
     /// Block length of the batch-means standard error.
     pub batch_ctu: f64,
 }
@@ -62,10 +63,19 @@ impl TransientParams {
             confidence: 0.99,
             max_rel_slope_per_ctu: 0.005,
             max_rel_half_diff: 0.002,
-            min_ess: 50.0,
-            max_rel_std_err: 0.005,
+            min_ess: Some(50.0),
+            max_rel_std_err: Some(0.005),
             batch_ctu: 1.0,
         }
+    }
+
+    /// The fast-tier rule (user decision 2026-11-12, "reported interval"):
+    /// the window must be stationary and each step converged, and the mean is
+    /// delivered with its interval; the effective sample size and the
+    /// standard error are reported, not gated. The half-step segment stays
+    /// the consistency check.
+    pub fn fast_tier(ctu_s: f64) -> Self {
+        Self { min_ess: None, max_rel_std_err: None, ..Self::v2(ctu_s) }
     }
 
     fn validate(&self) -> Result<(), String> {
@@ -292,17 +302,21 @@ pub fn assess(time: &[f64], value: &[f64], switch_time_s: f64, p: &TransientPara
         ));
     }
 
-    if ess < p.min_ess {
-        reasons.push(format!("ess: effective sample size {ess:.1} < required {:.1}", p.min_ess));
+    if let Some(min_ess) = p.min_ess {
+        if ess < min_ess {
+            reasons.push(format!("ess: effective sample size {ess:.1} < required {min_ess:.1}"));
+        }
     }
-    if r.mean.abs() > 1e-12 && r.std_err / r.mean.abs() > p.max_rel_std_err {
-        reasons.push(format!(
-            "std_err: {:.3}% of the mean (autocorrelation {:.3}%, batch means {:.3}%), limit {:.3}%",
-            100.0 * r.std_err / r.mean.abs(),
-            100.0 * r.std_err_acf / r.mean.abs(),
-            100.0 * r.std_err_batch / r.mean.abs(),
-            100.0 * p.max_rel_std_err
-        ));
+    if let Some(limit) = p.max_rel_std_err {
+        if r.mean.abs() > 1e-12 && r.std_err / r.mean.abs() > limit {
+            reasons.push(format!(
+                "std_err: {:.3}% of the mean (autocorrelation {:.3}%, batch means {:.3}%), limit {:.3}%",
+                100.0 * r.std_err / r.mean.abs(),
+                100.0 * r.std_err_acf / r.mean.abs(),
+                100.0 * r.std_err_batch / r.mean.abs(),
+                100.0 * limit
+            ));
+        }
     }
 
     r.verdict = if reasons.is_empty() {
@@ -647,6 +661,28 @@ mod tests {
         assert!(r.ess < 50.0, "ess {}", r.ess);
         assert!(r.reasons.iter().any(|s| s.starts_with("ess")), "{:?}", r.reasons);
         assert!(r.std_err_batch.is_finite());
+    }
+
+    #[test]
+    fn transient_fast_tier_reports_the_interval_instead_of_gating_on_it() {
+        // The same quasi-periodic signal: stationary over whole periods, but
+        // too few independent samples for the v2 limits. The fast-tier rule
+        // passes it at the minimum window and still reports ESS and the error.
+        let n = (8.0 * 200.0) as usize;
+        let t: Vec<f64> = (0..n).map(|i| SWITCH + (i as f64 + 1.0) * CTU / 200.0).collect();
+        let v: Vec<f64> = t.iter().map(|ti| 0.30 * (1.0 + 0.01 * (std::f64::consts::TAU * (ti - SWITCH) / (2.0 * CTU)).sin())).collect();
+        let r = assess(&t, &v, SWITCH, &TransientParams::fast_tier(CTU)).unwrap();
+        assert_eq!(r.verdict, Verdict::Pass, "{:?}", r.reasons);
+        assert!(r.ess < 50.0 && r.std_err.is_finite() && r.std_err > 0.0);
+        assert!((r.mean - 0.30).abs() < 1e-3);
+        // A drift still fails under the fast-tier rule.
+        let (t, mut v) = stationary(17.5, 5);
+        for (ti, vi) in t.iter().zip(v.iter_mut()) {
+            *vi += 0.30 * 0.02 * (ti - SWITCH) / CTU;
+        }
+        let r = assess(&t, &v, SWITCH, &TransientParams::fast_tier(CTU)).unwrap();
+        assert_eq!(r.verdict, Verdict::Fail);
+        assert!(r.reasons.iter().any(|s| s.starts_with("slope")));
     }
 
     #[test]

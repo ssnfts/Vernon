@@ -923,7 +923,10 @@ fn real_openfoam_fast_tier_run() {
     let dt_request = cfg.delta_t_s.unwrap_or(ctu / 100.0);
     let steps_per_ctu = (ctu / dt_request).round().max(10.0);
     let dt = ctu / steps_per_ctu;
-    let p = crate::transient::TransientParams::v2(ctu);
+    // Fast-tier rule (user decision 2026-11-12): stationarity and per-step
+    // convergence are gated; ESS and the standard error are reported with
+    // the mean as its interval.
+    let p = crate::transient::TransientParams::fast_tier(ctu);
     let washout_s = p.washout_ctu * ctu;
     let first_end = (p.washout_ctu + p.min_average_ctu) * ctu;
     let ddes = cook(&reg, "cfd.case_setup", vec![Some(built[0].clone()), j(&air), j(&bc[0]), None, reference.clone(), j(&domain[0])], &[
@@ -1066,7 +1069,7 @@ fn real_openfoam_fast_tier_run() {
         if need + 30.0 < remaining(started).as_secs_f64() {
             let res = run_steps(vec![solver_step("solver_half")], (remaining(started).as_secs() / 60).max(1));
             let (time, cd) = read_history();
-            let mut ph = crate::transient::TransientParams::v2(ctu);
+            let mut ph = crate::transient::TransientParams::fast_tier(ctu);
             ph.washout_ctu = 0.5;
             ph.min_average_ctu = half_average_ctu;
             ph.max_average_ctu = half_average_ctu;
@@ -1096,6 +1099,9 @@ fn real_openfoam_fast_tier_run() {
     let gate_passed = main_pass && half_ok && steps_ok;
     let error_pct = cfg.reference_cd.map(|r| (report.mean - r) / r * 100.0);
     let within_band = error_pct.map(|e| e.abs() <= 5.0);
+    // The reported interval (95%) against the band: does any part of it lie
+    // inside the band around the reference?
+    let interval_overlaps_band = cfg.reference_cd.map(|r| (report.mean - r).abs() - 1.96 * report.std_err <= 0.05 * r);
     let mut row = serde_json::json!({
         "label": cfg.label, "tier": "fast", "contract": "wp9-fast-tier-v1 (draft; not the road-car contract)",
         "geometry": cfg.geometry, "angle_deg": if is_slant { Some(cfg.angle_deg) } else { None },
@@ -1122,6 +1128,7 @@ fn real_openfoam_fast_tier_run() {
         "stop_reason": stop_reason, "gate_passed": gate_passed,
         "cd": report.mean, "cd_std_err": report.std_err, "cd_interval_95": 1.96 * report.std_err,
         "reference_cd": cfg.reference_cd, "reference_label": cfg.reference_label, "error_pct": error_pct, "band_pct": 5.0, "within_band": within_band,
+        "interval_overlaps_band": interval_overlaps_band, "deliverable": "mean with 95% interval; ESS and standard error reported, not gated (fast tier, 2026-11-12)",
         "reconstructed": reconstructed, "wall_s": started.elapsed().as_secs_f64(), "budget_min": cfg.budget_min,
         "case": case.display().to_string(),
     });

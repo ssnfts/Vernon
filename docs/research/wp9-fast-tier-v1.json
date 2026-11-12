@@ -27,8 +27,10 @@
     "confidence": 0.99,
     "maximum_rel_slope_per_ctu": 0.005,
     "maximum_rel_half_difference": 0.002,
-    "minimum_effective_sample_size": 50.0,
-    "maximum_rel_std_err": 0.005,
+    "minimum_effective_sample_size": null,
+    "maximum_rel_std_err": null,
+    "deliverable": "the time-weighted mean Cd with its 95% interval (1.96 x the larger standard-error estimate); the effective sample size and both standard-error estimates are reported, not gated",
+    "deliverable_change_log": "2026-11-12, user decision 'Reported interval' after run fast-slant25-20261112-c reached the 15 CTU cap with ESS 10 and a 2.1% standard error: the v2 limits (ESS >= 50, s.e. <= 0.5%) stay in TransientParams::v2 for the road-car contract and are switched off in TransientParams::fast_tier. Stationarity (trend, halves), the per-step rule, the half-step agreement, mesh quality and the budget remain gates. The band comparison reports both the mean's error and whether the interval overlaps the band.",
     "std_err_estimate": "larger of autocorrelation (Geyer) and batch means with 1 CTU blocks",
     "mean": "time-weighted (trapezoid) over the averaging window",
     "per_step": {
