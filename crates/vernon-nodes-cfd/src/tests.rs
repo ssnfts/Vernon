@@ -467,6 +467,28 @@ fn slant_body(angle_deg: f64) -> Geometry {
     g
 }
 
+/// The generated slant body already faces the flow: its rounded nose is at
+/// the lowest x and the slant at the tail. Preparing it with `-x` must not
+/// rotate it, and the raw geometry keeps the slant at the tail for meshing.
+#[test]
+fn slant_body_faces_the_flow_and_keeps_its_slant_at_the_tail() {
+    let reg = registry();
+    let body = slant_body(25.0);
+    let patches = body.prim_attribs.strs("patch").unwrap();
+    let slant_x: Vec<f64> = body.prims.iter().zip(patches).filter(|(_, n)| *n == "body_slant").flat_map(|(p, _)| p.vertices.iter().map(|&v| body.points[v as usize].x)).collect();
+    // 222 mm slant at 25 degrees: x from 1044 - 222 cos 25 = 842.8 to 1044.
+    assert!(!slant_x.is_empty() && slant_x.iter().all(|x| *x >= 842.0 && *x <= 1044.0 + 1e-6), "slant between x 843 and 1044 mm");
+    let nose_x = body.points.iter().map(|p| p.x).fold(f64::INFINITY, f64::min);
+    assert!(nose_x.abs() < 1e-9, "the nose sits at x = 0 and points toward -x");
+    let prep = cook(&reg, "cfd.vehicle_prep", vec![Some(Data::geometry(body)), None, None], &[("nose_direction", ParamValue::Str("-x".into()))]);
+    let r = prep[2].as_report().unwrap();
+    assert!(!r.notes.iter().any(|(_, t)| t.contains("rotated")), "{:?}", r.notes);
+    assert!((r.metrics["length_m"].value - 1.044).abs() < 1e-9);
+    // The default "+x" rotates it: the slant would face the flow.
+    let turned = cook(&reg, "cfd.vehicle_prep", vec![Some(Data::geometry(slant_body(25.0))), None, None], &[]);
+    assert!(turned[2].as_report().unwrap().notes.iter().any(|(_, t)| t.contains("rotated")));
+}
+
 #[test]
 fn benchmark_measures_the_slant_share_from_the_case_and_fails_closed() {
     let reg = registry();
@@ -679,6 +701,443 @@ fn real_openfoam_slant_body_run() {
     });
     println!("{row}");
     std::fs::write(out_file, serde_json::to_string_pretty(&row).unwrap()).unwrap();
+}
+
+/// Settings of one fast-tier run, from the environment
+/// (`docs/research/wp9-fast-tier-plan.md`). Empty variables count as unset.
+#[derive(Debug, Clone)]
+struct FastTier {
+    /// `slant` for the generated classic body, else an STL path in metres.
+    geometry: String,
+    angle_deg: f64,
+    dx0_m: f64,
+    np: i64,
+    u_ms: f64,
+    nu: f64,
+    reference_cd: Option<f64>,
+    reference_label: String,
+    aref_m2: Option<f64>,
+    delta_t_s: Option<f64>,
+    budget_min: f64,
+    steady_iter: i64,
+    out_file: String,
+    label: String,
+}
+
+impl FastTier {
+    fn from_env() -> Self {
+        let get = |k: &str| std::env::var(k).ok().filter(|v| !v.trim().is_empty());
+        let need = |k: &str| get(k).unwrap_or_else(|| panic!("set {k}"));
+        let num = |k: &str, d: f64| get(k).map(|v| v.trim().parse::<f64>().unwrap_or_else(|_| panic!("{k} must be a number"))).unwrap_or(d);
+        let cfg = Self {
+            geometry: get("VERNON_FAST_GEOMETRY").unwrap_or_else(|| "slant".into()),
+            angle_deg: num("VERNON_FAST_ANGLE", 25.0),
+            dx0_m: num("VERNON_FAST_DX0", 0.092),
+            np: num("VERNON_FAST_NP", 16.0) as i64,
+            u_ms: num("VERNON_FAST_U", 40.0),
+            nu: num("VERNON_FAST_NU", 1.5e-5),
+            reference_cd: get("VERNON_FAST_REF_CD").map(|v| v.trim().parse().expect("VERNON_FAST_REF_CD must be a number")),
+            reference_label: get("VERNON_FAST_REF_LABEL").unwrap_or_default(),
+            aref_m2: get("VERNON_FAST_AREF_M2").map(|v| v.trim().parse().expect("VERNON_FAST_AREF_M2 must be a number")),
+            delta_t_s: get("VERNON_FAST_DT").map(|v| v.trim().parse().expect("VERNON_FAST_DT must be a number")),
+            budget_min: num("VERNON_FAST_BUDGET_MIN", 60.0),
+            steady_iter: num("VERNON_FAST_STEADY_ITER", 600.0) as i64,
+            out_file: need("VERNON_FAST_OUT"),
+            label: get("VERNON_FAST_LABEL").unwrap_or_else(|| "fast".into()),
+        };
+        assert!(cfg.budget_min > 0.0 && cfg.budget_min <= 60.0, "the fast tier is bounded at one hour");
+        assert!((500..=2000).contains(&cfg.steady_iter), "the steady start runs 500..=2000 iterations");
+        cfg
+    }
+}
+
+/// Replace one unindented `key   value;` entry of an OpenFOAM dictionary.
+fn set_dict_entry(text: &str, key: &str, value: &str) -> String {
+    let mut found = false;
+    let mut out: Vec<String> = text
+        .lines()
+        .map(|l| {
+            if l.starts_with(key) && l[key.len()..].starts_with(char::is_whitespace) {
+                found = true;
+                format!("{key}{}{value};", " ".repeat((16 - key.len()).max(1)))
+            } else {
+                l.to_string()
+            }
+        })
+        .collect();
+    assert!(found, "no top-level entry {key} in the dictionary");
+    out.push(String::new());
+    out.join("\n")
+}
+
+/// Numeric time directories of a case, ascending.
+fn numeric_time_dirs(case: &std::path::Path) -> Vec<(f64, std::path::PathBuf)> {
+    let mut v: Vec<(f64, std::path::PathBuf)> = std::fs::read_dir(case)
+        .map(|rd| {
+            rd.flatten()
+                .filter(|e| e.path().is_dir())
+                .filter_map(|e| e.file_name().to_str()?.parse::<f64>().ok().map(|t| (t, e.path())))
+                .collect()
+        })
+        .unwrap_or_default();
+    v.sort_by(|a, b| a.0.total_cmp(&b.0));
+    v
+}
+
+#[test]
+fn fast_tier_dictionary_edit_touches_only_the_top_level_entry() {
+    let text = "endTime         1.5;\ndeltaT          0.0004;\nmaxDeltaT       0.001;\nfunctions\n{\n    forceCoeffs1\n    {\n        writeInterval   1;\n    }\n}\n";
+    let edited = set_dict_entry(text, "deltaT", "0.0002");
+    assert!(edited.contains("\ndeltaT          0.0002;\n") && edited.contains("maxDeltaT       0.001;"), "{edited}");
+    let edited = set_dict_entry(&edited, "endTime", "2.25");
+    assert!(edited.starts_with("endTime         2.25;\n"));
+    assert!(edited.contains("        writeInterval   1;"), "indented entries are left alone");
+    let dir = tmp("fast-times");
+    for name in ["0", "600", "constant", "0.orig", "1.5e-05"] {
+        std::fs::create_dir_all(dir.join(name)).unwrap();
+    }
+    let times: Vec<f64> = numeric_time_dirs(&dir).into_iter().map(|(t, _)| t).collect();
+    assert_eq!(times, vec![0.0, 1.5e-05, 600.0]);
+}
+
+/// One fast-tier validation run: a ~0.5M-cell bluff body meshed, started
+/// steady, then solved time-resolved (DDES) under the v2 transient acceptance
+/// with its stop rule, per-step rule and half-step check, inside a one-hour
+/// budget. The row names its reference and the reference's method; it is never
+/// a result under the road-car contract (`wp9-replication-baseline-v1.json`).
+#[test]
+#[ignore = "needs WSL, OpenFOAM and up to an hour"]
+fn real_openfoam_fast_tier_run() {
+    use std::time::{Duration, Instant};
+    let started = Instant::now();
+    let cfg = FastTier::from_env();
+    let budget = Duration::from_secs_f64(cfg.budget_min * 60.0);
+    let remaining = |started: Instant| budget.saturating_sub(started.elapsed());
+    println!("fast tier: {cfg:?}");
+    let is_slant = cfg.geometry == "slant";
+    let reg = registry();
+    let g = Data::geometry;
+    let j = |d: &Data| Some(Data::Json(d.as_json().unwrap().clone()));
+
+    // Geometry: the generated classic body, or a dataset STL in metres whose
+    // nose points toward -x (the open slant-body dataset's convention).
+    let body = if is_slant {
+        slant_body(cfg.angle_deg)
+    } else {
+        let opts = vernon_io::ReadOptions { unit: vernon_io::FileUnit::Metre, ..Default::default() };
+        vernon_io::read(std::path::Path::new(&cfg.geometry), &opts).unwrap_or_else(|e| panic!("{}: {e}", cfg.geometry))
+    };
+    // Both bodies already face the oncoming flow (nose at the lowest x), so
+    // no rotation happens. Run b of 2026-11-11 passed "+x" for the slant body,
+    // which turned it round (slant into the flow, Cd 0.51) and lost its patch
+    // names; the October runs were not rotated.
+    let prep = cook(&reg, "cfd.vehicle_prep", vec![Some(g(body.clone())), None, None], &[
+        ("nose_direction", ParamValue::Str("-x".into())),
+        ("half_model", ParamValue::Bool(true)),
+        ("align_origin", ParamValue::Bool(true)),
+    ]);
+    print_report("vehicle", &prep[2]);
+    assert!(!prep[2].as_report().unwrap().notes.iter().any(|(_, t)| t.contains("rotated")), "the body must not be rotated");
+    // The slant body keeps its patch names (body, body_slant, body_stilts)
+    // only in the raw geometry, as the October runs meshed it; the prepared
+    // copy merges everything into `body`.
+    let mesh_geometry = if is_slant { g(body) } else { prep[0].clone() };
+    let measured = prep[1].as_json().unwrap().as_ref().clone();
+    let mut reference = measured.clone();
+    let (a_front, length) = if is_slant {
+        (cfg.aref_m2.unwrap_or(0.112), 1.044)
+    } else {
+        (cfg.aref_m2.unwrap_or_else(|| measured["a_front_m2"].as_f64().unwrap()), measured["length_m"].as_f64().unwrap())
+    };
+    reference["a_front_m2"] = serde_json::json!(a_front);
+    reference["length_m"] = serde_json::json!(length);
+    let reference = Some(Data::json(reference));
+    let rho = 1.225;
+    let air_value = serde_json::json!({"rho": rho, "nu": cfg.nu, "mu": rho * cfg.nu, "u_ms": cfg.u_ms, "q": 0.5 * rho * cfg.u_ms * cfg.u_ms});
+    let air = Data::json(air_value.clone());
+    let domain = cook(&reg, "cfd.tunnel_domain", vec![reference.clone()], &[
+        ("blockage_pct", ParamValue::Float(2.0)),
+        ("up_l", ParamValue::Float(3.0)),
+        ("down_l", ParamValue::Float(5.0)),
+    ]);
+    let bc = cook(&reg, "cfd.ground_wheels", vec![j(&domain[0]), reference.clone(), j(&air)], &[
+        ("ground_mode", ParamValue::Str("stationary".into())),
+        ("wheel_mode", ParamValue::Str("static".into())),
+        ("u_ms", ParamValue::Float(cfg.u_ms)),
+    ]);
+    let plan = cook(&reg, "cfd.refinement_plan", vec![reference.clone(), j(&domain[0]), None, j(&air)], &[
+        ("dx0_m", ParamValue::Float(cfg.dx0_m)),
+        ("body_min", ParamValue::Int(4)),
+        ("body_max", ParamValue::Int(4)),
+        ("underbody_level", ParamValue::Int(3)),
+        ("near_wake_level", ParamValue::Int(3)),
+        ("far_wake_level", ParamValue::Int(2)),
+    ]);
+    let dicts = cook(&reg, "cfd.mesh_setup", vec![j(&plan[0]), j(&domain[0]), Some(mesh_geometry)], &[
+        ("flavour", ParamValue::Str("opencfd2606".into())),
+        ("n_layers", ParamValue::Int(5)),
+        ("np", ParamValue::Int(cfg.np)),
+    ]);
+    print_report("mesh setup", &dicts[1]);
+    let bounded = |processes: i64, minutes: i64| {
+        let mut run = wsl_params(processes);
+        run.iter_mut().find(|(k, _)| *k == "timeout_min").unwrap().1 = ParamValue::Int(minutes.max(1));
+        run
+    };
+    let mesh_started = Instant::now();
+    let built = cook(&reg, "cfd.mesh_build", vec![Some(dicts[0].clone())], &bounded(cfg.np, 12));
+    let mesh_wall_s = mesh_started.elapsed().as_secs_f64();
+    print_report("mesh build", &built[1]);
+    assert!(built[1].as_report().unwrap().passes(), "the built mesh must pass its gates");
+    let quality = cook(&reg, "cfd.mesh_quality", vec![Some(built[0].clone())], &[]);
+    print_report("mesh quality", &quality[0]);
+    let q = quality[0].as_report().unwrap().as_ref().clone();
+
+    // Steady start: a short SST run whose end state seeds the time-resolved run.
+    let steady_window = (cfg.steady_iter / 3).max(100);
+    let steady = cook(&reg, "cfd.case_setup", vec![Some(built[0].clone()), j(&air), j(&bc[0]), None, reference.clone(), j(&domain[0])], &[
+        ("n_iter", ParamValue::Int(cfg.steady_iter)),
+        ("window", ParamValue::Int(steady_window)),
+        ("write_interval", ParamValue::Int(cfg.steady_iter)),
+        ("np", ParamValue::Int(cfg.np)),
+        ("solver_mode", ParamValue::Str("steady_sst".into())),
+        ("u_ms", ParamValue::Float(cfg.u_ms)), ("rho_inf", ParamValue::Float(rho)), ("nu", ParamValue::Float(cfg.nu)),
+    ]);
+    print_report("steady case", &steady[1]);
+    let steady_minutes = (remaining(started).as_secs() / 60).min(15) as i64;
+    let steady_started = Instant::now();
+    let solve = cook(&reg, "cfd.solve_steady", vec![Some(steady[0].clone())], &bounded(cfg.np, steady_minutes));
+    let steady_wall_s = steady_started.elapsed().as_secs_f64();
+    print_report("steady solve", &solve[2]);
+    assert!(solve[2].as_report().unwrap().passes(), "the steady start must finish");
+    let steady_case = solve[0].as_file().unwrap().clone();
+    let (steady_time, steady_dir) = numeric_time_dirs(&steady_case).into_iter().rfind(|(t, _)| *t > 0.0).expect("the steady start wrote a time directory");
+    let steady_series = Series::from_json(solve[1].as_json().unwrap()).unwrap();
+    let steady_cd_tail = steady_series.col("Cd").map(|c| c[c.len().saturating_sub(steady_window as usize)..].to_vec()).unwrap_or_default();
+    let steady_cd = crate::coeffs::window_stats(&steady_cd_tail);
+
+    // Time step from the convective unit: an integer number of steps per CTU
+    // so that segment ends and write times coincide. Requested from the wake
+    // Courant number (about one at level-3 wake cells), never from Cd.
+    let ctu = length / cfg.u_ms;
+    let dt_request = cfg.delta_t_s.unwrap_or(ctu / 100.0);
+    let steps_per_ctu = (ctu / dt_request).round().max(10.0);
+    let dt = ctu / steps_per_ctu;
+    let p = crate::transient::TransientParams::v2(ctu);
+    let washout_s = p.washout_ctu * ctu;
+    let first_end = (p.washout_ctu + p.min_average_ctu) * ctu;
+    let ddes = cook(&reg, "cfd.case_setup", vec![Some(built[0].clone()), j(&air), j(&bc[0]), None, reference.clone(), j(&domain[0])], &[
+        ("solver_mode", ParamValue::Str("transient_ddes".into())),
+        ("end_time_s", ParamValue::Float(first_end)),
+        ("delta_t_s", ParamValue::Float(dt)),
+        ("max_delta_t_s", ParamValue::Float(dt)),
+        ("time_step_mode", ParamValue::Str("fixed".into())),
+        ("write_interval_s", ParamValue::Float(ctu)),
+        ("average_from_s", ParamValue::Float(washout_s)),
+        ("outer_correctors", ParamValue::Int(3)),
+        ("correctors", ParamValue::Int(2)),
+        ("np", ParamValue::Int(cfg.np)),
+        ("u_ms", ParamValue::Float(cfg.u_ms)), ("rho_inf", ParamValue::Float(rho)), ("nu", ParamValue::Float(cfg.nu)),
+    ]);
+    print_report("transient case", &ddes[1]);
+    // The half-step check: 0.5 CTU of adjustment, then this much averaging.
+    let half_average_ctu = 1.0;
+    let half_total_ctu = 0.5 + half_average_ctu;
+    let case = ddes[0].as_file().unwrap().clone();
+    // The steady end state becomes the initial field of the time-resolved run.
+    let mut seeded = Vec::new();
+    for field in ["U", "p", "k", "omega", "nut", "phi"] {
+        let from = steady_dir.join(field);
+        if from.is_file() {
+            std::fs::copy(&from, case.join("0").join(field)).unwrap();
+            seeded.push(field);
+        }
+    }
+    assert!(seeded.contains(&"U") && seeded.contains(&"p"), "the steady start must provide U and p");
+    println!("seeded from steady time {steady_time}: {seeded:?}");
+
+    let var = |k: &str| std::env::var(k).unwrap_or_else(|_| panic!("set {k}"));
+    let wsl = crate::extproc::WslOpts { distribution: var("VERNON_WSL_DISTRO"), user: var("VERNON_WSL_USER"), environment_file: var("VERNON_WSL_ENV_FILE") };
+    let control = case.parent().unwrap().join(".wsl-control");
+    std::fs::create_dir_all(&control).unwrap();
+    let run_steps = |steps: Vec<(String, Vec<String>)>, minutes: u64| {
+        let opts = crate::extproc::RunOpts { runner: "wsl".into(), image: String::new(), bin_dir: String::new(), timeout_min: minutes.max(1) };
+        crate::extproc::run_chain_with_wsl(&opts, &wsl, &case, &control, &steps)
+    };
+    let solver_step = |name: &str| (name.to_string(), vec!["mpirun".into(), "-np".into(), cfg.np.to_string(), "pimpleFoam".into(), "-parallel".into()]);
+    let control_dict = case.join("system/controlDict");
+    let set_control = |key: &str, value: f64| {
+        let text = std::fs::read_to_string(&control_dict).unwrap();
+        std::fs::write(&control_dict, set_dict_entry(&text, key, &format!("{value}"))).unwrap();
+    };
+    let latest_processor_time = || -> f64 { numeric_time_dirs(&case.join("processor0")).last().map(|(t, _)| *t).unwrap_or(0.0) };
+    let read_history = || -> (Vec<f64>, Vec<f64>) {
+        let s = crate::coeffs::load_case_series(&case);
+        let cd = s.col("Cd").expect("the coefficient history has Cd").to_vec();
+        (s.time.clone(), cd)
+    };
+
+    // Segments under the stop rule, each ending on a check boundary.
+    let mut segments: Vec<Value> = Vec::new();
+    let mut seconds_per_step = f64::NAN;
+    let mut report = None;
+    let mut stop_reason = String::new();
+    let mut end_s = first_end;
+    let mut steps = vec![("decomposePar".to_string(), vec!["decomposePar".to_string(), "-force".to_string()]), solver_step("solver_seg01")];
+    for segment in 1.. {
+        let name = format!("solver_seg{segment:02}");
+        let seg_started = Instant::now();
+        let minutes = (remaining(started).as_secs() / 60).max(1);
+        let res = run_steps(steps, minutes);
+        let log = std::fs::read_to_string(case.join(format!("logs/{name}.log"))).unwrap_or_default();
+        let timing = log_timing(&log);
+        if let Some(s) = timing.seconds_per_iteration() {
+            seconds_per_step = s;
+        }
+        let (time, cd) = read_history();
+        let r = crate::transient::assess(&time, &cd, 0.0, &p).unwrap_or_else(|e| panic!("assessment: {e}"));
+        println!("segment {segment}: end {end_s:.4} s, {} steps, {:.2} s/step, verdict {:?}, mean {:.5} ± {:.5}, ess {:.0}, reasons {:?}", timing.iterations, seconds_per_step, r.verdict, r.mean, r.std_err, r.ess, r.reasons);
+        segments.push(serde_json::json!({
+            "segment": segment, "end_s": end_s, "steps": timing.iterations, "ended_cleanly": timing.ended,
+            "seconds_per_step": seconds_per_step, "wall_s": seg_started.elapsed().as_secs_f64(),
+            "chain_failed": res.failed, "assessment": r,
+        }));
+        if let Some(f) = &res.failed {
+            stop_reason = format!("solver chain failed: {f}");
+            report = Some(r);
+            break;
+        }
+        match crate::transient::next_segment_end_s(&r, 0.0, &p) {
+            None => {
+                report = Some(r);
+                break;
+            }
+            Some(next) => {
+                let need_steps = ((next - end_s) / dt).round();
+                // Reserve the half-step segment at twice the step count.
+                let reserve = half_total_ctu * steps_per_ctu * 2.0 * seconds_per_step + 60.0;
+                if need_steps * seconds_per_step + reserve > remaining(started).as_secs_f64() {
+                    stop_reason = format!("budget: {:.0} s left, the next segment needs {:.0} s plus the half-step reserve {:.0} s", remaining(started).as_secs_f64(), need_steps * seconds_per_step, reserve);
+                    report = Some(r);
+                    break;
+                }
+                end_s = next;
+                set_control("endTime", end_s);
+                steps = vec![solver_step(&format!("solver_seg{:02}", segment + 1))];
+            }
+        }
+    }
+    let report = report.unwrap();
+    let main_pass = report.verdict == crate::transient::Verdict::Pass && stop_reason.is_empty();
+
+    // Per-step rule over every main segment after the wash-out.
+    let mut solver_log = String::new();
+    for entry in std::fs::read_dir(case.join("logs")).unwrap().flatten() {
+        let n = entry.file_name().to_string_lossy().to_string();
+        if n.starts_with("solver_seg") {
+            solver_log += &std::fs::read_to_string(entry.path()).unwrap_or_default();
+        }
+    }
+    let step_records = crate::transient::parse_pimple_log(&solver_log);
+    let step_rule = crate::transient::StepRule::default();
+    let step_report = crate::transient::step_convergence(&step_records, washout_s, &step_rule).ok();
+    println!("per-step: {step_report:?}");
+
+    // Half-step segment: 0.5 CTU of adjustment and `half_average_ctu` of averaging at dt/2.
+    let mut half = None;
+    let mut half_agreement = None;
+    if main_pass {
+        let latest = latest_processor_time();
+        // The written time directory carries the old step; the solver would
+        // otherwise keep it regardless of controlDict.
+        for i in 0..cfg.np {
+            let _ = std::fs::remove_dir_all(case.join(format!("processor{i}")).join(format!("{latest}")).join("uniform"));
+            for (t, dir) in numeric_time_dirs(&case.join(format!("processor{i}"))) {
+                if (t - latest).abs() < 1e-9 {
+                    let _ = std::fs::remove_dir_all(dir.join("uniform"));
+                }
+            }
+        }
+        let half_end = latest + half_total_ctu * ctu;
+        set_control("deltaT", dt / 2.0);
+        set_control("endTime", half_end);
+        set_control("writeInterval", 0.5 * ctu);
+        let need = half_total_ctu * steps_per_ctu * 2.0 * seconds_per_step;
+        if need + 30.0 < remaining(started).as_secs_f64() {
+            let res = run_steps(vec![solver_step("solver_half")], (remaining(started).as_secs() / 60).max(1));
+            let (time, cd) = read_history();
+            let mut ph = crate::transient::TransientParams::v2(ctu);
+            ph.washout_ctu = 0.5;
+            ph.min_average_ctu = half_average_ctu;
+            ph.max_average_ctu = half_average_ctu;
+            let first = time.partition_point(|t| *t < latest - 1e-9);
+            let hr = crate::transient::assess(&time[first..], &cd[first..], latest, &ph).ok();
+            let half_log = std::fs::read_to_string(case.join("logs/solver_half.log")).unwrap_or_default();
+            let half_steps = crate::transient::step_convergence(&crate::transient::parse_pimple_log(&half_log), latest + 0.5 * ctu, &step_rule).ok();
+            if let Some(hr) = &hr {
+                let (ok, diff, allowed) = crate::transient::dt_half_agrees(&report, hr, 0.95);
+                println!("half step: mean {:.5} ± {:.5}, main {:.5} ± {:.5}, diff {diff:.5}, allowed {allowed:.5}, agree {ok}", hr.mean, hr.std_err, report.mean, report.std_err);
+                half_agreement = Some(serde_json::json!({"agrees": ok, "difference": diff, "allowed": allowed, "confidence": 0.95}));
+            }
+            half = Some(serde_json::json!({"chain_failed": res.failed, "delta_t_s": dt / 2.0, "end_s": half_end, "assessment": hr, "per_step": half_steps}));
+        } else {
+            stop_reason = format!("budget: the half-step segment needs {need:.0} s, {:.0} s left", remaining(started).as_secs_f64());
+        }
+    }
+    // Reconstruct the final fields (averages included) when time allows.
+    let reconstructed = if remaining(started).as_secs() > 120 {
+        run_steps(vec![("reconstructPar".to_string(), vec!["reconstructPar".to_string(), "-latestTime".to_string()])], 3).failed.is_none()
+    } else {
+        false
+    };
+
+    let half_ok = half_agreement.as_ref().is_some_and(|h| h["agrees"] == true);
+    let steps_ok = step_report.as_ref().is_some_and(|s| s.passed);
+    let gate_passed = main_pass && half_ok && steps_ok;
+    let error_pct = cfg.reference_cd.map(|r| (report.mean - r) / r * 100.0);
+    let within_band = error_pct.map(|e| e.abs() <= 5.0);
+    let mut row = serde_json::json!({
+        "label": cfg.label, "tier": "fast", "contract": "wp9-fast-tier-v1 (draft; not the road-car contract)",
+        "geometry": cfg.geometry, "angle_deg": if is_slant { Some(cfg.angle_deg) } else { None },
+        "u_ms": cfg.u_ms, "nu": cfg.nu, "rho": rho, "reynolds_length": cfg.u_ms * length / cfg.nu,
+        "length_m": length, "a_front_m2": a_front, "aref_m2": 0.5 * a_front, "half_model": true,
+        "dx0_m": cfg.dx0_m, "np": cfg.np,
+    });
+    let mesh = serde_json::json!({
+        "cells": q.metrics["cells"].value, "max_non_ortho_deg": q.metrics["max_non_ortho_deg"].value,
+        "max_skewness": q.metrics["max_skewness"].value, "layer_coverage_pct": q.metrics.get("layer_coverage_pct").map(|m| m.value),
+        "mesh_wall_s": mesh_wall_s,
+    });
+    let steady_row = serde_json::json!({
+        "iterations": cfg.steady_iter, "wall_s": steady_wall_s, "end_time": steady_time, "seeded_fields": seeded,
+        "cd_tail": steady_cd.map(|s| serde_json::json!({"mean": s.mean, "sd": s.sd, "window": steady_window})),
+        "role": "start field and trend only",
+    });
+    let transient_row = serde_json::json!({
+        "ctu_s": ctu, "delta_t_s": dt, "steps_per_ctu": steps_per_ctu, "seconds_per_step": seconds_per_step,
+        "acceptance": p, "segments": segments, "assessment": report, "per_step": step_report, "step_rule": step_rule,
+        "half_step": half, "half_step_agreement": half_agreement,
+    });
+    let verdict_row = serde_json::json!({
+        "stop_reason": stop_reason, "gate_passed": gate_passed,
+        "cd": report.mean, "cd_std_err": report.std_err, "cd_interval_95": 1.96 * report.std_err,
+        "reference_cd": cfg.reference_cd, "reference_label": cfg.reference_label, "error_pct": error_pct, "band_pct": 5.0, "within_band": within_band,
+        "reconstructed": reconstructed, "wall_s": started.elapsed().as_secs_f64(), "budget_min": cfg.budget_min,
+        "case": case.display().to_string(),
+    });
+    for part in [mesh, verdict_row] {
+        for (k, v) in part.as_object().unwrap() {
+            row[k] = v.clone();
+        }
+    }
+    row["steady"] = steady_row;
+    row["transient"] = transient_row;
+    println!("{row}");
+    std::fs::write(&cfg.out_file, serde_json::to_string_pretty(&row).unwrap()).unwrap();
+    println!(
+        "FAST_TIER_COMPLETE label={} cells={} dt={dt} ctu_averaged={:.2} cd={:.5} se={:.5} gate_passed={gate_passed} within_band={:?} stop_reason={:?} wall_s={:.0}",
+        cfg.label, q.metrics["cells"].value, report.averaged_ctu, report.mean, report.std_err, within_band, stop_reason, started.elapsed().as_secs_f64()
+    );
 }
 
 /// A real history holds both the forces and the solver's own coefficients. A

@@ -53,7 +53,10 @@ report metrics are checked end to end:
 
 ## Not planned in this repository
 
-- Transient detached-eddy cases. `cfd.case_setup` writes steady k-omega SST and flags separated-flow features so the
-  force report warns; a DDES or SBES case writer is a larger piece of work.
+- ~~Transient detached-eddy cases.~~ Superseded 2026-11-11: `cfd.case_setup` writes a DDES case (`solver_mode =
+  transient_ddes`, hybrid central/upwind convection, fixed or adjustable step, averaged fields) and
+  `vernon-nodes-cfd/src/transient.rs` holds the time-resolved acceptance (wash-out, stop rule, per-step rule,
+  half-step check). The run is driven by the test harness `real_openfoam_fast_tier_run`; a graph node that runs it
+  and a runner profile are still open (`docs/research/wp9-fast-tier-plan.md`).
 - A spectral UV model. `solar.uv_dose_proxy` scales total radiation and checks the material against published
   accelerated-test figures; there is no published factor from test hours to outdoor years.

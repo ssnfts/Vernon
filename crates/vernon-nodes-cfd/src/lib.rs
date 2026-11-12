@@ -29,6 +29,7 @@ mod reference_record;
 mod study;
 #[cfg(test)]
 mod tests;
+pub mod transient;
 mod tunnel;
 mod types;
 mod util;

@@ -660,6 +660,13 @@ pub struct TransientControls {
     pub write_interval_s: f64,
     pub outer_correctors: u32,
     pub correctors: u32,
+    /// `true`: the step stays `delta_t_s` (no Courant adjustment). The v2
+    /// acceptance picks the step from the wake Courant number and checks it
+    /// with a half-step segment, so the solver must not change it.
+    pub fixed_step: bool,
+    /// Physical time at which the running averages of U and p start (the end
+    /// of the wash-out); 0 averages from the start.
+    pub average_from_s: f64,
 }
 
 impl TransientControls {
@@ -678,7 +685,14 @@ impl TransientControls {
         if !(1..=10).contains(&self.outer_correctors) || !(1..=10).contains(&self.correctors) {
             return Err("corrector counts must be between 1 and 10".into());
         }
+        if !self.average_from_s.is_finite() || self.average_from_s < 0.0 || self.average_from_s >= self.end_time_s {
+            return Err("the averaging start must be zero or positive and before the end time".into());
+        }
         Ok(())
+    }
+
+    pub fn time_step_mode(&self) -> &'static str {
+        if self.fixed_step { "fixed" } else { "adjustable" }
     }
 }
 
@@ -692,8 +706,19 @@ pub fn ddes_fv_schemes(c: &CaseSpec) -> String {
     let lap = if c.nonortho_over_70 { "limited corrected 0.5" } else { "corrected" };
     let mut o = header("dictionary", "system", "fvSchemes");
     o += "ddtSchemes\n{\n    default         backward;\n}\n\n";
-    o += "gradSchemes\n{\n    default         Gauss linear;\n    grad(U)         cellLimited Gauss linear 1;\n}\n\n";
-    o += "divSchemes\n{\n    default         none;\n    div(phi,U)      Gauss linear;\n    div(phi,k)      Gauss limitedLinear 1;\n    div(phi,omega)  Gauss limitedLinear 1;\n    div((nuEff*dev2(T(grad(U))))) Gauss linear;\n}\n\n";
+    // grad(k) and grad(omega) limited as in the steady recipe (WP9 D5).
+    o += "gradSchemes\n{\n    default         Gauss linear;\n    grad(U)         cellLimited Gauss linear 1;\n    grad(k)         cellLimited Gauss linear 1;\n    grad(omega)     cellLimited Gauss linear 1;\n}\n\n";
+    // Momentum convection blends central differencing in the resolved (LES)
+    // region with second-order upwind in the modelled (RANS) region, using the
+    // model's own `delta`; the arguments are the DES constant 0.65, the
+    // reference velocity and length (free stream and reference length), the
+    // sigma limits 0..1 and the vorticity limit 1. This is the form the open
+    // slant-body dataset ran in the same solver family.
+    o += &format!(
+        "divSchemes\n{{\n    default         none;\n    div(phi,U)      Gauss DEShybrid linear linearUpwind grad(U) delta 0.65 {} {} 0 1 1;\n    div(phi,k)      Gauss linearUpwind grad(k);\n    div(phi,omega)  Gauss linearUpwind grad(omega);\n    div((nuEff*dev2(T(grad(U))))) Gauss linear;\n}}\n\n",
+        num(c.u),
+        num(c.rf.length_m)
+    );
     o += &format!("laplacianSchemes\n{{\n    default         Gauss linear {lap};\n}}\n\n");
     o += &format!("interpolationSchemes\n{{\n    default         linear;\n}}\n\nsnGradSchemes\n{{\n    default         {lap};\n}}\n\nwallDist\n{{\n    method          meshWave;\n}}\n");
     o
@@ -701,9 +726,18 @@ pub fn ddes_fv_schemes(c: &CaseSpec) -> String {
 
 pub fn ddes_fv_solution(c: &CaseSpec, t: &TransientControls) -> String {
     let mut o = header("dictionary", "system", "fvSolution");
-    o += "solvers\n{\n    p\n    {\n        solver          GAMG;\n        smoother        GaussSeidel;\n        tolerance       1e-8;\n        relTol          0.1;\n    }\n\n    pFinal\n    {\n        $p;\n        relTol          0;\n    }\n\n    \"(U|k|omega)\"\n    {\n        solver          smoothSolver;\n        smoother        symGaussSeidel;\n        tolerance       1e-8;\n        relTol          0.1;\n    }\n\n    \"(U|k|omega)Final\"\n    {\n        solver          smoothSolver;\n        smoother        symGaussSeidel;\n        tolerance       1e-8;\n        relTol          0;\n    }\n}\n\n";
+    // U, k and omega use the preconditioned bi-conjugate gradient solver the
+    // open slant-body dataset ran with. The Gauss-Seidel smoother of the
+    // steady recipe raised a floating-point exception in the first momentum
+    // solve of the time-resolved run on a layered 0.5M-cell mesh (2026-11-11,
+    // serial and parallel, with every convection and delta variant); the
+    // preconditioned solver ran the same case.
+    o += "solvers\n{\n    p\n    {\n        solver          GAMG;\n        smoother        GaussSeidel;\n        tolerance       1e-8;\n        relTol          0.1;\n    }\n\n    pFinal\n    {\n        $p;\n        relTol          0;\n    }\n\n    \"(U|k|omega)\"\n    {\n        solver          PBiCGStab;\n        preconditioner  DILU;\n        tolerance       1e-8;\n        relTol          0.1;\n    }\n\n    \"(U|k|omega)Final\"\n    {\n        solver          PBiCGStab;\n        preconditioner  DILU;\n        tolerance       1e-8;\n        relTol          0;\n    }\n}\n\n";
+    // Turbulence is solved on every outer loop, so the per-step convergence
+    // rule can read a residual drop for k and omega; the outer loops stop
+    // early once p reaches 1e-4 and U, k, omega have dropped an order.
     o += &format!(
-        "PIMPLE\n{{\n    momentumPredictor yes;\n    nOuterCorrectors {};\n    nCorrectors     {};\n    nNonOrthogonalCorrectors {};\n}}\n",
+        "PIMPLE\n{{\n    momentumPredictor yes;\n    nOuterCorrectors {};\n    nCorrectors     {};\n    nNonOrthogonalCorrectors {};\n    turbOnFinalIterOnly false;\n    outerCorrectorResidualControl\n    {{\n        p\n        {{\n            tolerance       1e-04;\n            relTol          0;\n        }}\n        \"(U|k|omega)\"\n        {{\n            tolerance       1e-06;\n            relTol          0.1;\n        }}\n    }}\n}}\n",
         t.outer_correctors,
         t.correctors,
         u32::from(c.nonortho_over_70)
@@ -714,23 +748,40 @@ pub fn ddes_fv_solution(c: &CaseSpec, t: &TransientControls) -> String {
 pub fn ddes_control_dict(c: &CaseSpec, t: &TransientControls) -> String {
     let mut o = header("dictionary", "system", "controlDict");
     o += "application     pimpleFoam;\n";
+    let stepping = if t.fixed_step {
+        "adjustTimeStep  no;\n".to_string()
+    } else {
+        format!("adjustTimeStep  yes;\nmaxCo           {};\nmaxDeltaT       {};\n", num(t.max_co), num(t.max_delta_t_s))
+    };
     o += &format!(
-        "startFrom       startTime;\nstartTime       0;\nstopAt          endTime;\nendTime         {};\ndeltaT          {};\nadjustTimeStep  yes;\nmaxCo           {};\nmaxDeltaT       {};\nwriteControl    adjustableRunTime;\nwriteInterval   {};\npurgeWrite      2;\nwriteFormat     binary;\nwritePrecision  8;\ntimeFormat      general;\ntimePrecision   12;\nrunTimeModifiable true;\n\n",
+        "startFrom       latestTime;\nstartTime       0;\nstopAt          endTime;\nendTime         {};\ndeltaT          {};\n{stepping}writeControl    adjustableRunTime;\nwriteInterval   {};\npurgeWrite      2;\nwriteFormat     binary;\nwritePrecision  8;\ntimeFormat      general;\ntimePrecision   12;\nrunTimeModifiable true;\n\n",
         num(t.end_time_s),
         num(t.delta_t_s),
-        num(t.max_co),
-        num(t.max_delta_t_s),
         num(t.write_interval_s)
     );
-    o + &monitors(c)
+    // Running averages of U and p with their fluctuations, from the end of the
+    // wash-out: a time-averaged wake and surface pressure for inspection, and
+    // the unsteadiness map of the fast-tier record.
+    let average = format!(
+        "    fieldAverage1\n    {{\n        type            fieldAverage;\n        libs            {};\n        writeControl    writeTime;\n        timeStart       {};\n        fields\n        (\n            U\n            {{\n                mean            on;\n                prime2Mean      on;\n                base            time;\n            }}\n            p\n            {{\n                mean            on;\n                prime2Mean      on;\n                base            time;\n            }}\n        );\n    }}\n\n",
+        c.flavour.libs("fieldFunctionObjects"),
+        num(t.average_from_s)
+    );
+    o + &monitors_with(c, &average)
 }
 
 fn monitors(c: &CaseSpec) -> String {
+    monitors_with(c, "")
+}
+
+/// The force, wall and residual monitors, with `extra` function objects first.
+fn monitors_with(c: &CaseSpec, extra: &str) -> String {
     let patches = c.force_patches();
     let porosity = if c.zones.is_empty() { "no" } else { "yes" };
     let (cofr, a) = (vec3s(c.cofr()), c.aref());
     let fl = |lib: &str| c.flavour.libs(lib);
     let mut o = String::from("functions\n{\n");
+    o += extra;
     o += &format!(
         "    forceCoeffs1\n    {{\n        type            forceCoeffs;\n        libs            {};\n        writeControl    timeStep;\n        writeInterval   1;\n        patches         {patches};\n        p               p;\n        U               U;\n        rho             rhoInf;\n        rhoInf          {};\n        pRef            0;\n        porosity        {porosity};\n        CofR            {cofr};\n        liftDir         (0 0 1);\n        dragDir         (1 0 0);\n        pitchAxis       (0 1 0);\n        magUInf         {};\n        lRef            {};\n        Aref            {};\n    }}\n\n",
         fl("forces"),

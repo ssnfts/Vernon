@@ -6,6 +6,41 @@ Sections are newest first. Older sections use the original machine's paths
 (C:\Users\mabdu\REA\...) and the old flat scripts/ layout, and are kept as
 evidence. For current commands use docs/SETUP.md and docs/CFD-RUNBOOK.md.
 
+## WP9 fast tier built and first one-hour test run (user: "tests complete in 1 hour max, build the plan and execute it, this PC, downloads approved"), 2026-11-11 to 12
+
+- **Contract:** the multi-week DDES schedule was rejected. A new draft
+  contract `docs/research/wp9-fast-tier-v1.json` (one-hour tests on ~0.5M-cell
+  bluff bodies under the v2 transient acceptance, references with published
+  method) sits beside v1, which is unchanged and unmet. Plan and record:
+  `docs/research/wp9-fast-tier-plan.md`.
+- **Downloads (approved, CC BY-SA 4.0, under `scratch/wp9-data/`, never
+  committed):** open slant-body dataset tables, case setup (U 1 m/s, nu
+  3.75e-7, SA-DDES, DEShybrid, ~20M cells, 80 CTU) and runs 1–5 STL; Windsor
+  dataset tables and run 1; road-car dataset tables. SHA-256s in the JSON.
+- **Code (uncommitted at the time of writing; checks running):**
+  `crates/vernon-nodes-cfd/src/transient.rs` (new: time-weighted statistics,
+  stop rule, per-step rule from the solver log, half-step check; 8 tests);
+  `foam.rs`/`case.rs` DDES recipe (DEShybrid momentum convection, limited
+  k/omega gradients, turbulence on every outer loop, fixed-step mode,
+  averaged fields, `PBiCGStab`/`DILU` for U/k/omega after a floating-point
+  exception in the Gauss-Seidel smoother); `tests.rs` harness
+  `real_openfoam_fast_tier_run` (environment-driven, one-hour budget, segments,
+  reference comparison) plus unit tests; `docs/ROADMAP.md` corrected. Runs go
+  through `scratch/wp9-fast/run-fast.ps1`, outside the runner (a `wp9-fast`
+  profile is a follow-up).
+- **Runs:** `-a` crashed at the first momentum solve (recipe defect, fixed);
+  `-b` was stopped: the slant body had been rotated 180° by a wrong
+  `nose_direction` (steady Cd 0.51; fixed with a unit test);
+  **`fast-slant25-20261112-c` completed in 49.8 min: gate not passed (15 CTU
+  cap), time-weighted Cd 0.369 ± 0.008 against the experiment's 0.285
+  (+29.5%)**; per-step rule met on all 1,501 steps; ESS 9.6 against 50; the
+  steady start on the same grid gave 0.391 (October: 0.394). The 30% offset
+  predates the solver mode; see the plan's section 6 for the candidate causes
+  and the two decisions left to the user (standard-error limit vs reported
+  interval; next hour's target).
+- Nothing was launched through the runner; no gate was lowered; no run was
+  relabelled.
+
 ## WP9 Stage 2 investigation: steady gate unreachable; DDES route planned (2026-11-10 to 11)
 
 - **Stage 2 rerun** `wp9-solve-fastback-20261110-a`:
