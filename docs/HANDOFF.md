@@ -6,6 +6,57 @@ of done. This document lists the remaining work as ordered **work packages
 (WP)**. Do them in order, one commit each. Every WP ends with the full
 definition-of-done check from `AGENTS.md`.
 
+## Remaining work and owners — 2026-11-12
+
+This section is the current plan. The checkpoints below it are history.
+WP1–WP8 and WP10–WP14 are done; WP9 is unmet, WP15 and WP16 are open, and the
+`docs/ROADMAP.md` items are not wired into their nodes. The newest state of
+WP9 is the first section of `docs/CONTINUATION.md`.
+
+The work is split between role agents. Their definitions are in
+`.claude/agents/` on the development PC (that folder is git-ignored, so on
+another machine recreate them from this table). The main session is the
+**Director**: it briefs, reviews diffs and merges, and writes no bulk code.
+A **lead** is opened for its phase and closed at the end of it.
+
+| Phase | Lead | Task | Agent | Done when |
+|---|---|---|---|---|
+| 1 Reliability | `reliability-lead` | Checkpoint warm start for the one-hour transient tier | `cfd-engineer` | 25° and 35° slant-body Cd intervals reported from seeded runs; no gate lowered |
+| 1 | | `wp9-fast` runner profile, transient run node, CFD report into `perf.vehicle` | `cfd-engineer` | example scene cooks with CdA from the CFD report; placeholder guard kept |
+| 1 | | Shipped CFD claim in `docs/VALIDATION.md` (validated against reported-only) | `reliability-lead` | Owner signs off the wording |
+| 1 | | WP15 golden cases under `tests/golden/` | `validation-engineer` | each case has a test at the spec tolerance |
+| 1 | | Real E57, real LAS, fTetWild on a scanned panel | `validation-engineer` | results recorded; readers fixed if wrong |
+| 1 | | Flatten F2 (b)(c)(d); FEA pressure, spring and thermal cross-check | `numerics-engineer` | the `#[ignore]`d spec tests pass un-ignored |
+| 2 Product | `product-lead` | Wire `docs/ROADMAP.md` items 1–7 and the three extra modules into nodes | `node-wiring-engineer` | white-box warning gone, metrics checked end to end, `docs/NODES.md` regenerated |
+| 2 | | First run, sample scenes, failure messages, chords, in-app agent | `app-ux-engineer` | a new user cooks the demo and imports a file without the docs |
+| 3 Release (WP16) | `release-lead` | CI, `deny.toml`, package and self-test, `CHANGELOG.md`, stale-branch list | `release-engineer` | package self-test passes on a clean machine |
+| 3 | | Trademark, licence and external-program audit | `clean-room-auditor` | written findings, none open |
+| 4 Market | `market-lead` | User guide and three tutorials | `docs-writer` | each tutorial reproduces from a shipped example |
+| 4 | | Positioning brief, competitor table, landing page, demo script, launch posts | `launch-specialist` | drafts approved by the Owner; nothing posted |
+| 4 | | Commercial model proposal for an Apache-2.0 core | `market-lead` | Owner picks one |
+| all | | Definition of done before every commit | `verifier` | pass or fail with a log path |
+
+Phase 2 may overlap Phase 1 because it touches other crates. Phase 4 starts
+once the Phase 1 claim wording is signed.
+
+**Owner only** (agents prepare, never perform): clean-room legal review;
+product name and trademark check; pricing and commercial model; creating the
+public repository, pushing, tagging, publishing; running proprietary reference
+tools for goldens; CFD runs longer than one hour; deleting branches.
+
+**Usage rules:**
+1. At most two agents at once, never in the same crate.
+2. Briefs under 300 words: task, files, done-criteria. No pasted logs.
+3. Reports under 200 words plus file paths. Logs stay on disk.
+4. Checks go through `scripts/verification/start-verification.ps1`; the exit
+   status decides. Read a log only when it failed, and only the failing part.
+5. Solver runs are background jobs with no polling.
+6. Two failures on one task go to the lead, not to a third retry.
+7. One commit per task, after the definition of done.
+8. Top-tier models are for the Director, `reliability-lead`, `cfd-engineer`
+   and `numerics-engineer`. Leads and most specialists run mid-tier;
+   `verifier`, `clean-room-auditor` and `docs-writer` run the smallest model.
+
 ## Progress — 2026-10-30 (WP8)
 
 Current continuation checkpoint2026-11-03:WP9 is still incomplete. The
