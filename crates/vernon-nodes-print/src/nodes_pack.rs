@@ -466,6 +466,20 @@ impl NodeOp for FlavourCheck {
         if [opts.max_nozzle_c,opts.max_bed_c,opts.max_chamber_c].iter().any(|t|!t.is_finite()||*t<0.0){return Err(ctx.fail("heater limits must be finite nonnegative Celsius values"));}
         let mut v = crate::gcode_check::check(open_gcode(ctx, &path)?, &opts);
         v.extend(gcode::check_flavour(open_gcode(ctx, &path)?, flavour).into_iter().map(|x|crate::gcode_check::Issue{line:x.line,error:false,message:x.message}));
+        // Table-driven check: a command the documented table says the chosen firmware lacks.
+        // Unknown-command and marker-balance findings are left to the checks above.
+        let dialect = match flavour { "klipper" => Some(crate::dialects::Dialect::Klipper), "marlin" | "marlin2" => Some(crate::dialects::Dialect::Marlin2), "reprapfirmware" => Some(crate::dialects::Dialect::RepRapFirmware), _ => None };
+        let mut dialect_findings = 0usize;
+        if let Some(d) = dialect {
+            let text = std::fs::read_to_string(&path).map_err(|e| ctx.fail(format!("cannot read {}: {e}", path.display())))?;
+            for f in crate::dialects::check_gcode(&text, d) {
+                if !(f.message.contains("is not valid for target dialect") || f.message.contains("unsupported dialect context")) { continue; }
+                // Count every table finding; list it only when no earlier check already flagged that line.
+                dialect_findings += 1;
+                if v.iter().any(|x| x.line == f.line) { continue; }
+                v.push(crate::gcode_check::Issue { line: f.line, error: false, message: f.message });
+            }
+        }
         let defines = gcode::count_object_defines(open_gcode(ctx, &path)?);
         let mut rep = Report::new("Flavour conformance");
         let strict=p.bool("strict")?;
@@ -474,6 +488,7 @@ impl NodeOp for FlavourCheck {
         rep.metric("error_count", Metric::new(errors as f64, "count").with_limit(0.0, true));
         rep.metric("warning_count", Metric::new((v.len()-errors) as f64, "count"));
         rep.metric("object_define_count", Metric::new(defines as f64, "count"));
+        rep.metric("dialect_table_findings", Metric::new(dialect_findings as f64, "count"));
         for x in v.iter().take(50) {
             let sev = if x.error || strict { Severity::Error } else { Severity::Warning };
             rep.note(sev, if x.line > 0 { format!("line {}: {}", x.line, x.message) } else { x.message.clone() });
@@ -720,6 +735,28 @@ mod tests {
         let bad = cook(&FlavourCheck, "fc_m", &[Some(Data::File(f))], &[("flavour", ParamValue::Str("marlin".into())), ("strict", ParamValue::Bool(true))]).unwrap();
         assert!(metric(&bad[1], "violation_count") > 0.0);
         assert!(!bad[1].as_report().unwrap().passes());
+    }
+
+    #[test]
+    fn flavour_check_uses_the_dialect_table_for_unsupported_commands() {
+        // M572 is the RepRapFirmware pressure-advance command; Klipper and Marlin do not have it.
+        let f = write_gcode("fc_table", "M83
+M572 D0 S0.05
+G1 X10 E1
+");
+        let run = |flavour: &str| {
+            let out = cook(&FlavourCheck, "fc_table", &[Some(Data::File(f.clone()))], &[("flavour", ParamValue::Str(flavour.into()))]).unwrap();
+            (metric(&out[1], "dialect_table_findings"), metric(&out[1], "violation_count"), out[0].as_json().unwrap().to_string())
+        };
+        let (rrf, rrf_total, _) = run("reprapfirmware");
+        assert_eq!(rrf, 0.0);
+        assert_eq!(rrf_total, 0.0);
+        for flavour in ["klipper", "marlin"] {
+            let (n, total, json) = run(flavour);
+            assert_eq!(n, 1.0, "{flavour}");
+            assert!(total >= 1.0);
+            assert!(json.contains("M572"), "{json}");
+        }
     }
 
     #[test]
