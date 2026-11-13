@@ -2345,32 +2345,41 @@ fn f2_a_area_preserved_needs_a_boundary_at_least_3_53_percent_longer() {
 }
 
 #[test]
-#[ignore = "spec F2 (b) not met: preserve_boundary leaves the boundary 2.4365 % longer (spec: within 0.1 %), area change -2.078 % (spec: <= -6.5 %); boundary-edge weight is 10, not a hard constraint"]
 fn f2_b_preserve_boundary_keeps_the_boundary_within_a_tenth_of_a_percent_and_loses_6_5_percent_area() {
     let r = f2_run(&[("preserve_boundary", b(true))]);
     eprintln!("F2 (b), preserve_boundary: boundary change {:.4} %, area change {:.3} %", r.boundary_change_pct, r.area_change_pct);
     assert!(r.boundary_change_pct.abs() <= 0.1, "boundary length changed by {} %, spec allows 0.1 %", r.boundary_change_pct);
     assert!(r.area_change_pct <= -6.5, "area change {} %", r.area_change_pct);
+    // the constraint is met by the iteration, not by a large uniform rescale at the end
+    let scale = m(&r.report, "constraint_final_scale");
+    eprintln!("final scale {scale:.7}");
+    assert!((scale - 1.0).abs() < 1e-3, "final scale {scale}");
 }
 
 #[test]
-#[ignore = "spec F2 (c) not met: stretch_only leaves 79.82 % of the area compressed above the 0.01 % dead-band (worst compression 0.1446 %); area change +2.31 % does meet >= 0; the opposite deformation is weighted 10000, not forbidden"]
 fn f2_c_stretch_only_has_no_compression_and_does_not_lose_area() {
     let r = f2_run(&[("deformation", s("stretch_only"))]);
     let (share, max) = (m(&r.report, "compress_share_pct"), m(&r.report, "compress_max_pct"));
     eprintln!("F2 (c), stretch_only: compression share {share:.3} %, worst compression {max:.4} %, area change {:.3} %", r.area_change_pct);
     assert_eq!(share, 0.0, "compression share {share} % (worst compression {max} %)");
     assert!(r.area_change_pct >= 0.0, "area change {} %", r.area_change_pct);
+    // the constraint is met by the iteration, not by a large uniform rescale at the end
+    let scale = m(&r.report, "constraint_final_scale");
+    eprintln!("final scale {scale:.7}");
+    assert!((scale - 1.0).abs() < 1e-3, "final scale {scale}");
 }
 
 #[test]
-#[ignore = "spec F2 (d) not met: compress_only leaves 9.77 % of the area stretched above the 0.01 % dead-band (worst stretch 0.0174 %); area change -6.668 % does meet <= 0; the opposite deformation is weighted 10000, not forbidden"]
 fn f2_d_compress_only_has_no_stretch_and_does_not_gain_area() {
     let r = f2_run(&[("deformation", s("compress_only"))]);
     let (share, max) = (m(&r.report, "stretch_share_pct"), m(&r.report, "stretch_max_pct"));
     eprintln!("F2 (d), compress_only: stretch share {share:.3} %, worst stretch {max:.4} %, area change {:.3} %", r.area_change_pct);
     assert_eq!(share, 0.0, "stretch share {share} % (worst stretch {max} %)");
     assert!(r.area_change_pct <= 0.0, "area change {} %", r.area_change_pct);
+    // the constraint is met by the iteration, not by a large uniform rescale at the end
+    let scale = m(&r.report, "constraint_final_scale");
+    eprintln!("final scale {scale:.7}");
+    assert!((scale - 1.0).abs() < 1e-3, "final scale {scale}");
 }
 
 #[test]
@@ -2515,10 +2524,17 @@ fn stretch_aware_biased_weights_report_that_they_are_not_the_plain_energy() {
     assert!(!has_note(&free, vernon_core::Severity::Warning, "floppy"));
     let (so, _, pat) = arap_run(&g, &[("deformation", s("stretch_only"))]);
     assert_eq!(m(&so, "arap_exact_weights"), 0.0);
-    assert!(has_note(&so, vernon_core::Severity::Info, "10000"));
+    assert!(has_note(&so, vernon_core::Severity::Info, "stretch_only is a hard constraint"));
+    assert_eq!(m(&so, "compress_share_pct"), 0.0);
     assert!(all_finite(&so, &pat));
-    let (fl, _, _) = arap_run(&g, &[("material", s("floppy"))]);
-    assert!(has_note(&fl, vernon_core::Severity::Warning, "floppy"));
+    // the floppy material runs its own energy: a different pattern from the rigid one
+    let (fl, _, fpat) = arap_run(&g, &[("material", s("floppy"))]);
+    assert!(has_note(&fl, vernon_core::Severity::Info, "material = floppy"));
+    assert!(!has_note(&fl, vernon_core::Severity::Warning, "floppy"));
+    let (_, _, rpat) = arap_run(&g, &[]);
+    let moved = fpat.points.iter().zip(&rpat.points).map(|(a, b)| a.distance(*b)).fold(0.0, f64::max);
+    assert!(moved > 1e-3, "floppy and rigid patterns differ by {moved} mm");
+    assert_eq!(m(&fl, "flipped_tris"), 0.0);
     // a limit of one iteration cannot settle: the report says so
     let (one, _, _) = arap_run(&g, &[("max_iterations", i(1))]);
     assert_eq!(m(&one, "arap_converged"), 0.0);

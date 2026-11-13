@@ -6,6 +6,7 @@ use std::collections::BTreeMap;
 use glam::{DVec2, DVec3};
 use vernon_core::Geometry;
 
+use crate::flatten_constraints::max_step_keeping_area;
 use crate::sparse::{pcg, Csr};
 use crate::topo::ekey;
 
@@ -347,6 +348,8 @@ pub struct ArapOut {
     /// Exact (signed) cotangent weights were used, i.e. the energy is the one
     /// of Liu et al.; otherwise the weights were clamped positive.
     pub exact_weights: bool,
+    /// Iterations whose full global step would have folded a triangle, so a shorter step was taken.
+    pub shortened_steps: usize,
 }
 
 /// A triangle that cannot carry a map: a non-finite corner, an area below
@@ -474,6 +477,7 @@ pub fn arap(c: &Compact, uv0: &[DVec2], o: &ArapOpts) -> ArapOut {
             converged: true,
             skipped,
             exact_weights: uniform,
+            shortened_steps: 0,
         };
     };
     let pin_pos = uv[pin_v];
@@ -504,11 +508,27 @@ pub fn arap(c: &Compact, uv0: &[DVec2], o: &ArapOpts) -> ArapOut {
         }
         Csr::from_triplets(m, trip)
     };
+    // Fold-free guard (Smith and Schaefer 2015): the triangles that start with the
+    // majority orientation keep it; already flipped ones are left to the report.
+    let signed = |uv: &[DVec2], t: &ArapTri| {
+        (uv[t.v[1] as usize] - uv[t.v[0] as usize]).perp_dot(uv[t.v[2] as usize] - uv[t.v[0] as usize])
+    };
+    let orient = if tris.iter().map(|t| signed(&uv, t)).sum::<f64>() < 0.0 { -1.0 } else { 1.0 };
+    let guarded: Vec<[usize; 3]> = tris
+        .iter()
+        .filter(|t| orient * signed(&uv, t) > 0.0)
+        .map(|t| {
+            let v = t.v.map(|x| x as usize);
+            if orient > 0.0 { v } else { [v[0], v[2], v[1]] }
+        })
+        .collect();
+    let min_area2 = 1e-6 * 2.0 * total_area / tris.len().max(1) as f64;
     let mut fixed: Option<Csr> = None;
     let mut prev_e = f64::INFINITY;
     let mut energy = 0.0;
     let mut it = 0;
     let mut converged = false;
+    let mut shortened = 0usize;
     while it < o.max_iter {
         // Local step: the rotation of every triangle.
         let rots: Vec<(f64, f64)> = tris.iter().map(|t| rotation_of(t, &uv)).collect();
@@ -583,12 +603,21 @@ pub fn arap(c: &Compact, uv0: &[DVec2], o: &ArapOpts) -> ArapOut {
         let mut xv: Vec<f64> = (0..n).filter(|&i| i != pin_v).map(|i| uv[i].y).collect();
         pcg(l, &bu, &mut xu, 1e-10, 4000);
         pcg(l, &bv, &mut xv, 1e-10, 4000);
+        let step: Vec<[f64; 2]> = (0..n)
+            .map(|i| {
+                let target = if i == pin_v { pin_pos } else { DVec2::new(xu[free_idx[i]], xv[free_idx[i]]) };
+                let d = target - uv[i];
+                [d.x, d.y]
+            })
+            .collect();
+        let flat: Vec<[f64; 2]> = uv.iter().map(|u| [u.x, u.y]).collect();
+        let amax = max_step_keeping_area(&guarded, &flat, &step, min_area2);
+        let alpha = if amax >= 1.0 || !amax.is_finite() { 1.0 } else { 0.8 * amax };
+        if alpha < 1.0 {
+            shortened += 1;
+        }
         for i in 0..n {
-            uv[i] = if i == pin_v {
-                pin_pos
-            } else {
-                DVec2::new(xu[free_idx[i]], xv[free_idx[i]])
-            };
+            uv[i] += alpha * DVec2::new(step[i][0], step[i][1]);
         }
         // Energy with the same weights and the rotations of this iteration.
         energy = 0.0;
@@ -617,6 +646,7 @@ pub fn arap(c: &Compact, uv0: &[DVec2], o: &ArapOpts) -> ArapOut {
         converged,
         skipped,
         exact_weights: uniform,
+        shortened_steps: shortened,
     }
 }
 

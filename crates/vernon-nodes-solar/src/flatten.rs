@@ -1,4 +1,4 @@
-//! Stage 7b nodes: seam cut, conformal / stretch-aware flatten, strain
+﻿//! Stage 7b nodes: seam cut, conformal / stretch-aware flatten, strain
 //! report, UV stretch overlay and map-back.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -11,6 +11,7 @@ use vernon_graph::{
     PortSpec, Stage,
 };
 
+use crate::flatten_constraints::{flatten_constrained, MaterialWeights, Mode as ConstraintMode, Params as ConstraintParams};
 use crate::lscm::{align_uv, arap, compact, degenerate_tris, lscm, plane_fit, ArapOpts, ArapOut, Compact};
 use crate::strain::{angle_defect_sum, compute_strain, ply_fields, StrainOpts, StrainResult};
 use crate::topo::{analyze, auto_cut, cut_along, ekey, seam_from_polylines, TopoInfo};
@@ -445,6 +446,11 @@ impl NodeOp for ConformalMapNode {
 
 pub struct StretchAwareNode;
 
+/// Material blend for the rigid sheet in the constrained solver.
+const RIGID_MATERIAL: MaterialWeights = MaterialWeights::EDGE_ONLY;
+/// Weight of the boundary-length constraint relative to the material terms.
+const BOUNDARY_WEIGHT: f64 = 10.0;
+
 impl NodeOp for StretchAwareNode {
     fn info(&self) -> NodeTypeInfo {
         NodeTypeInfo::new("flatten.stretch_aware", "Stretch-Aware Flatten", Stage::Flatten)
@@ -469,14 +475,14 @@ impl NodeOp for StretchAwareNode {
                         "custom_c",
                     ],
                 )
-                .help("Bias between stretching and compressing the sheet."),
+                .help("Bias between stretching and compressing the sheet. The *_only settings forbid the opposite deformation entirely."),
             )
             .param(ParamSpec::float("bnd_stretch", "Boundary stretch factor", 1.0, 0.01, 1000.0).help("Higher means less stretch of boundary edges."))
             .param(ParamSpec::float("bnd_compress", "Boundary compress factor", 1.0, 0.01, 1000.0).help("Higher means less compression of boundary edges."))
             .param(ParamSpec::float("int_stretch", "Interior stretch factor", 1.0, 0.01, 1000.0).help("Higher means less stretch of interior edges."))
             .param(ParamSpec::float("int_compress", "Interior compress factor", 1.0, 0.01, 1000.0).help("Higher means less compression of interior edges."))
-            .param(ParamSpec::choice("material", "Material", "rigid", &["rigid", "floppy"]).help("Stiff sheet or pliable fabric. Both settings run the same edge-length energy for now; floppy adds a warning to the report."))
-            .param(ParamSpec::bool("preserve_boundary", "Preserve boundary", false).help("Weight boundary edges heavily so their lengths change little."))
+            .param(ParamSpec::choice("material", "Material", "rigid", &["rigid", "floppy"]).help("Stiff sheet (keeps edge lengths) or pliable fabric (also keeps angles, at some cost in lengths)."))
+            .param(ParamSpec::bool("preserve_boundary", "Preserve boundary", false).help("Keep every boundary edge at its 3-D length. The pattern then has less area than the surface."))
             .param(ParamSpec::choice("outside", "Outside", "up", &["up", "down"]).help("Which side of the sheet faces outward. It sets the sign convention for stretch and compression."))
             .param(ParamSpec::bool("auto_seam", "Automatic seams", true).help("Cut seams automatically when the surface cannot flatten as one piece."))
             .param(seam_param())
@@ -521,15 +527,29 @@ impl NodeOp for StretchAwareNode {
             "free" | "custom_a" | "custom_b" | "custom_c" => {}
             "stretch_mostly" => o.base_compress = 10.0,
             "compress_mostly" => o.base_stretch = 10.0,
-            "stretch_only" => o.base_compress = 1.0e4,
-            "compress_only" => o.base_stretch = 1.0e4,
+            "stretch_only" | "compress_only" => {}
             other => return Err(CookError::BadParam(format!("deformation = {other}"))),
         }
+        let floppy = p.str("material")? == "floppy";
+        let mode = match deformation.as_str() {
+            "stretch_only" => ConstraintMode::StretchOnly,
+            "compress_only" => ConstraintMode::CompressOnly,
+            _ => ConstraintMode::Rigid,
+        };
+        // the plain (rigid, free) map keeps the as-rigid-as-possible solver; hard constraints
+        // and the floppy material run the constrained local/global solver
+        let cons = (mode != ConstraintMode::Rigid || o.preserve_boundary || floppy).then(|| Constrained {
+            mode,
+            material: if floppy { MaterialWeights::FLOPPY } else { RIGID_MATERIAL },
+            boundary_weight: if o.preserve_boundary && mode == ConstraintMode::Rigid { BOUNDARY_WEIGHT } else { 0.0 },
+        });
+        let custom = [o.bnd_stretch, o.bnd_compress, o.int_stretch, o.int_compress].iter().any(|f| *f != 1.0)
+            && deformation.starts_with("custom");
         // Disconnected input: every piece is flattened on its own.
         let groups = components(&g);
         let total = groups.len();
         let pieces: Vec<Piece> = if total <= 1 {
-            vec![flatten_piece(ctx, &g, seam.as_deref(), p, &o)?]
+            vec![flatten_piece(ctx, &g, seam.as_deref(), p, &o, cons.as_ref())?]
         } else {
             if seam.is_some() {
                 return Err(ctx.fail(format!(
@@ -539,7 +559,7 @@ impl NodeOp for StretchAwareNode {
             let mut v = Vec::with_capacity(total);
             for (i, prims) in groups.iter().enumerate() {
                 let sub = subset(&g, prims);
-                v.push(flatten_piece(ctx, &sub, None, p, &o).map_err(|e| {
+                v.push(flatten_piece(ctx, &sub, None, p, &o, cons.as_ref()).map_err(|e| {
                     ctx.fail(format!("piece {} of {total}: {}", i + 1, error_text(&e)))
                 })?);
             }
@@ -565,6 +585,8 @@ impl NodeOp for StretchAwareNode {
         let converged = pieces.iter().all(|pc| pc.converged);
         let fell_back = pieces.iter().any(|pc| pc.fell_back);
         let exact = pieces.iter().all(|pc| pc.exact_weights);
+        let shortened: usize = pieces.iter().map(|pc| pc.shortened_steps).sum();
+        let cons_out: Vec<ConstrainedOut> = pieces.iter().filter_map(|pc| pc.constrained.clone()).collect();
         let (geo, uv, gap) = layout(pieces);
         let limit = p.float("max_strain_pct")?;
         let res = compute_strain(&geo, &uv, &StrainOpts { mirrored: mirror, ..sopts.clone() });
@@ -591,6 +613,7 @@ impl NodeOp for StretchAwareNode {
             Metric::new(init_max, "%"),
         );
         r.metric("conformal_residual", Metric::new(rel, ""));
+        r.metric("fold_guard_shortened_steps", Metric::new(shortened as f64, "count"));
         r.metric("seam_paths", Metric::new(paths as f64, "count"));
         r.metric("pieces", Metric::new(total.max(1) as f64, "count"));
         r.metric(
@@ -603,7 +626,7 @@ impl NodeOp for StretchAwareNode {
         );
         r.note(
             Severity::Info,
-            "as-rigid-as-possible map: local/global iterations (closest rotation per triangle, then one sparse solve) after Liu, Zhang, Xu, Gotsman and Gortler 2008, started from the least-squares conformal map. Strain is each triangle's singular-value deviation from 1",
+            "as-rigid-as-possible map: local/global iterations (closest rotation per triangle, then one sparse solve) after Liu, Zhang, Xu, Gotsman and Gortler 2008, started from the least-squares conformal map. Every global step is shortened if it would fold a triangle (Smith and Schaefer 2015). Strain is each triangle's singular-value deviation from 1",
         );
         if total > 1 {
             r.note(
@@ -650,16 +673,53 @@ impl NodeOp for StretchAwareNode {
                 "stretch/compress factors are active: edge weights are reweighted every iteration with the cotangents clamped to be positive, so this is a weighted variant of the published energy",
             );
         }
-        if matches!(deformation.as_str(), "stretch_only" | "compress_only") {
+        if let Some(cs) = &cons {
+            let scale = cons_out.iter().map(|c| c.final_scale).fold(1.0, |a: f64, b| if (b - 1.0).abs() > (a - 1.0).abs() { b } else { a });
+            let violation = cons_out.iter().map(|c| c.violation).fold(0.0, f64::max);
+            r.metric("constraint_final_scale", Metric::new(scale, "ratio"));
+            r.metric("constraint_violation_before_scale", Metric::new(violation, "ratio"));
             r.note(
                 Severity::Info,
-                "stretch_only and compress_only weight the opposite deformation 10000 times heavier instead of forbidding it; what is left shows in compress_max_pct or stretch_max_pct",
+                format!(
+                    "constrained local/global solve: per-triangle targets blend the projections onto rotations (weight {}), unit-area maps ({}) and similarities ({}) as in Projective Dynamics (Bouaziz et al. 2014); hard constraints by a dual (augmented Lagrangian) iteration after Overby et al. 2017",
+                    cs.material.edge, cs.material.area, cs.material.shear
+                ),
             );
+            let _ = match mode {
+                ConstraintMode::StretchOnly => r.note(
+                    Severity::Info,
+                    format!("stretch_only is a hard constraint: no triangle is compressed (smallest singular value >= 1). The iteration left a worst compression of {:.4} %, removed by a uniform scale of {scale:.6}", 100.0 * violation),
+                ),
+                ConstraintMode::CompressOnly => r.note(
+                    Severity::Info,
+                    format!("compress_only is a hard constraint: no triangle is stretched (largest singular value <= 1). The iteration left a worst stretch of {:.4} %, removed by a uniform scale of {scale:.6}", 100.0 * violation),
+                ),
+                ConstraintMode::Rigid => &mut r,
+            };
+            if o.preserve_boundary {
+                if mode == ConstraintMode::Rigid {
+                    r.note(
+                        Severity::Info,
+                        format!("preserve_boundary holds every boundary edge at its 3-D length as a constraint; the total boundary length is then made exact by a uniform scale of {scale:.6}. A flat pattern with the boundary of a doubly curved patch has less area (isoperimetric inequality)"),
+                    );
+                } else {
+                    r.note(
+                        Severity::Warning,
+                        "preserve_boundary is not applied together with stretch_only or compress_only: the one-sided constraint wins, so boundary lengths change",
+                    );
+                }
+            }
+            if custom || deformation.ends_with("mostly") {
+                r.note(
+                    Severity::Warning,
+                    "the stretch/compress factors and the *_mostly presets are not used by the constrained solver (preserve boundary or floppy material); only the plain rigid map applies them",
+                );
+            }
         }
-        if p.str("material")? == "floppy" {
+        if floppy {
             r.note(
-                Severity::Warning,
-                "material = floppy is accepted but not modelled separately: the same edge-length energy runs for both materials",
+                Severity::Info,
+                "material = floppy: the edge-length term is joined by a small area term and a shear penalty, so angles are kept at some cost in lengths (Vernon weights; the spec gives no numbers)",
             );
         }
         let mut out3 = geo.clone();
@@ -719,6 +779,26 @@ struct Piece {
     skipped: usize,
     conflicts: usize,
     fell_back: bool,
+    /// Iterations whose global step was shortened so no triangle folds.
+    shortened_steps: usize,
+    /// What the constrained solver did, when it ran.
+    constrained: Option<ConstrainedOut>,
+}
+
+/// Settings of the constrained solver (hard one-sided or boundary constraints, material blend).
+#[derive(Clone, Debug)]
+struct Constrained {
+    mode: ConstraintMode,
+    material: MaterialWeights,
+    /// 0 = boundary free.
+    boundary_weight: f64,
+}
+
+/// Per-piece figures of the constrained solver.
+#[derive(Clone, Debug)]
+struct ConstrainedOut {
+    final_scale: f64,
+    violation: f64,
 }
 
 /// Message text of a cook error without the node prefix.
@@ -736,6 +816,7 @@ fn flatten_piece(
     seam: Option<&Geometry>,
     p: &Params,
     o: &ArapOpts,
+    cons: Option<&Constrained>,
 ) -> CookResult<Piece> {
     let conflicts = winding_conflicts(g);
     let (geo, paths, topo) = prepare_disk(
@@ -759,14 +840,18 @@ fn flatten_piece(
             "the conformal start has non-finite coordinates; the mesh is too degenerate to flatten",
         ));
     }
-    let ArapOut {
+    let (ArapOut {
         uv: refined,
         iterations,
         energy,
         converged,
         skipped,
         exact_weights,
-    } = arap(&comp, &uv0, o);
+        shortened_steps,
+    }, constrained) = match cons {
+        None => (arap(&comp, &uv0, o), None),
+        Some(cs) => run_constrained(&comp, &uv0, o, cs),
+    };
     let fell_back = refined.iter().any(|u| !u.is_finite());
     let mut uvc = if fell_back { uv0.clone() } else { refined };
     align_uv(&mut uvc, p.str("outside")? == "down");
@@ -784,7 +869,58 @@ fn flatten_piece(
         skipped,
         conflicts,
         fell_back,
+        shortened_steps,
+        constrained,
     })
+}
+
+/// The constrained solver of `flatten_constraints` on a compacted piece. The
+/// conformal start is used as given (mirrored for the solve if it is
+/// clockwise overall); degenerate triangles are left out and counted.
+fn run_constrained(c: &Compact, uv0: &[DVec2], o: &ArapOpts, cs: &Constrained) -> (ArapOut, Option<ConstrainedOut>) {
+    let degenerate = degenerate_tris(c);
+    let tris: Vec<[usize; 3]> = c
+        .tris
+        .iter()
+        .zip(&degenerate)
+        .filter(|(_, d)| !**d)
+        .map(|(t, _)| t.map(|v| v as usize))
+        .collect();
+    let skipped = degenerate.iter().filter(|d| **d).count();
+    let pos: Vec<[f64; 3]> = c.pts.iter().map(|q| [q.x, q.y, q.z]).collect();
+    let signed: f64 = tris
+        .iter()
+        .map(|t| (uv0[t[1]] - uv0[t[0]]).perp_dot(uv0[t[2]] - uv0[t[0]]))
+        .sum();
+    let flip = if signed < 0.0 { -1.0 } else { 1.0 };
+    let start: Vec<[f64; 2]> = uv0.iter().map(|u| [flip * u.x, u.y]).collect();
+    let fallback = |uv: Vec<DVec2>| ArapOut { uv, iterations: 0, energy: 0.0, converged: false, skipped, exact_weights: false, shortened_steps: 0 };
+    let Some(pin) = tris.first().map(|t| t[0]) else {
+        return (fallback(uv0.to_vec()), None);
+    };
+    let params = ConstraintParams {
+        mode: cs.mode,
+        material: cs.material,
+        boundary_weight: cs.boundary_weight,
+        max_iterations: o.max_iter,
+        // vertex moves relative to the pattern size; the energy tolerance of the node
+        // is relative too, and a move of tol * size changes the energy by about tol^2
+        tolerance: o.tol * 1e-2,
+        pin,
+        allow_flipped_start: true,
+        ..ConstraintParams::default()
+    };
+    match flatten_constrained(&pos, &tris, &start, &[], &params) {
+        Ok(out) => {
+            let uv = out.uv.iter().map(|q| DVec2::new(flip * q[0], q[1])).collect();
+            (
+                ArapOut { uv, iterations: out.iterations, energy: out.energy, converged: out.converged, skipped, exact_weights: false, shortened_steps: out.shortened_steps },
+                Some(ConstrainedOut { final_scale: out.final_scale, violation: out.violation_before_scale }),
+            )
+        }
+        // the inputs are checked above, so this is not expected; keep the conformal start
+        Err(_) => (fallback(vec![DVec2::NAN; uv0.len()]), None),
+    }
 }
 
 /// Put the patterns of all pieces side by side along +x. Returns the merged

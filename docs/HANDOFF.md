@@ -588,20 +588,28 @@ pieces are flattened separately, each with an explicit note and no NaNs.
 `outside = down` mirrors the pattern, and the strain, area and fold checks now
 run on the un-mirrored pattern (`flatten.conformal_map` too), so a mirrored
 pattern is no longer reported as folded (a 264-triangle cap used to report 264
-flipped); a note says so. Stretch-only and compress-only are weights of 10000,
-not hard constraints, and the rigid and floppy materials still run the same
-energy (both said in the report). Spec F2 (cap R 1000 mm, half angle 30 deg,
-tested on 10 rings x 64 sectors): (a) holds: the free flatten changes the area
-by -0.043 % and the boundary by +3.496 %, above the isoperimetric minimum of
-3.454 % at that area (the minimum at a preserved area is 3.476 % on this mesh,
-3.53 % on the smooth cap); (e) holds: mean boundary strain 2.4365 % with
-[10,10,1,1] against 3.4958 % with [1,1,1,1]. Not met, and left as `#[ignore]`d
-tests with the spec bounds unchanged: (b) `preserve_boundary` (edge weight 10)
-leaves the boundary 2.4365 % longer, not within 0.1 %, with area -2.078 %
-instead of <= -6.5 %; (c) stretch-only has 79.82 % of the area compressed above
-the 0.01 % dead-band (worst 0.1446 %; area +2.31 %, which is >= 0); (d)
-compress-only has 9.77 % stretched (worst 0.0174 %; area -6.668 %, which is
-<= 0). No fold-free line search yet. `perf.tuft_analysis` reads a CSV
+flipped); a note says so. Spec F2 (cap R 1000 mm, half angle 30 deg,
+tested on 10 rings x 64 sectors) now holds in full. Stretch-only,
+compress-only and preserve-boundary are hard constraints in the constrained
+local/global solver of `flatten_constraints.rs` (ADMM split per triangle and
+a dual per boundary edge after Overby et al. 2017, material projections
+blended as in Projective Dynamics, Bouaziz et al. 2014), with a last uniform
+scale that makes them exact; every global step, in that solver and in the
+plain ARAP, is shortened if it would fold a triangle (Smith and Schaefer
+2015). The floppy material runs its own blend (edge 1, area 0.1, shear 0.3,
+Vernon weights); rigid keeps the plain edge energy, not the spec's proposed
+area 1 / edge 0.3, so the measured ARAP figures above stand. Measured:
+(a) free flatten area -0.043 %, boundary +3.496 %, above the isoperimetric
+minimum of 3.454 % at that area (3.476 % at a preserved area on this mesh,
+3.53 % on the smooth cap); (b) `preserve_boundary` boundary change 0.0000 %
+(bound 0.1 %), area -6.681 % (bound <= -6.5 %), final scale 1.0000000;
+(c) stretch-only compression share 0 % (worst 0.0000 %), area +2.383 %,
+final scale 1.0002288; (d) compress-only stretch share 0 %, area -6.681 %,
+final scale 0.9999974; (e) mean boundary strain 2.4365 % with [10,10,1,1]
+against 3.4958 % with [1,1,1,1]. The stretch/compress factors and the
+`*_mostly` presets still act as reweighted edge energies in the plain ARAP
+only; the constrained solver ignores them (a warning says so), and
+preserve-boundary does not combine with a one-sided mode (warning). `perf.tuft_analysis` reads a CSV
 (`x,y,z,angle_deg`, optional `id` and `flow_deg`) or the JSON series and
 classifies each tuft into the spec's classes: reversed if the mean angle is
 more than `reversed_deg` off the flow, otherwise separated if it is more than
