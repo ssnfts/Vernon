@@ -256,8 +256,9 @@ fn tuft_info() -> NodeTypeInfo {
         .param(ParamSpec::float("sd_separated_deg", "Fluttering limit", 30.0, 5.0, 120.0).unit("deg").help("Angle spread (std-dev) above which a tuft counts as separated"))
         .param(ParamSpec::path("csv_path", "Tuft CSV", &["csv"], false).help("CSV of tuft samples, used when nothing is connected to the tufts port. Columns x, y, z (mm) and angle_deg, optionally id and flow_deg (the local flow direction, default 0). One row per tuft per frame; rows with the same id are the samples of one tuft"))
         .param(ParamSpec::float("reach_mm", "Surface reach", 75.0, 1.0, 1000.0).unit("mm").help("A surface face takes the class of the nearest tuft within this distance; faces farther from every tuft stay unobserved (-1 in tuft_class, tuft_offset_deg, tuft_sd_deg and tuft_dist_mm). Tufts farther than this from the surface are reported as off it"))
+        .param(ParamSpec::choice("view_axis", "Photo view axis", "y", &["x", "y", "z"]).help("Photo input only: the world axis the photograph looks along. The photo is taken as an upright orthographic view of the whole surface, cropped to its bounding box (looking along y: image right is +x, image up is +z; along x: right is +y, up is +z; along z: right is +x, up is +y). The angle of each tuft is measured against image right"))
         .param(ParamSpec::string("region_attrib", "Region attribute", "part").help("Face attribute of the surface that names its regions (for example the panel id); % separated is reported per region. Without it the whole surface is one region"))
-        .help("Classifies tufts as attached, separated, reversed or unsteady from a CSV of tuft positions and measured angles: the offset of the mean angle from the flow direction and the angle spread (std-dev) are compared with the limits. A tuft that follows the flow steadily is attached (class 0); one that is off the flow or fluttering wildly is separated (1); one that points back upstream is reversed (2); one that follows the flow but flutters more than an attached tuft is unsteady (3). The classes are written onto the faces of a connected surface (tuft_class, colour) and the share of separated and of reversed tufts is reported per region. Faces with no tuft in reach get -1 in tuft_class, tuft_offset_deg, tuft_sd_deg and tuft_dist_mm: -1 means no tuft, not a perfect one (test tuft_class, since a real offset can also be -1 degree). Finding tufts in photographs is not implemented: with no CSV, or a photo input connected, the report says so and no numbers are made up.")
+        .help("Classifies tufts as attached, separated, reversed or unsteady from a CSV of tuft positions and measured angles: the offset of the mean angle from the flow direction and the angle spread (std-dev) are compared with the limits. A tuft that follows the flow steadily is attached (class 0); one that is off the flow or fluttering wildly is separated (1); one that points back upstream is reversed (2); one that follows the flow but flutters more than an attached tuft is unsteady (3). The classes are written onto the faces of a connected surface (tuft_class, colour) and the share of separated and of reversed tufts is reported per region. Faces with no tuft in reach get -1 in tuft_class, tuft_offset_deg, tuft_sd_deg and tuft_dist_mm: -1 means no tuft, not a perfect one (test tuft_class, since a real offset can also be -1 degree). A photo input (binary PGM or PPM file) is searched for thin bright tuft lines and each tuft is placed on the surface by an orthographic view; a single photo cannot show flutter or reversal, so it gives attached or separated only. With nothing connected the report says so and no numbers are made up.")
         .emulates("tuft flow-visualisation analysis (attached / separated / reversed / unsteady map)")
 }
 
@@ -298,6 +299,93 @@ fn surface_output(surface: Option<&Geometry>, verdicts: &[tuft::Verdict], map: &
     g
 }
 
+/// Decode a binary PGM (P5) or PPM (P6) image with 8-bit samples into grey levels.
+fn decode_pnm(b: &[u8]) -> Result<crate::tuft_detect::Gray, String> {
+    let mut pos = 2usize;
+    let magic = b.get(..2).ok_or("the image file is empty")?;
+    let channels = match magic {
+        b"P5" => 1usize,
+        b"P6" => 3usize,
+        _ => return Err("only binary PGM (P5) and PPM (P6) photographs can be read; convert the image to one of these".to_string()),
+    };
+    let mut field = || -> Result<usize, String> {
+        loop {
+            match b.get(pos) {
+                Some(c) if c.is_ascii_whitespace() => pos += 1,
+                Some(b'#') => {
+                    while b.get(pos).is_some_and(|c| *c != b'\n') {
+                        pos += 1;
+                    }
+                }
+                _ => break,
+            }
+        }
+        let start = pos;
+        while b.get(pos).is_some_and(u8::is_ascii_digit) {
+            pos += 1;
+        }
+        std::str::from_utf8(&b[start..pos]).ok().and_then(|t| t.parse().ok()).ok_or_else(|| "the image header is malformed".to_string())
+    };
+    let (w, h, maxval) = (field()?, field()?, field()?);
+    if maxval == 0 || maxval > 255 {
+        return Err("only 8-bit images can be read".to_string());
+    }
+    if w == 0 || h == 0 || w.saturating_mul(h) > 100_000_000 {
+        return Err("the image size is not supported".to_string());
+    }
+    let data = b.get(pos + 1..).ok_or("the image has no pixel data")?;
+    if data.len() < w * h * channels {
+        return Err("the image file is truncated".to_string());
+    }
+    let px = (0..w * h)
+        .map(|i| {
+            let s = &data[i * channels..(i + 1) * channels];
+            let v = if channels == 1 { s[0] as f64 } else { 0.299 * s[0] as f64 + 0.587 * s[1] as f64 + 0.114 * s[2] as f64 };
+            (v * 255.0 / maxval as f64).round().clamp(0.0, 255.0) as u8
+        })
+        .collect();
+    Ok(crate::tuft_detect::Gray { w, h, px })
+}
+
+/// Find the tufts in `img` and place each on `surface`, taking the photo as an upright
+/// orthographic view of the surface's bounding box. Returns the tufts and how many have a weak fit.
+fn tufts_from_photo(img: &crate::tuft_detect::Gray, surface: &Geometry, axis: &str) -> (Vec<tuft::Tuft>, usize) {
+    let b = surface.bounds();
+    let (lo, hi) = (b.min, b.max);
+    // (image right axis, image up axis, depth axis)
+    let (u, v, d) = match axis {
+        "x" => (1usize, 2usize, 0usize),
+        "z" => (0, 1, 2),
+        _ => (0, 2, 1),
+    };
+    let found = crate::tuft_detect::detect(img, &crate::tuft_detect::DetectParams::default());
+    // depth of the nearest face centroid (in the view plane) gives the third coordinate
+    let centroids: Vec<DVec3> = surface
+        .prims
+        .iter()
+        .map(|pr| pr.vertices.iter().map(|&i| surface.points[i as usize]).sum::<DVec3>() / pr.vertices.len().max(1) as f64)
+        .collect();
+    let mut low = 0;
+    let tufts = found
+        .iter()
+        .enumerate()
+        .map(|(i, t)| {
+            let mut pos = DVec3::ZERO;
+            pos[u] = lo[u] + (t.x_px as f64 / img.w as f64) * (hi[u] - lo[u]);
+            pos[v] = hi[v] - (t.y_px as f64 / img.h as f64) * (hi[v] - lo[v]);
+            pos[d] = centroids
+                .iter()
+                .min_by(|a, c| ((a[u] - pos[u]).powi(2) + (a[v] - pos[v]).powi(2)).total_cmp(&((c[u] - pos[u]).powi(2) + (c[v] - pos[v]).powi(2))))
+                .map_or(lo[d], |c| c[d]);
+            if t.confidence < 0.5 {
+                low += 1;
+            }
+            tuft::Tuft { id: format!("photo{i}"), pos, flow_deg: 0.0, angles: vec![t.angle_deg_to_freestream as f64] }
+        })
+        .collect();
+    (tufts, low)
+}
+
 fn tuft_cook(ctx: &CookContext, inputs: &[Option<Data>], p: &Params) -> CookResult<Vec<Data>> {
     let th = TuftThresholds {
         attached_deg: p.float("attached_deg")?,
@@ -307,9 +395,8 @@ fn tuft_cook(ctx: &CookContext, inputs: &[Option<Data>], p: &Params) -> CookResu
     };
     let reach = p.float("reach_mm")?;
     let mut rep = Report::new("Tuft analysis");
-    let photo_route = inputs.first().is_some_and(Option::is_some);
     // Angles come from the tufts port (a CSV file or a JSON series) or the CSV path parameter.
-    let parsed = match inputs.get(2).and_then(|d| d.as_ref()) {
+    let mut parsed = match inputs.get(2).and_then(|d| d.as_ref()) {
         Some(Data::Json(v)) => Some(tuft::parse_json(v).or_fail(ctx)?),
         Some(Data::File(f)) => Some(tuft::parse_csv(&read_text(ctx, f)?).or_fail(ctx)?),
         Some(other) => return Err(CookError::WrongInput { index: 2, expected: DataKind::Any, found: other.kind() }),
@@ -322,20 +409,35 @@ fn tuft_cook(ctx: &CookContext, inputs: &[Option<Data>], p: &Params) -> CookResu
             }
         }
     };
-    match (&parsed, photo_route) {
-        (None, _) => {
-            rep.note(
-                Severity::Warning,
-                "white-box placeholder: no tuft CSV is connected and finding tufts in photographs (ridge detection, skeleton, homography to the surface, comparison with the simulated streamline) is not implemented, so no tuft is classified and no numbers are produced. Supply a CSV of tuft positions (x, y, z in mm) and measured angles",
-            );
+    // A photograph adds the tufts found in it to those of the table.
+    if let Some(Data::File(photo)) = inputs.first().and_then(|d| d.as_ref()) {
+        let surface = inp::opt_geometry(inputs, 3);
+        let mut found = tuft::Parsed::default();
+        match surface.as_deref().filter(|s| s.point_count() > 0) {
+            None => found.notes.push("the photograph was ignored: connect the surface so the tufts found in it can be placed on it".to_string()),
+            Some(s) => {
+                let bytes = std::fs::read(photo).map_err(|e| ctx.fail(format!("cannot read {}: {e}", photo.display())))?;
+                let img = decode_pnm(&bytes).map_err(|e| ctx.fail(format!("{}: {e}", photo.display())))?;
+                let (tufts, low_confidence) = tufts_from_photo(&img, s, p.str("view_axis")?);
+                if tufts.is_empty() {
+                    found.notes.push("no tuft was found in the photograph".to_string());
+                }
+                if low_confidence > 0 {
+                    found.notes.push(format!("{low_confidence} tufts found in the photograph have a weak line fit (confidence below 0.5)"));
+                }
+                found.tufts = tufts;
+            }
         }
-        (Some(_), true) => {
-            rep.note(
-                Severity::Warning,
-                "white-box placeholder: finding tufts in the connected photographs is not implemented, so the photographs are ignored; only the supplied CSV angles are classified",
-            );
-        }
-        (Some(_), false) => {}
+        let mut base = parsed.take().unwrap_or_default();
+        base.tufts.extend(found.tufts);
+        base.notes.extend(found.notes);
+        parsed = Some(base);
+    }
+    if parsed.is_none() {
+        rep.note(
+            Severity::Warning,
+            "no tuft input is connected, so no tuft is classified and no numbers are produced. Connect a photograph (PGM or PPM) with the surface, or supply a CSV of tuft positions (x, y, z in mm) and measured angles",
+        );
     }
     let (tufts, parse_notes) = parsed.map_or((Vec::new(), Vec::new()), |pr| (pr.tufts, pr.notes));
     for n in parse_notes {

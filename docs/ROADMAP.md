@@ -14,11 +14,11 @@ report metrics are checked end to end:
 
 | Item | Module |
 |---|---|
-| 1 slicer dialects | `vernon-nodes-print/src/dialects.rs` |
-| 2 tuft detection from images | `vernon-nodes-perf/src/tuft_detect.rs` |
+| 1 slicer dialects | `vernon-nodes-print/src/dialects.rs` (**wired 2026-11-14** into `print.flavour_check`: metric `dialect_table_findings`) |
+| 2 tuft detection from images | `vernon-nodes-perf/src/tuft_detect.rs` (**wired 2026-11-14** into `perf.tuft_analysis` for PGM/PPM photos; PNG not read) |
 | 3 preset key schema | `vernon-nodes-print/src/profile_schema.rs` |
 | 4 script bridge | `vernon-nodes-print/src/script_bridge.rs`, `script_template.rs` |
-| 5 snap-arm geometry | `vernon-nodes-print/src/snap_geometry.rs` |
+| 5 snap-arm geometry | `vernon-nodes-print/src/snap_geometry.rs` (**wired 2026-11-14** into `print.snap_joint`: stiffness, assembly, insertion and retention forces) |
 | 6 cut projection, split search, islands | `vernon-nodes-print/src/polyline_project.rs`, `partition_search.rs`, `island_select.rs` |
 | 7 stretch-aware constraints, ply shear | `vernon-nodes-solar/src/flatten_constraints.rs`, `ply_shear.rs` |
 | strict CFD convergence | `vernon-nodes-cfd/src/convergence.rs` (compare with `cfd.run_convergence` before adopting) |
