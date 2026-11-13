@@ -70,6 +70,14 @@ evidence. For current commands use docs/SETUP.md and docs/CFD-RUNBOOK.md.
   `wsl --shutdown` restart awaits the user. Fixes: `assess` now rounds the
   boundary like `next_segment_end_s` (`-i` skipped its 6 CTU check), and the
   harness reports a solver that never started instead of panicking.
+- **35° hour rerun (2026-11-13, after WSL recovered):** the WSL image is on
+  the external USB drive E: (via the `REA\tools` junction); with E: saturated
+  by another session's build no restart helped, and the user chose to wait.
+  Once E: was idle: `-k` (35°, from `-h`): PASS, Cd 0.302 ± 0.002 over 21–27
+  CTU (+16.0% against 0.260), half-step agrees; stable against `-h`'s 0.303.
+  Fast-tier summary on the 0.5M-cell half model: both slant bodies Cd ≈
+  0.30–0.31; +7–10% at 25°, +16% at 35°; the experimental 25° → 35° drop is
+  not reproduced. The remaining gap is setup and grid, not averaging.
 - Nothing was launched through the runner; no gate was lowered; no run was
   relabelled.
 

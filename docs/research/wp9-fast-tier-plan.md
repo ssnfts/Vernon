@@ -301,6 +301,35 @@ returns an empty history so the chain failure is reported instead. Restarting
 WSL (`wsl --shutdown`) is the user's decision, because it restarts WSL for
 every program on the machine.
 
+The user approved the restart; it did not help. The WSL disk image lives on
+the external USB drive E: (`C:\Users\mabdu\REA\tools` is a junction to
+`E:\REA\tools`), which another session's `cargo test --workspace` kept at up
+to 2,200% busy; every start timed out before the image was mounted. The user
+chose to wait for E: to clear; once it was idle WSL started in 23 s.
+
+**`fast-slant35-20261113-k` (seeded from `-h` at 21 CTU): PASS, 28.5 min. Cd
+0.302 ± 0.002 over cumulative 21 → 27 CTU against 0.260: +16.0%, interval not
+overlapping the band.** Passed at the first check (6 CTU; the rounding fix
+held). Trend 0.30%/CTU and halves 1.9%, neither significant; ESS 6.3;
+per-step rule on all 600 steps; half-step 0.300 ± 0.001, difference 0.0010,
+allowed 0.0045: agrees. Checkpoint at 27 CTU.
+
+**Where the slant-body pair stands after four chained hours each.**
+
+| Body | Experiment | Window (CTU) | Cd ± s.e. | Error |
+|---|---|---|---|---|
+| 25° | 0.285 | 14–21 (`-g`) | 0.304 ± 0.003 | +6.7% |
+| 25° | 0.285 | 21–28 (`-i`) | 0.312 ± 0.002 | +9.6% |
+| 35° | 0.260 | 14–21 (`-h`) | 0.303 ± 0.005 | +16.7% |
+| 35° | 0.260 | 21–27 (`-k`) | 0.302 ± 0.002 | +16.0% |
+
+The 35° value is stable across two consecutive windows (0.303, 0.302); the
+25° value wanders between windows by about four standard errors (0.304,
+0.312). On this 0.5M-cell half model, the fast tier gives Cd ≈ 0.30–0.31 for
+both bodies: 7–10% above the experiment at 25°, 16% above at 35°, and it does
+not reproduce the experimental drop from 25° to 35°. More averaging on this
+grid will not change that; the remaining gap belongs to the setup and grid.
+
 What this adds: the honest fast-tier statement for this body is a trend,
 not a value: the wash-out needed is longer than the budget allows at 0.5M
 cells and 16 ranks. Any pass within the hour would need either a converged
