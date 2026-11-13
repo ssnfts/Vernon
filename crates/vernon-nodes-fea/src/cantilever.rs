@@ -151,13 +151,12 @@ fn gravity_is_distributed_consistently_on_quadratic_elements() {
 }
 
 /// The same deck through the external solver. Set `VERNON_CCX` or put it on the program path.
-fn external(mesh: &Geometry, c: &MaterialCard, id: &OrientationCard, l: &LoadSet, tag: &str) -> (Vec<DVec3>, Vec<[f64; 6]>) {
+fn external(mesh: &Geometry, c: &MaterialCard, id: &OrientationCard, m: &MountSet, l: &LoadSet, tag: &str) -> (Vec<DVec3>, Vec<[f64; 6]>) {
     let exe = find_executable(&std::env::var("VERNON_CCX").unwrap_or_default(), &["ccx", "ccx_2.21", "ccx_2.20", "ccx_static", "ccx_MT"]).expect("the external solver is not installed");
     let dir = std::env::temp_dir().join(format!("vernon_fea_cantilever_{tag}_{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
-    let m = mounts(mesh);
     let opts = DeckOptions { job: "cantilever".into(), allow_linear_tet: true, ..Default::default() };
-    let deck = write_deck(&DeckInput { mesh, card: c, orient: id, mounts: &m, load: l, opts: &opts }).unwrap();
+    let deck = write_deck(&DeckInput { mesh, card: c, orient: id, mounts: m, load: l, opts: &opts }).unwrap();
     std::fs::write(dir.join("cantilever.inp"), &deck.text).unwrap();
     let st = run_with_timeout(&exe, &["-i".to_string(), "cantilever".to_string()], &dir, &dir.join("cantilever.log"), Duration::from_secs(600), &[]).unwrap();
     assert!(matches!(st, RunStatus::Exited(0)), "the solver failed, see {}", dir.display());
@@ -172,9 +171,12 @@ fn assert_agrees(mesh: &Geometry, c: &MaterialCard, tag: &str) {
 }
 
 fn assert_agrees_with(mesh: &Geometry, c: &MaterialCard, id: &OrientationCard, l: &LoadSet, tag: &str) {
-    let m = mounts(mesh);
-    let o = solve(&RefInput { mesh, card: c, orient: id, mounts: &m, load: l, max_dof: 60000, tol: 1e-10 }).unwrap();
-    let (u, s) = external(mesh, c, id, l, tag);
+    assert_agrees_mounted(mesh, c, id, &mounts(mesh), l, tag);
+}
+
+fn assert_agrees_mounted(mesh: &Geometry, c: &MaterialCard, id: &OrientationCard, m: &MountSet, l: &LoadSet, tag: &str) {
+    let o = solve(&RefInput { mesh, card: c, orient: id, mounts: m, load: l, max_dof: 60000, tol: 1e-10 }).unwrap();
+    let (u, s) = external(mesh, c, id, m, l, tag);
     // Every stress component, since von Mises hides a swapped shear.
     let span = nodes_at(mesh, 0.0);
     let scale = span.iter().map(|&n| von_mises(&s[n as usize])).fold(0.0, f64::max);
@@ -226,4 +228,80 @@ fn gravity_agrees_with_the_external_solver_within_2_percent() {
     let mesh = mesh_tet10(2);
     let load = LoadSet { gravity: Some(crate::types::Gravity { accel_mm_s2: 9810.0, dir: [0.0, 0.0, -1.0] }), ..Default::default() };
     assert_agrees_with(&mesh, &printed_card(), &OrientationCard::identity(), &load, "c3d10_gravity");
+}
+
+/// A downward pressure on the top face carrying the same 100 N as the tip load.
+fn top_pressure(mesh: &Geometry) -> LoadSet {
+    let p = LOAD / (LENGTH * SIDE);
+    let pressures = crate::mesh::boundary_faces(mesh).iter().filter(|b| b.normal.z > 0.99).map(|b| FacePressure { elem: b.elem as u32, face: b.face, p_mpa: p }).collect();
+    LoadSet { pressures, ..Default::default() }
+}
+
+#[test]
+fn top_pressure_carries_the_load_on_the_reference_solver() {
+    let mesh = mesh_tet10(1);
+    let (c, id, m) = (card(), OrientationCard::identity(), mounts(&mesh));
+    let o = solve(&RefInput { mesh: &mesh, card: &c, orient: &id, mounts: &m, load: &top_pressure(&mesh), max_dof: 60000, tol: 1e-10 }).unwrap();
+    // a positive pressure pushes into the face: the root reaction is the 100 N, upwards
+    assert!((o.reactions["MOUNT1"][2] - LOAD).abs() < 1e-3 * LOAD, "{:?}", o.reactions);
+}
+
+#[test]
+#[ignore = "needs CalculiX"]
+fn pressure_agrees_with_the_external_solver_within_2_percent() {
+    // the deck writes the face pressure as a distributed surface load, which the external
+    // solver turns into nodal forces itself; the reference solver uses its own consistent forces
+    let mesh = mesh_tet10(2);
+    assert_agrees_with(&mesh, &printed_card(), &OrientationCard::identity(), &top_pressure(&mesh), "c3d10_pressure");
+}
+
+/// The root on elastic pads (spring elements on every root node, all three directions)
+/// instead of a fixed patch.
+fn spring_pads(mesh: &Geometry) -> MountSet {
+    let mut m = mounts(mesh);
+    let site = &mut m.sites[0];
+    site.model = "spring_pad".into();
+    // 1 GPa pad, 2 mm thick, 10 mm radius: about 157 kN/mm in all, so the root moves visibly
+    (site.r_w_mm, site.pad_e_mpa, site.pad_t_mm) = (10.0, 1000.0, 2.0);
+    m
+}
+
+#[test]
+#[ignore = "needs CalculiX"]
+fn spring_pads_agree_with_the_external_solver_within_2_percent() {
+    let mesh = mesh_tet10(2);
+    let (c, id, m) = (printed_card(), OrientationCard::identity(), spring_pads(&mesh));
+    // the pads must matter: the tip moves more than on the fixed root
+    let fixed = tip_deflection(&mesh, &run(&mesh).disp);
+    let o = solve(&RefInput { mesh: &mesh, card: &card(), orient: &id, mounts: &m, load: &tip_load(&mesh), max_dof: 60000, tol: 1e-10 }).unwrap();
+    let padded = tip_deflection(&mesh, &o.disp);
+    println!("spring pads: tip {padded:.4} mm, fixed root {fixed:.4} mm");
+    assert!(padded > 1.02 * fixed, "{padded} {fixed}");
+    assert_agrees_mounted(&mesh, &c, &id, &m, &tip_load(&mesh), "c3d10_spring_pad");
+}
+
+/// A temperature field rising linearly from 23 degC at the root to 80 degC at the tip, with a
+/// retention table that halves the stiffness at 80 degC. In a mechanical step the temperature
+/// only selects the constants (no expansion card, so no thermal strain).
+fn heated(n: usize) -> (Geometry, MaterialCard) {
+    let mut mesh = mesh_tet10(n);
+    let t: Vec<f64> = mesh.points.iter().map(|p| 23.0 + (p.x + LENGTH / 2.0) / LENGTH * 57.0).collect();
+    mesh.point_attribs.set("temp_c", vernon_core::AttribArray::Float(t));
+    let mut c = printed_card();
+    c.retention = Some(crate::material::RetentionTable { points: vec![(23.0, 1.0), (80.0, 0.5)], source: "test".into(), uncalibrated: false });
+    (mesh, c)
+}
+
+#[test]
+#[ignore = "needs CalculiX"]
+fn temperature_dependent_stiffness_agrees_with_the_external_solver_within_2_percent() {
+    let (mesh, c) = heated(2);
+    // the field must matter: the heated beam is softer than the cold one
+    let id = OrientationCard::identity();
+    let cold = solve(&RefInput { mesh: &mesh, card: &printed_card(), orient: &id, mounts: &mounts(&mesh), load: &tip_load(&mesh), max_dof: 60000, tol: 1e-10 }).unwrap();
+    let hot = solve(&RefInput { mesh: &mesh, card: &c, orient: &id, mounts: &mounts(&mesh), load: &tip_load(&mesh), max_dof: 60000, tol: 1e-10 }).unwrap();
+    let (a, b) = (tip_deflection(&mesh, &cold.disp), tip_deflection(&mesh, &hot.disp));
+    println!("temperature: tip {b:.4} mm heated, {a:.4} mm at 23 degC");
+    assert!(b > 1.1 * a, "{b} {a}");
+    assert_agrees_with(&mesh, &c, &id, &tip_load(&mesh), "c3d10_temperature");
 }

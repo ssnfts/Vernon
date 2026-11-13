@@ -565,7 +565,14 @@ then the external solvers, then UI polish, then release.
     `cargo test -p vernon-nodes-fea cantilever -- --ignored`: tip deflection and
     mid-span von Mises agree within 2% for C3D10, C3D4, an anisotropic card, a
     rotated card and gravity; the three newer C3D10 cases also compare all six
-    mid-span stress components. Not compared: pressure, spring pads, temperature.
+    mid-span stress components. Also compared since (C3D10, printed card,
+    six mid-span stress components, tip and von Mises): a 0.025 MPa top-face
+    pressure (tip 3.7701 mm both), spring pads at the root (10.7361 mm both,
+    against 9.9661 mm fixed) and a 23-80 degC temperature field with a
+    retention table halving the stiffness at 80 degC (11.6666 mm both);
+    all agree to the printed four decimals. The temperature case covers
+    temperature-dependent stiffness only: neither solver gets an expansion
+    card, so thermal strain is still not compared.
   - Ten-node results can pass gates. Safety factors keep `estimate_only` (also on
     `fea.mount_report`) for four-node reference results, which read low, and for
     models with `temp_c`, because the built-in solver has no thermal strain.
