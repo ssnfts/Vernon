@@ -1090,11 +1090,12 @@ fn real_openfoam_fast_tier_run() {
         std::fs::write(&control_dict, set_dict_entry(&text, key, &format!("{value}"))).unwrap();
     };
     let latest_processor_time = || -> f64 { numeric_time_dirs(&case.join("processor0")).last().map(|(t, _)| *t).unwrap_or(0.0) };
-    // Only this run's own samples, strictly after its restart.
+    // Only this run's own samples, strictly after its restart. Empty when the
+    // solver never wrote a history (it did not start).
     let read_history = || -> (Vec<f64>, Vec<f64>) {
         let s = crate::coeffs::load_case_series(&case);
-        let cd = s.col("Cd").expect("the coefficient history has Cd").to_vec();
-        let (t, v) = cont.own_samples(&s.time, &cd);
+        let Some(cd) = s.col("Cd") else { return (Vec::new(), Vec::new()) };
+        let (t, v) = cont.own_samples(&s.time, cd);
         (t.to_vec(), v.to_vec())
     };
 

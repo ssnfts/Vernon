@@ -275,6 +275,32 @@ Next options, for the user: another seeded hour on each from the 21 CTU
 checkpoints (tests the residual drift), a finer grid for the 35° body, or
 the dataset bodies.
 
+**2026-11-13, user: "Another seeded hour".**
+
+**`fast-slant25-20261113-i` (seeded from `-g` at 21 CTU): PASS, 33 min. Cd
+0.312 ± 0.002 over cumulative 21 → 28 CTU against 0.285: +9.6%, interval not
+overlapping the band.** Trend 0.14%/CTU and halves 0.75%, neither significant;
+ESS 10.9; per-step rule on all 700 steps; half-step 0.316 ± 0.002, difference
+0.0036, allowed 0.0047: agrees. Steps 1.7–2.1 s (antivirus scanning about one
+core; the case disk was idle). The stop rule skipped its 6 CTU check by a
+rounding hair (5.99999… < 6) and assessed at 7 CTU; fixed afterwards in
+`assess` with the same 1e-9 allowance `next_segment_end_s` uses, with a test.
+
+So the 25° chain reads 0.395 (steady seed) → 0.336 (2–14 CTU, falling) →
+0.304 (14–21) → 0.312 (21–28). Two consecutive stationary windows differ by
+0.008, about four of their standard errors: each window is stationary on its
+own, but the wake has motion slower than 7 CTU, so a 7 CTU window's standard
+error understates the run-to-run spread. The honest statement for this body
+on this grid is Cd ≈ 0.30–0.31 (+7–10% against the experiment), not ±0.002.
+
+**`fast-slant35-20261113-j` (seeded from `-h`): no result.** WSL failed to
+start (`Wsl/Service/CreateInstance/ERROR_TIMEOUT`; the distribution stays
+stopped and every start times out after 93 s, with the VM process idle).
+The harness then panicked reading a history that was never written; it now
+returns an empty history so the chain failure is reported instead. Restarting
+WSL (`wsl --shutdown`) is the user's decision, because it restarts WSL for
+every program on the machine.
+
 What this adds: the honest fast-tier statement for this body is a trend,
 not a value: the wash-out needed is longer than the budget allows at 0.5M
 cells and 16 ranks. Any pass within the hour would need either a converged

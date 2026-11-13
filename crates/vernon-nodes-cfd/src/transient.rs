@@ -222,7 +222,9 @@ pub fn assess(time: &[f64], value: &[f64], switch_time_s: f64, p: &TransientPara
     let (t, v) = (&time[first..], &value[first..]);
     let mut r = empty_report(start, end.max(start), p.ctu_s, t.len());
     let mut reasons = Vec::new();
-    if r.averaged_ctu < p.min_average_ctu {
+    // The same rounding allowance `next_segment_end_s` uses, so a segment
+    // that ends exactly on a check boundary is assessed there, not skipped.
+    if r.averaged_ctu + 1e-9 < p.min_average_ctu {
         reasons.push(format!(
             "averaging: {:.2} of the required {:.2} CTU available after the wash-out",
             r.averaged_ctu, p.min_average_ctu
@@ -731,6 +733,23 @@ mod tests {
         assert!(r.ess < 50.0, "ess {}", r.ess);
         assert!(r.reasons.iter().any(|s| s.starts_with("ess")), "{:?}", r.reasons);
         assert!(r.std_err_batch.is_finite());
+    }
+
+    #[test]
+    fn transient_a_window_ending_on_the_boundary_is_assessed_there() {
+        // A restart at a large time: (end - start) / ctu comes out a hair
+        // under 6 in floating point. Run i of 2026-11-13 skipped its 6 CTU
+        // check this way and was assessed at 7 instead.
+        let p = TransientParams::fast_tier(0.0261);
+        let start = 0.5481_f64;
+        let n = 600;
+        let t: Vec<f64> = (1..=n).map(|i| start + i as f64 * 0.000261).collect();
+        let v: Vec<f64> = noise(n, 3).iter().map(|e| 0.30 + 0.001 * e).collect();
+        let switch = start - p.washout_ctu * p.ctu_s;
+        let r = assess(&t, &v, switch, &p).unwrap();
+        assert!((r.averaged_ctu - 6.0).abs() < 1e-6, "{}", r.averaged_ctu);
+        assert!(!r.reasons.iter().any(|s| s.starts_with("averaging")), "{:?}", r.reasons);
+        assert_eq!(r.verdict, Verdict::Pass, "{:?}", r.reasons);
     }
 
     #[test]

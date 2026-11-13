@@ -62,6 +62,14 @@ evidence. For current commands use docs/SETUP.md and docs/CFD-RUNBOOK.md.
   overlap). Both: stationary over 14–21 CTU, per-step rule on every step,
   half-step check agrees. The experimental 25° > 35° ordering is not
   reproduced (equal within intervals). Checkpoints at 21 CTU are on C:.
+- **Another seeded hour (2026-11-13):** `-i` (25°, from `-g`): PASS, Cd
+  0.312 ± 0.002 over 21–28 CTU (+9.6%), half-step agrees; two consecutive
+  stationary windows (0.304, 0.312) differ by about four standard errors, so
+  a 7 CTU window understates the spread: Cd ≈ 0.30–0.31 on this grid. `-j`
+  (35°) never ran: WSL hung (`CreateInstance/ERROR_TIMEOUT`, VM idle); a
+  `wsl --shutdown` restart awaits the user. Fixes: `assess` now rounds the
+  boundary like `next_segment_end_s` (`-i` skipped its 6 CTU check), and the
+  harness reports a solver that never started instead of panicking.
 - Nothing was launched through the runner; no gate was lowered; no run was
   relabelled.
 
