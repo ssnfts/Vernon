@@ -85,9 +85,10 @@ stay up for 6 s; it is SKIPPED unless the app was built (`bench\run.ps1 -WithApp
 - **No physical-accuracy claim.** There is no wind-tunnel, strain-gauge, scanner-certificate or
   lap-timing reference data in this repository. Agreement with an analytic case or another
   solver proves the arithmetic, not that the car will behave that way.
-- **CFD.** The existing Ahmed-body runs did not converge in 3000 iterations and their drag
-  coefficients sit outside the published window (see the report). Vernon's CFD numbers must not be
-  quoted as drag predictions. The bench starts no CFD job.
+- **CFD.** The steady Ahmed-body runs did not converge in 3000 iterations and their drag
+  coefficients sit outside the published window (see the report). The time-resolved fast tier is
+  limited to the claim in "CFD: what may be claimed" below; outside it, Vernon's CFD numbers must
+  not be quoted as drag predictions. The bench starts no CFD job.
 - **FEA of printed parts.** Linear tetrahedra lock in bending; layer anisotropy, creep, thermal
   expansion and bolt preload are not validated. Material retention curves are placeholders.
 - **Photogrammetry.** COLMAP is not re-run by the bench. Only the reading of a recorded model is
@@ -102,6 +103,59 @@ stay up for 6 s; it is SKIPPED unless the app was built (`bench\run.ps1 -WithApp
 - **Performance numbers** are one machine, one run; no statistical treatment.
 - **Commercial tools.** Nothing is compared with any licensed product until the owner records a
   golden file.
+
+## CFD: what may be claimed
+
+**Status: DRAFT, 2026-11-13, awaiting the owner's sign-off. Until it is signed, nothing below may
+be used outside this repository.**
+
+Evidence: contract `docs/research/wp9-fast-tier-v1.json`, runs and per-CTU histories in
+`docs/research/wp9-fast-tier-plan.md` section 6. Classic slant body, half model, about 0.5M
+cells, 40 m/s, time-resolved DDES (hybrid RANS-LES), 16 ranks on one workstation. Each body's
+first run spends its hour leaving the steady start. Later runs continue from its saved end state
+(a checkpoint with checksums and identity checks). A row passes when the fast-tier rules in
+plan section 4 hold. The effective sample size and standard error are reported but do not decide
+a pass.
+
+| Body | Run, averaging window | Cd (1 s.e.) | Experiment | Difference | Fast-tier gates |
+|---|---|---|---|---|---|
+| 25° slant | `-g`, 14–21 CTU | 0.304 ± 0.003 | 0.285 | +6.7% | pass, 24.6 min |
+| 25° slant | `-i`, 21–28 CTU | 0.312 ± 0.002 | 0.285 | +9.6% | pass, 33 min |
+| 35° slant | `-h`, 14–21 CTU | 0.303 ± 0.005 | 0.260 | +16.7% | pass, 24.4 min |
+
+The two 25° windows differ by about four of their standard errors. The wake changes more slowly
+than one window lasts, so one window's interval understates the spread between runs. Quote the
+range, not the interval.
+
+**Vernon may say:**
+- Vernon writes complete OpenFOAM cases and reduces OpenFOAM's own force history to Cd within 1%
+  (`B.openfoam.force_reduction`). This checks the arithmetic, not the flow.
+- "On the classic slant-body test case, Vernon's fast CFD tier puts drag within about 7–10% (25°
+  slant) and 17% (35° slant) of the published wind-tunnel values. It uses a half model of about
+  half a million cells, and each run after the first takes under 35 minutes on one workstation.
+  It does not reproduce the measured drop in drag from 25° to 35°."
+- Every number above is labelled with its method (fast tier, DDES, 0.5M cells, half model), never
+  as a road-car result.
+
+**Vernon may not say:**
+- "Validated CFD", "wind-tunnel accuracy", "within 5%", or that it matches a commercial tool.
+- Any drag or downforce figure for a road car or a user's body kit presented as a prediction.
+  The road-car contract (`wp9-replication-baseline-v1.json`, 12M cells) is unmet and is out of
+  the one-hour budget.
+- That it can tell which of two designs has less drag. The one difference tested, 25° against
+  35° (−9% in the experiment), came out equal within the intervals (0.304 and 0.303).
+- That a run gives a value to ± its standard error (see above).
+
+**For the owner to settle before signing:**
+1. **Reference values.** The fast tier uses 0.285 (25°) and 0.260 (35°), and the competitor table
+   below uses 0.299 and 0.279 from a secondary source. Both come from secondary tables. Choose
+   one value per angle from the primary paper (Ahmed, Ramm, Faltin, SAE 840300, 1984) and use it
+   in both places. All the differences above change with that choice.
+2. **35° status.** Run `-j` (another seeded 35° hour) gave no result because WSL would not start.
+   The 35° row rests on one seeded window, which may still be drifting (0.93%/CTU, below
+   significance).
+3. **Wording.** Approve, edit or reject the "may say" sentence, which is the only wording meant
+   for the outside world.
 
 ## Competitor comparison
 
