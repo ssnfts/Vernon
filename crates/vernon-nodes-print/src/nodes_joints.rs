@@ -250,7 +250,9 @@ impl NodeOp for SnapJoint {
             .param(ParamSpec::float("bulge", "Undercut", 0.4, 0.1, 2.0).unit("mm").help("Catch projection and conservative assembly deflection used by the strain formula."))
             .param(ParamSpec::float("thickness", "Arm thickness", 1.2, 0.4, 5.0).unit("mm").help("Constant beam thickness in the bending direction."))
             .param(ParamSpec::float("ramp_angle", "Lead-in angle", 35.0, 5.0, 80.0).unit("deg").help("Angle of the insertion ramp to the seam normal; the return shoulder is 75 degrees."))
-            .param(ParamSpec::choice("material", "Material", "asa", &MATERIAL_IDS).help("Printed-material screening allowance from the shared material table; assumed, not a certified print limit.")),
+            .param(ParamSpec::choice("material", "Material", "asa", &MATERIAL_IDS).help("Printed-material screening allowance from the shared material table; assumed, not a certified print limit."))
+            .param(ParamSpec::float("modulus", "Modulus", 2000.0, 200.0, 20000.0).unit("MPa").help("Assumed bending modulus of the printed arm, used only for the assembly, insertion and retention force estimates. Measure it on a printed coupon."))
+            .param(ParamSpec::float("friction", "Friction", 0.3, 0.0, 1.0).help("Assumed friction coefficient between the mating faces, used for the insertion and retention force estimates.")),
             false,
         )
     }
@@ -284,6 +286,7 @@ impl NodeOp for SnapJoint {
         if !c.spacing.is_finite() || c.spacing<=0.0 || !c.wall.is_finite() || c.wall<=0.0 {
             return Err(ctx.fail("snap spacing and wall margin must be finite and positive"));
         }
+        let (modulus,friction)=(p.float("modulus")?,p.float("friction")?);
         let material=vernon_core::materials::snap_strain_allowance(p.str("material")?)
             .ok_or_else(||ctx.fail("no snap strain allowance for the selected material"))?;
         let spec = JointSpec {
@@ -307,6 +310,25 @@ impl NodeOp for SnapJoint {
             r.metric("joint_count",Metric::new(count,"count").with_limit(1.0,false));
             r.note(Severity::Warning,format!("allowable snap strain is assumed: {}; printed orientation, temperature, conditioning and repeated assembly need coupon validation",material.basis));
             r.note(Severity::Info,"Uniform rectangular-beam screening uses 1.5 * thickness * undercut / length squared; sharp root concentration and nonlinear contact are not solved.");
+            let design_input=crate::snap_geometry::SnapInput {
+                length_mm:dimensions.length, thickness_mm:dimensions.thickness, width_mm:dimensions.width,
+                undercut_mm:dimensions.undercut, permissible_strain:material.allowable_pct/100.0,
+                modulus_mpa:modulus, orientation_derate:1.0, lead_angle_deg:dimensions.lead_angle_deg,
+                return_angle_deg:75.0, friction, clearance_mm:dimensions.clearance,
+            };
+            match crate::snap_geometry::design(&design_input) {
+                Ok(d)=>{
+                    r.metric("snap_stiffness_n_per_mm",Metric::new(d.stiffness_n_per_mm,"N/mm"));
+                    r.metric("snap_assembly_force_n",Metric::new(d.assembly_force_n,"N"));
+                    r.metric("snap_insertion_force_n",Metric::new(d.insertion_force_n,"N"));
+                    match d.retention_force_n {
+                        Some(f)=>r.metric("snap_retention_force_n",Metric::new(f,"N")),
+                        None=>r.note(Severity::Warning,"the return face is self-locking at this friction: the joint cannot be pulled apart without damage"),
+                    };
+                    r.note(Severity::Info,"Assembly, insertion and retention forces use textbook cantilever beam theory with an assumed modulus and friction; confirm them on printed coupons.");
+                }
+                Err(e)=>{ r.note(Severity::Warning,format!("snap force estimates skipped: {e}")); }
+            }
             v.push(Data::report(r));
         }
         Ok(v)
@@ -411,6 +433,29 @@ mod tests {
         assert!((extent(58.0)-1.6).abs()<1e-8);
         let end=hook.iter().map(|p|p.z).fold(f64::NEG_INFINITY,f64::max);
         assert!((end-58.0-0.4/35.0_f64.to_radians().tan()).abs()<1e-8);
+    }
+
+    #[test]
+    fn snap_reports_beam_theory_forces_from_the_geometry_module() {
+        let out = cook(&SnapJoint, "snap_forces", &input(), &[]).unwrap();
+        let rep = out.last().unwrap();
+        // defaults: width 8, thickness 1.2, length 8, undercut 0.4, E 2000 MPa, friction 0.3
+        let k = 3.0 * 2000.0 * (8.0 * 1.2_f64.powi(3) / 12.0) / 8.0_f64.powi(3);
+        assert!((metric(rep, "snap_stiffness_n_per_mm") - k).abs() < 1e-9);
+        assert!((metric(rep, "snap_assembly_force_n") - k * 0.4).abs() < 1e-9);
+        let (ta, tb) = (35.0_f64.to_radians().tan(), 75.0_f64.to_radians().tan());
+        assert!((metric(rep, "snap_insertion_force_n") - k * 0.4 * (0.3 + ta) / (1.0 - 0.3 * ta)).abs() < 1e-9);
+        // 1 - 0.3 tan 75 deg < 0: the 75 deg return face self-locks, so there is no finite pull-out force
+        assert!(!rep.as_report().unwrap().metrics.contains_key("snap_retention_force_n"));
+        assert!(rep.as_report().unwrap().notes.iter().any(|(s, m)| *s == Severity::Warning && m.contains("self-locking")));
+        // at friction 0.1 the return face releases, with more force than insertion needs
+        let low = cook(&SnapJoint, "snap_forces_low", &input(), &[("friction", ParamValue::Float(0.1))]).unwrap();
+        let low = low.last().unwrap();
+        assert!((metric(low, "snap_retention_force_n") - k * 0.4 * (0.1 + tb) / (1.0 - 0.1 * tb)).abs() < 1e-9);
+        assert!(metric(low, "snap_retention_force_n") > metric(low, "snap_insertion_force_n"));
+        // a stiffer material raises every force
+        let stiff = cook(&SnapJoint, "snap_forces2", &input(), &[("modulus", ParamValue::Float(4000.0))]).unwrap();
+        assert!((metric(stiff.last().unwrap(), "snap_assembly_force_n") / metric(rep, "snap_assembly_force_n") - 2.0).abs() < 1e-9);
     }
 
     #[test]
