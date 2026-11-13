@@ -560,6 +560,41 @@ pub fn show(app: &mut VernonApp, ctx: &egui::Context) {
                 }
             }
             splitters(app, ui, area);
+            if app.st.graph.nodes.is_empty() {
+                welcome(app, ui.ctx(), area);
+            }
+        });
+}
+
+/// Start panel over an empty scene: the two ways in.
+fn welcome(app: &mut VernonApp, ctx: &egui::Context, area: Rect) {
+    egui::Area::new(egui::Id::new("welcome_panel"))
+        .order(egui::Order::Foreground)
+        .pivot(egui::Align2::CENTER_CENTER)
+        .fixed_pos(area.center())
+        .show(ctx, |ui| {
+            egui::Frame::popup(ui.style()).show(ui, |ui| {
+                ui.set_width(380.0);
+                ui.label(RichText::new("Welcome to Vernon").heading());
+                ui.label(
+                    RichText::new("The scene is empty. Pick a start:")
+                        .color(theme::TEXT_DIM),
+                );
+                ui.add_space(6.0);
+                if ui.add_sized([360.0, 32.0], egui::Button::new("Open the demo (body-kit pipeline)")).clicked() {
+                    app.replace_with_demo();
+                }
+                ui.label(RichText::new("A car panel goes through scan, clean, surface, split and checks. Cook runs by itself.").small().color(theme::TEXT_DIM));
+                ui.add_space(6.0);
+                if ui.add_sized([360.0, 32.0], egui::Button::new("Import a mesh or scan (OBJ, STL, PLY, 3MF, XYZ, E57, LAS)")).clicked() {
+                    app.open_dialog(super::FileMode::Import);
+                }
+                ui.label(RichText::new("Lengths are read in millimetres; Vernon reports the size so you can spot a unit mix-up.").small().color(theme::TEXT_DIM));
+                ui.add_space(6.0);
+                if ui.button("Open a saved scene (.vrn)").clicked() {
+                    app.file_open();
+                }
+            });
         });
 }
 

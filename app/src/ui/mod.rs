@@ -167,6 +167,8 @@ pub struct VernonApp {
     pub agent: agent_chat::AgentChat,
     /// A paste was requested from the system; its text arrives next frame.
     paste_requested: bool,
+    /// A just-imported object whose size or error is reported once it cooks.
+    pending_import: Option<NodeId>,
 }
 
 /// Seconds between crash-recovery copies of a modified scene.
@@ -179,7 +181,7 @@ impl VernonApp {
         for warning in hotkeys::load_user_keymap() {
             st.error_text(warning);
         }
-        st.info_text("Vernon ready. Try Pipeline > Replace Scene with Demo (the body-kit example), or type 'add box' below.");
+        st.info_text("Vernon ready. Use the start panel: Open the demo, or Import a mesh or scan (File > Import Mesh).");
         // Command line: `--demo` loads the demo pipeline, a `.vrn` path opens it.
         let mut fit = false;
         for arg in std::env::args().skip(1) {
@@ -248,6 +250,7 @@ impl VernonApp {
             focus_explorer_filter: false,
             agent: agent_chat::AgentChat::new(),
             paste_requested: false,
+            pending_import: None,
         }
     }
 
@@ -424,7 +427,11 @@ impl VernonApp {
                 }
                 r
             }
-            FileMode::Import => self.st.import(&path).map(|_| self.vp.request_fit()),
+            FileMode::Import => self.st.import(&path).map(|id| {
+                self.pending_import = Some(id);
+                self.tab = PanelTab::Modify;
+                self.vp.request_fit()
+            }),
             FileMode::Export => self.st.export(&path),
             FileMode::Param { node, ref param } => {
                 let now = self.now;
@@ -679,6 +686,33 @@ impl VernonApp {
         }
     }
 
+    /// Say once what an import produced: its size (with a unit warning when it
+    /// looks wrong) or why it failed and what to do.
+    fn report_import(&mut self) {
+        let Some(id) = self.pending_import else { return };
+        if !self.st.graph.nodes.contains_key(&id) {
+            self.pending_import = None;
+            return;
+        }
+        if !self.st.cooked() {
+            return;
+        }
+        self.pending_import = None;
+        let name = self.st.name(id).to_string();
+        if let Some(e) = self.st.error_of(id).map(str::to_string) {
+            let step = crate::hints::next_step(&e).unwrap_or("Check the file in the Modify tab.");
+            self.st.error_text(format!("import failed: {e}. {step}"));
+        } else if let Some(g) = self.st.geometry(id) {
+            let s = g.bounds().size();
+            let (text, warn) = crate::hints::import_size_note(&name, [s.x, s.y, s.z]);
+            if warn {
+                self.st.error_text(text);
+            } else {
+                self.st.info_text(text);
+            }
+        }
+    }
+
     /// Prompt line: a missing input or failing gate wins over the tool hint.
     pub fn prompt(&self) -> (String, bool) {
         for (id, _) in self.st.graph.nodes.iter() {
@@ -695,7 +729,7 @@ impl VernonApp {
                 .first()
                 .map(|(n, k)| format!("{} {k}", self.st.name(*n)))
                 .unwrap_or_default();
-            return (format!("Gate failing: {} {metric}", g.stage.label()), true);
+            return (format!("Gate failing: {} {metric}. Open Pipeline > Gate Dashboard to see the limit and the margin.", g.stage.label()), true);
         }
         (self.tool.prompt().to_string(), false)
     }
@@ -722,6 +756,7 @@ impl eframe::App for VernonApp {
         }
         // Cooking runs on its own thread; the frame only collects results.
         self.st.cook_step();
+        self.report_import();
         self.shortcuts(ctx);
         if self.play.tick(&self.time, self.now) || self.play.playing {
             ctx.request_repaint();

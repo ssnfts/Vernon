@@ -1501,6 +1501,18 @@ mod tests {
     }
 
     #[test]
+    fn importing_a_missing_or_unsupported_file_says_what_to_do() {
+        let mut s = state();
+        let missing = s.import(std::path::Path::new("no_such_folder/scan.obj")).unwrap();
+        let unsupported = s.import(std::path::Path::new("scan.xyzzy")).unwrap();
+        s.cook_all();
+        for id in [missing, unsupported] {
+            let e = s.error_of(id).expect("the import fails").to_string();
+            assert!(crate::hints::next_step(&e).is_some(), "no next step for: {e}");
+        }
+    }
+
+    #[test]
     fn cook_reports_errors_and_reports() {
         let mut s = state();
         let b = s.create("geo.box").unwrap();
