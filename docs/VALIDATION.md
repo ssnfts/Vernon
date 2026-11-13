@@ -106,9 +106,10 @@ stay up for 6 s; it is SKIPPED unless the app was built (`bench\run.ps1 -WithApp
 
 ## CFD: what may be claimed
 
-**Status, 2026-11-13: the owner approved the "may say" wording as written. The 25° reference is
-traced (0.285, item 1). The 35° reference is not, so the sentence stays inside this repository
-until 0.260 is confirmed or the owner drops the 35° clause.**
+**Status, 2026-11-13: signed off by the owner. The "may say" sentence below is cleared for use
+outside this repository. It covers the 25° body only, whose reference (0.285) is traced (item 1).
+The owner dropped the 35° clause because its reference is unconfirmed. The 35° row stays in the
+table as internal evidence.**
 
 Evidence: contract `docs/research/wp9-fast-tier-v1.json`, runs and per-CTU histories in
 `docs/research/wp9-fast-tier-plan.md` section 6. Classic slant body, half model, about 0.5M
@@ -131,10 +132,9 @@ range, not the interval.
 **Vernon may say:**
 - Vernon writes complete OpenFOAM cases and reduces OpenFOAM's own force history to Cd within 1%
   (`B.openfoam.force_reduction`). This checks the arithmetic, not the flow.
-- "On the classic slant-body test case, Vernon's fast CFD tier puts drag within about 7–10% (25°
-  slant) and 17% (35° slant) of the published wind-tunnel values. It uses a half model of about
-  half a million cells, and each run after the first takes under 35 minutes on one workstation.
-  It does not reproduce the measured drop in drag from 25° to 35°."
+- "On the classic slant-body test case with a 25° slant, Vernon's fast CFD tier puts drag within
+  about 7–10% of the published 1984 wind-tunnel value. It uses a half model of about half a
+  million cells, and each run after the first takes under 35 minutes on one workstation."
 - Every number above is labelled with its method (fast tier, DDES, 0.5M cells, half model), never
   as a road-car result.
 
@@ -143,8 +143,10 @@ range, not the interval.
 - Any drag or downforce figure for a road car or a user's body kit presented as a prediction.
   The road-car contract (`wp9-replication-baseline-v1.json`, 12M cells) is unmet and is out of
   the one-hour budget.
-- That it can tell which of two designs has less drag. The one difference tested, 25° against
-  35° (−9% in the experiment), came out equal within the intervals (0.304 and 0.303).
+- That it can tell which of two designs has less drag. The one pair run, 25° against 35°, came out
+  equal within the intervals (0.304 and 0.303), and the experimental 35° value it would be
+  judged against is unconfirmed.
+- Anything about the 35° body.
 - That a run gives a value to ± its standard error (see above).
 
 **For the owner to settle before signing:**
@@ -164,14 +166,14 @@ range, not the interval.
      40 m/s. A 35° drag value may still be readable from the 1984 paper's drag-against-slant
      figure, but that has not been seen. To settle it, someone must read SAE 840300 (or Meile
      2011 for its 35° value).
-   - **Consequence:** the 25° part of the claim rests on a traced reference. The 35° clause ("17%")
-     does not, and must not be used outside the repository until 0.260 is confirmed, or the clause
-     is dropped.
+   - **Consequence:** the owner dropped the 35° clause from the claim (2026-11-13). Restore it only
+     after 0.260 is confirmed from the paper, together with a confirmed 35° result.
 2. **35° status.** Run `-j` (another seeded 35° hour) gave no result because WSL would not start.
    The 35° row rests on one seeded window, which may still be drifting (0.93%/CTU, below
    significance).
-3. **Wording.** Approved by the owner as written, 2026-11-13. If item 1 changes the reference
-   values, recompute the percentages in the sentence before using it.
+3. **Wording.** Approved by the owner, 2026-11-13, then narrowed to 25° on the owner's decision.
+   Any change to the 25° reference or to new 25° runs means recomputing the range before using
+   the sentence again.
 
 ## Competitor comparison
 
