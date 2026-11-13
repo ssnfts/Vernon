@@ -27,6 +27,8 @@ local AI agent.
 - [Validation status](#validation-status)
 - [Repository layout](#repository-layout)
 - [Development](#development)
+- [Getting the best result](#getting-the-best-result)
+- [Works well with](#works-well-with)
 - [Documentation](#documentation)
 - [Clean room and licence](#clean-room-and-licence)
 
@@ -273,6 +275,55 @@ The viewports render with wgpu (depth-tested, MSAA). Set
 `VERNON_RENDERER=cpu` for the CPU fallback.
 
 Coding agents must read [AGENTS.md](AGENTS.md) first.
+
+## Getting the best result
+
+- **Start from the demo.** Open **Pipeline > Replace Scene with Demo** or
+  cook `examples/bodykit_pipeline.vrn`, and change one stage at a time.
+- **Fix real-world scale at capture.** Scale bars and coded markers set the
+  size of everything downstream. Check the marker scale error before you
+  clean the scan.
+- **Work through failed gates in pipeline order.** A stage whose gate fails
+  is not trusted by the stages after it, so the first failure is the one
+  that matters.
+- **Read the warnings.** A white-box node cooks and says in a warning that
+  its algorithm is a placeholder.
+- **Treat AI output as a preview.** AI parts are unscaled concept geometry,
+  the aero preview shows no drag or lift figure, and neither can satisfy a
+  gate.
+- **Leave Run off until the input files look right.** Nodes that drive
+  OpenFOAM, CalculiX, COLMAP or a slicer write complete input files without
+  launching anything.
+- **Do not quote a Cd yet.** The CFD stage is not validated; see
+  [Validation status](#validation-status).
+- **Use `--ignore-gates` only for failures you expect** and have listed in
+  the scene.
+
+## Works well with
+
+**Graphic design.** The flatten tools unroll body panels with a strain
+report, which gives a true-size template for vinyl wrap and livery artwork
+in Illustrator, Affinity Designer or Inkscape. Deviation and pressure maps
+make clear figures for a build log or a client report.
+
+**Product visualization.** Export the surfaced kit (OBJ, STL, PLY, 3MF or
+STEP) and render it on the car in Blender, 3ds Max or KeyShot before
+anything is printed. For a driving shot in 3ds Max, pair it with
+[Motorsport vehicle rig](https://github.com/ssnfts/Motorsport-lap-animation)
+and
+[V-Ray material graph builder](https://github.com/ssnfts/V-Ray-material-graph-builder).
+
+**Film.** A cleaned, aligned scan of a real car is a useful match-move and
+set-extension reference, and the capture and clean stages produce one
+without the rest of the pipeline. Printed parts can be made as practical
+props with the split-and-print stage.
+
+**Automation.** `vernon-cli cook` returns exit code 1 for a failed node and
+3 for an unexpected gate failure, so it works as a check in CI. The MCP
+server lets an agent build and cook graphs, and the in-app chat speaks the
+OpenAI-compatible API, so a local llama.cpp or Ollama server can drive it.
+External solvers and slicers are started as separate processes and can be
+queued the same way.
 
 ## Documentation
 
