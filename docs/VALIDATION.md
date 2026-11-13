@@ -106,8 +106,9 @@ stay up for 6 s; it is SKIPPED unless the app was built (`bench\run.ps1 -WithApp
 
 ## CFD: what may be claimed
 
-**Status: DRAFT, 2026-11-13, awaiting the owner's sign-off. Until it is signed, nothing below may
-be used outside this repository.**
+**Status, 2026-11-13: the owner approved the "may say" wording as written. The reference values
+(item 1 below) are still open, and the percentages depend on them. Until item 1 is settled,
+nothing below may be used outside this repository.**
 
 Evidence: contract `docs/research/wp9-fast-tier-v1.json`, runs and per-CTU histories in
 `docs/research/wp9-fast-tier-plan.md` section 6. Classic slant body, half model, about 0.5M
@@ -154,8 +155,8 @@ range, not the interval.
 2. **35° status.** Run `-j` (another seeded 35° hour) gave no result because WSL would not start.
    The 35° row rests on one seeded window, which may still be drifting (0.93%/CTU, below
    significance).
-3. **Wording.** Approve, edit or reject the "may say" sentence, which is the only wording meant
-   for the outside world.
+3. **Wording.** Approved by the owner as written, 2026-11-13. If item 1 changes the reference
+   values, recompute the percentages in the sentence before using it.
 
 ## Competitor comparison
 
