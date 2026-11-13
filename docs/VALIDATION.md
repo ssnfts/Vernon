@@ -106,9 +106,9 @@ stay up for 6 s; it is SKIPPED unless the app was built (`bench\run.ps1 -WithApp
 
 ## CFD: what may be claimed
 
-**Status, 2026-11-13: the owner approved the "may say" wording as written. The reference values
-(item 1 below) are still open, and the percentages depend on them. Until item 1 is settled,
-nothing below may be used outside this repository.**
+**Status, 2026-11-13: the owner approved the "may say" wording as written. The 25° reference is
+traced (0.285, item 1). The 35° reference is not, so the sentence stays inside this repository
+until 0.260 is confirmed or the owner drops the 35° clause.**
 
 Evidence: contract `docs/research/wp9-fast-tier-v1.json`, runs and per-CTU histories in
 `docs/research/wp9-fast-tier-plan.md` section 6. Classic slant body, half model, about 0.5M
@@ -148,10 +148,25 @@ range, not the interval.
 - That a run gives a value to ± its standard error (see above).
 
 **For the owner to settle before signing:**
-1. **Reference values.** The fast tier uses 0.285 (25°) and 0.260 (35°), and the competitor table
-   below uses 0.299 and 0.279 from a secondary source. Both come from secondary tables. Choose
-   one value per angle from the primary paper (Ahmed, Ramm, Faltin, SAE 840300, 1984) and use it
-   in both places. All the differences above change with that choice.
+1. **Reference values.** Checked 2026-11-13 against public pages. The paper itself (Ahmed, Ramm,
+   Faltin, SAE 840300, 1984) is not publicly readable, so no value is confirmed from it directly.
+   - **25°: 0.285, adopted.** The COMSOL Ahmed-body model document, Table 1 ("Measurements",
+     citing SAE 840300), gives 0.285 as front 0.020 + slant 0.140 + base 0.070 + skin
+     friction 0.055
+     (https://doc.comsol.com/5.6/doc/com.comsol.help.models.cfd.ahmed_body/models.cfd.ahmed_body.pdf).
+     CFD Support's benchmark page also quotes 0.285, citing Ahmed. The 0.299 used earlier is a
+     different and later wind-tunnel test, Meile et al. 2011 (CFD Letters 3(1)), at 40 m/s with
+     A = 0.112 m², as credited at https://help.sim-flow.com/validation/ahmed-body. It is not
+     the 1984 value.
+   - **35°: 0.260, unconfirmed.** No public page opened gives either 0.260 or 0.279 with a traceable
+     source. The ERCOFTAC test-data page (AC 1-05) lists the detailed 1984 flow measurements at 5,
+     12.5, 25 and 30° only. Its 35° case comes from the later Lienhart and Becker experiment at
+     40 m/s. A 35° drag value may still be readable from the 1984 paper's drag-against-slant
+     figure, but that has not been seen. To settle it, someone must read SAE 840300 (or Meile
+     2011 for its 35° value).
+   - **Consequence:** the 25° part of the claim rests on a traced reference. The 35° clause ("17%")
+     does not, and must not be used outside the repository until 0.260 is confirmed, or the clause
+     is dropped.
 2. **35° status.** Run `-j` (another seeded 35° hour) gave no result because WSL would not start.
    The 35° row rests on one seeded window, which may still be drifting (0.93%/CTU, below
    significance).
@@ -168,8 +183,8 @@ URL; **owner to record** = needs a licensed copy, nothing is claimed.
 | Cloud-to-mesh distance, per point | measured: worst difference vs CloudCompare in `REPORT.md` (`B.cloudcompare.c2m`) | CloudCompare CLI as installed (open source; the stored golden was recorded with 2.13.2) | measured by this suite |
 | Linear static tip deflection and stress | measured: `B.calculix.cantilever` | CalculiX 2.21 (open source) | measured by this suite |
 | Cantilever vs beam theory | measured: `A.fea.beam_deflection` | closed form | Roark, Table 8.1 |
-| Ahmed body Cd, 25 deg slant | measured: 0.369 (finest mesh, **not converged**) | 0.299 | https://skill-lync.com/student-projects/project-1-flow-over-ahmed-body-7 (secondary table; primary: Ahmed, Ramm, Faltin, SAE 840300, 1984; also https://kbwiki.ercoftac.org/w/index.php/AC_1-05; confirm before quoting) |
-| Ahmed body Cd, 35 deg slant | measured: 0.314 (finest mesh, **not converged**) | 0.279 | same as above |
+| Ahmed body Cd, 25 deg slant | fast tier: 0.304–0.312 (see "CFD: what may be claimed"); steady: 0.369 (finest mesh, **not converged**) | 0.285 | Ahmed, Ramm, Faltin, SAE 840300, 1984, as tabulated in https://doc.comsol.com/5.6/doc/com.comsol.help.models.cfd.ahmed_body/models.cfd.ahmed_body.pdf Table 1 (the paper itself not seen) |
+| Ahmed body Cd, 35 deg slant | fast tier: 0.303 (one window); steady: 0.314 (finest mesh, **not converged**) | 0.260, **unconfirmed** | no traceable public source found; see "CFD: what may be claimed", item 1 |
 | Lap time accuracy of a point-mass simulator | Vernon `perf.lap_sim`: not validated | vendor states roughly 10% of real data | https://optimumg.com/product/optimumlap/ (vendor claim, not independently verified) |
 | Quad remesh deviation / quad quality | measured by node report | owner to record | `bench/golden/rhino/` |
 | Mesh to solid / STEP deviation | measured by node report | owner to record | `bench/golden/fusion/` |
