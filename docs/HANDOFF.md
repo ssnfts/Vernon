@@ -21,12 +21,12 @@ A **lead** is opened for its phase and closed at the end of it.
 
 | Phase | Lead | Task | Agent | Done when |
 |---|---|---|---|---|
-| 1 Reliability | `reliability-lead` | Checkpoint warm start for the one-hour transient tier | `cfd-engineer` | 25° and 35° slant-body Cd intervals reported from seeded runs; no gate lowered |
+| 1 Reliability | `reliability-lead` | **Done 2026-11-13** (`25bb876`, `aed6f93`): checkpoint warm start for the one-hour transient tier; seeded 25° and 35° rows pass the fast-tier rule (Cd +6.7% and +16.7% against experiment; the measured 25° > 35° ordering is not reproduced) | `cfd-engineer` | 25° and 35° slant-body Cd intervals reported from seeded runs; no gate lowered |
 | 1 | | `wp9-fast` runner profile, transient run node, CFD report into `perf.vehicle` | `cfd-engineer` | example scene cooks with CdA from the CFD report; placeholder guard kept |
 | 1 | | Shipped CFD claim in `docs/VALIDATION.md` (validated against reported-only) | `reliability-lead` | Owner signs off the wording |
 | 1 | | WP15 golden cases under `tests/golden/` | `validation-engineer` | each case has a test at the spec tolerance |
 | 1 | | Real E57, real LAS, fTetWild on a scanned panel | `validation-engineer` | results recorded; readers fixed if wrong |
-| 1 | | Flatten F2 (b)(c)(d); FEA pressure, spring and thermal cross-check | `numerics-engineer` | the `#[ignore]`d spec tests pass un-ignored |
+| 1 | | **Done 2026-11-13** (`1bb0cc7`, `fe6bf59`): flatten F2 (b)(c)(d) met at the spec bounds and un-ignored; FEA pressure, spring-pad and temperature-dependent stiffness agree with CalculiX. Open: thermal-strain comparison (so `estimate_only` stays), stretch/compress factors in the constrained solver | `numerics-engineer` | the `#[ignore]`d spec tests pass un-ignored |
 | 2 Product | `product-lead` | Wire `docs/ROADMAP.md` items 1–7 and the three extra modules into nodes | `node-wiring-engineer` | white-box warning gone, metrics checked end to end, `docs/NODES.md` regenerated |
 | 2 | | First run, sample scenes, failure messages, chords, in-app agent | `app-ux-engineer` | a new user cooks the demo and imports a file without the docs |
 | 3 Release (WP16) | `release-lead` | CI, `deny.toml`, package and self-test, `CHANGELOG.md`, stale-branch list | `release-engineer` | package self-test passes on a clean machine |
