@@ -255,7 +255,11 @@ fn gate_dashboard(app: &mut VernonApp, ctx: &egui::Context) {
                                 app.tab = super::PanelTab::Modify;
                             }
                             if let Some(e) = &ng.error {
-                                ui.label(RichText::new(e).small().color(theme::FAIL_TEXT));
+                                let text = match crate::hints::next_step(e) {
+                                    Some(step) => format!("{e} Next: {step}"),
+                                    None => e.clone(),
+                                };
+                                ui.label(RichText::new(text).small().color(theme::FAIL_TEXT));
                                 ui.end_row();
                                 continue;
                             }
