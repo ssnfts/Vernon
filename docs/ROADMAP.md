@@ -23,7 +23,7 @@ report metrics are checked end to end:
 | 7 stretch-aware constraints, ply shear | `vernon-nodes-solar/src/flatten_constraints.rs`, `ply_shear.rs` |
 | strict CFD convergence | `vernon-nodes-cfd/src/convergence.rs` (compare with `cfd.run_convergence` before adopting) |
 | mesh simplification | `vernon-nodes-clean/src/qem_simplify.rs` (**evaluated 2026-11-14, not adopted**: `clean.decimate` already runs the same quadric collapse with boundary and crease penalties and the link condition; on a 9024-face sphere at 10% and 30% both give the same max error (0.37 vs 0.35 mm, 0.106 vs 0.111 mm), mean error, volume and triangle quality, and `qem_simplify` is 5 to 6 times slower (81 vs 15 ms). Its only extra is boundary vertices that never move; kept as a library module) |
-| surface reconstruction | `vernon-nodes-capture/src/ball_pivot.rs` |
+| surface reconstruction | `vernon-nodes-capture/src/ball_pivot.rs` (**wired 2026-11-14** as mesher `ball_pivot` of `capture.mvs_mesh`: native, no program; metrics `faces`, `points_used`, `points_unused`, `boundary_edges`, `nonmanifold_edges`, `holes`; Poisson and Delaunay still drive the external program) |
 
 ## First: items that feed a validation gate
 

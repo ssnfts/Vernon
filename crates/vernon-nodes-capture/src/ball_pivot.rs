@@ -276,6 +276,68 @@ pub fn ball_pivot(points: &[[f64; 3]], normals: &[[f64; 3]], radii: &[f64]) -> (
     (tris, stats)
 }
 
+/// Ball radii (mm, ascending) for a cloud: `first` (or, when it is not above
+/// 0, 1.4 times the median nearest-neighbour distance of up to 2000 evenly
+/// spaced points) grown by a factor 1.4 for each of `steps` passes. Empty when
+/// the cloud has no measurable spacing.
+pub fn auto_radii(points: &[[f64; 3]], first: f64, steps: usize) -> Vec<f64> {
+    let steps = steps.max(1);
+    let r0 = if first.is_finite() && first > 0.0 {
+        first
+    } else {
+        let pts: Vec<DVec3> = points.iter().map(|p| DVec3::from_array(*p)).collect();
+        if pts.len() < 2 {
+            return Vec::new();
+        }
+        let (mut lo, mut hi) = (DVec3::splat(f64::INFINITY), DVec3::splat(f64::NEG_INFINITY));
+        for p in &pts {
+            lo = lo.min(*p);
+            hi = hi.max(*p);
+        }
+        let diag = (hi - lo).length();
+        if !diag.is_finite() || diag <= 0.0 {
+            return Vec::new();
+        }
+        // over-estimate of the spacing of a surface sample, used only to size the grid
+        let guess = (diag / (pts.len() as f64).sqrt()).max(diag * 1e-9);
+        let grid = Grid::build(&pts, 2.0 * guess);
+        let stride = (pts.len() / 2000).max(1);
+        let mut d: Vec<f64> = Vec::new();
+        for i in (0..pts.len()).step_by(stride) {
+            let mut out = Vec::new();
+            grid.radius_query(&pts, pts[i], 4.0 * guess, &mut out);
+            let nn = out
+                .iter()
+                .filter(|&&q| q as usize != i)
+                .map(|&q| pts[q as usize].distance(pts[i]))
+                .filter(|x| *x > 0.0)
+                .fold(f64::INFINITY, f64::min);
+            if nn.is_finite() {
+                d.push(nn);
+            }
+        }
+        if d.is_empty() {
+            return Vec::new();
+        }
+        d.sort_by(f64::total_cmp);
+        1.4 * d[d.len() / 2]
+    };
+    (0..steps).map(|k| r0 * 1.4f64.powi(k as i32)).collect()
+}
+
+/// Undirected edges used by exactly one triangle (the open border) and by more
+/// than two triangles (non-manifold).
+pub fn edge_counts(tris: &[[u32; 3]]) -> (usize, usize) {
+    let mut m: HashMap<(u32, u32), u32> = HashMap::new();
+    for t in tris {
+        for e in 0..3 {
+            let (a, b) = (t[e], t[(e + 1) % 3]);
+            *m.entry((a.min(b), a.max(b))).or_insert(0) += 1;
+        }
+    }
+    (m.values().filter(|&&c| c == 1).count(), m.values().filter(|&&c| c > 2).count())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
