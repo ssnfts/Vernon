@@ -19,7 +19,8 @@ report metrics are checked end to end:
 | 3 preset key schema | `vernon-nodes-print/src/profile_schema.rs` |
 | 4 script bridge | `vernon-nodes-print/src/script_bridge.rs`, `script_template.rs` |
 | 5 snap-arm geometry | `vernon-nodes-print/src/snap_geometry.rs` (**wired 2026-11-14** into `print.snap_joint`: stiffness, assembly, insertion and retention forces) |
-| 6 cut projection, split search, islands | `vernon-nodes-print/src/polyline_project.rs`, `partition_search.rs`, `island_select.rs` |
+| 6a islands | `vernon-nodes-print/src/island_select.rs` (**wired 2026-11-14** into `print.cut_region_select`: selectors `largest_island` and `island_area_above`; the node could only pick an island by a known index, which is wrong whenever debris precedes the body; metrics `selected_islands`, `selected_area_mm2`) |
+| 6b cut projection, split search | `vernon-nodes-print/src/polyline_project.rs`, `partition_search.rs` |
 | 7 stretch-aware constraints, ply shear | `vernon-nodes-solar/src/flatten_constraints.rs`, `ply_shear.rs` |
 | strict CFD convergence | `vernon-nodes-cfd/src/convergence.rs` (compare with `cfd.run_convergence` before adopting) |
 | mesh simplification | `vernon-nodes-clean/src/qem_simplify.rs` (**evaluated 2026-11-14, not adopted**: `clean.decimate` already runs the same quadric collapse with boundary and crease penalties and the link condition; on a 9024-face sphere at 10% and 30% both give the same max error (0.37 vs 0.35 mm, 0.106 vs 0.111 mm), mean error, volume and triangle quality, and `qem_simplify` is 5 to 6 times slower (81 vs 15 ms). Its only extra is boundary vertices that never move; kept as a library module) |

@@ -365,7 +365,8 @@ impl NodeOp for CutRegionSelect {
         .input(PortSpec::new("cut", DataKind::Geometry))
         .param(ParamSpec::choice("mode", "Mode", "cut", &["cut", "join"]).help("Select matching faces for cutting, or invert the selection to keep their components joined."))
         .param(ParamSpec::int("island", "Island", -1, -1, 1000).help("Optionally restrict to an edge-connected component index; -1 means all."))
-        .param(ParamSpec::choice("selector", "Select by", "all", &["all", "bbox", "normal_cone", "group"]).help("Rule used to select primitive faces."))
+        .param(ParamSpec::choice("selector", "Select by", "all", &["all", "bbox", "normal_cone", "group", "largest_island", "island_area_above"]).help("Rule used to select primitive faces. The two island rules pick whole connected components by surface area: the largest one, or all above the area limit."))
+        .param(ParamSpec::float("island_area", "Island area limit", 100.0, 0.0, 1e12).unit("mm2").help("Surface area above which a connected component is selected by the island_area_above rule."))
         .param(ParamSpec::vec3("bounds_min", "Box minimum", DVec3::splat(-1e9)).unit("mm").help("Minimum coordinates of the face-centroid selection box."))
         .param(ParamSpec::vec3("bounds_max", "Box maximum", DVec3::splat(1e9)).unit("mm").help("Maximum coordinates of the face-centroid selection box."))
         .param(ParamSpec::vec3("normal_axis", "Normal axis", DVec3::Z).help("Centre direction of the normal cone."))
@@ -417,6 +418,35 @@ impl NodeOp for CutRegionSelect {
         let axis = normal.normalize_or_zero();
         let limit = angle.to_radians().cos();
         let island = p.int("island")?;
+        let island_area = p.float("island_area")?;
+        if selector == "island_area_above" && !(island_area.is_finite() && island_area >= 0.0) {
+            return Err(ctx.fail("the island area limit must be finite and not negative"));
+        }
+        // per-component area and centroid for the island rules (rule logic lives in island_select)
+        let n_comp = components.iter().copied().max().map_or(0, |m| (m + 1) as usize);
+        let mut comp_info = vec![crate::island_select::IslandInfo { area_mm2: 0.0, centroid: DVec3::ZERO, bbox_min: DVec3::ZERO, bbox_max: DVec3::ZERO, mean_normal: DVec3::ZERO }; n_comp];
+        if selector == "largest_island" || selector == "island_area_above" {
+            for (i, pr) in g.prims.iter().enumerate() {
+                if !pr.closed || pr.vertices.len() < 3 {
+                    continue;
+                }
+                let q: Vec<DVec3> = pr.vertices.iter().map(|&v| g.points[v as usize]).collect();
+                let a2: f64 = (1..q.len() - 1).map(|k| (q[k] - q[0]).cross(q[k + 1] - q[0])).sum::<DVec3>().length() * 0.5;
+                let info = &mut comp_info[components[i] as usize];
+                info.area_mm2 += a2;
+                info.centroid += a2 * (q.iter().copied().sum::<DVec3>() / q.len() as f64);
+            }
+            for info in &mut comp_info {
+                if info.area_mm2 > 0.0 {
+                    info.centroid /= info.area_mm2;
+                }
+            }
+        }
+        let chosen_islands: BTreeSet<i64> = match selector {
+            "largest_island" => crate::island_select::select(&comp_info, crate::island_select::Rule::Largest).into_iter().map(|c| c as i64).collect(),
+            "island_area_above" => crate::island_select::select(&comp_info, crate::island_select::Rule::AreaAbove(island_area)).into_iter().map(|c| c as i64).collect(),
+            _ => BTreeSet::new(),
+        };
         let mut selection = Vec::new();
         let mut joined = Vec::with_capacity(g.prims.len());
         for (i, pr) in g.prims.iter().enumerate() {
@@ -437,6 +467,7 @@ impl NodeOp for CutRegionSelect {
                         n.length() > 1e-15 && n.normalize().dot(axis) >= limit - 1e-12
                     }
                     "group" => source.as_ref().unwrap().contains(&(i as u32)),
+                    "largest_island" | "island_area_above" => chosen_islands.contains(&components[i]),
                     _ => return Err(ctx.fail("unknown region selector")),
                 }
             } && (island < 0 || components[i] == island);
@@ -467,6 +498,10 @@ impl NodeOp for CutRegionSelect {
                 "count",
             ),
         );
+        if selector == "largest_island" || selector == "island_area_above" {
+            r.metric("selected_islands", Metric::new(chosen_islands.len() as f64, "count"));
+            r.metric("selected_area_mm2", Metric::new(chosen_islands.iter().map(|&c| comp_info[c as usize].area_mm2).sum::<f64>(), "mm2"));
+        }
         r.metric(
             "selected_prims",
             Metric::new(selection.len() as f64, "count"),
@@ -668,6 +703,37 @@ mod tests {
             .notes
             .iter()
             .any(|(_, text)| text.starts_with("white-box placeholder")));
+    }
+
+    #[test]
+    fn island_rules_select_the_body_not_the_debris_and_report_area() {
+        // five small cubes come first, so the body is not island 0
+        let mut body = Geometry::new();
+        for i in 0..5 {
+            body.merge(&tri_box(DVec3::new(300.0 + 20.0 * i as f64, 0.0, 0.0), DVec3::splat(3.0)));
+        }
+        body.merge(&tri_box(DVec3::ZERO, DVec3::splat(100.0)));
+        let sel = cook(&CutRegionSelect, "isl_largest", &[Some(Data::geometry(body.clone()))], &[("selector", ParamValue::Str("largest_island".into()))]).unwrap();
+        let r = sel[1].as_report().unwrap();
+        assert_eq!(r.metrics["island_count"].value, 6.0);
+        assert_eq!(r.metrics["selected_islands"].value, 1.0);
+        assert!((r.metrics["selected_area_mm2"].value - 60_000.0).abs() < 1e-6);
+        assert_eq!(r.metrics["selected_prims"].value, 12.0);
+        // cutting the selection leaves the debris whole: 2 body parts + 5 cubes
+        let cut = cook(&PlaneCut, "isl_cut", &[Some(sel[0].clone())], &[("origin", ParamValue::Vec3(DVec3::new(0.0, 0.0, 50.0)))]).unwrap();
+        assert_eq!(mesh::unique_parts(cut[0].as_geometry().unwrap()).len(), 7);
+        // area rule: 54 mm2 cubes fall below 100 mm2, the body stays; 0 selects all six
+        let above = |lim: f64| {
+            let o = cook(&CutRegionSelect, "isl_above", &[Some(Data::geometry(body.clone()))], &[("selector", ParamValue::Str("island_area_above".into())), ("island_area", ParamValue::Float(lim))]).unwrap();
+            o[1].as_report().unwrap().metrics["selected_islands"].value
+        };
+        assert_eq!(above(100.0), 1.0);
+        assert_eq!(above(0.0), 6.0);
+        assert_eq!(above(1e9), 0.0);
+        // default selector is unchanged
+        let all = cook(&CutRegionSelect, "isl_all", &[Some(Data::geometry(body))], &[]).unwrap();
+        assert!(!all[1].as_report().unwrap().metrics.contains_key("selected_islands"));
+        assert_eq!(all[1].as_report().unwrap().metrics["selected_prims"].value, 72.0);
     }
 
     #[test]
