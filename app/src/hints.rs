@@ -1,41 +1,53 @@
 //! Plain-words next steps for node errors and import feedback. The node's own
 //! message says what went wrong; `next_step` adds what to do about it.
 
+type Rule = (&'static [&'static str], &'static str);
+
+/// Message fragments (lower case) and what to try. The fragments are the
+/// node errors' own words, so `every_rule_matches_a_cooked_error` in
+/// `state.rs` cooks real failures and fails when a reworded error loses its
+/// hint. Indices are used by that test.
+pub const RULES: &[Rule] = &[
+    (&["no file path set"], "Set the File in the Modify tab, or use File > Import Mesh."),
+    (
+        &["unsupported file extension"],
+        "Use OBJ, STL, PLY, 3MF, XYZ/PTS, E57 or LAS, or export your file to one of these first.",
+    ),
+    (
+        &["os error 2", "os error 3", "cannot find the file", "cannot find the path", "no such file"],
+        "The file is not at that path. Check the spelling, or pick it again in the Modify tab.",
+    ),
+    (
+        &["os error 5", "permission denied", "access is denied"],
+        "Vernon may not read that file. Close the program that has it open, or copy the file to another folder.",
+    ),
+    (
+        &["held until the scene is trusted"],
+        "Choose File > Trust Scene after checking what this scene would run or write.",
+    ),
+    (
+        &["not connected"],
+        "Wire the previous node's output to this input in the Node Editor, or add the missing step.",
+    ),
+    (
+        &["executable", "program not found", "not found on path"],
+        "Install the program and set its path in Utilities > External Tools. Without it Vernon only writes the input files.",
+    ),
+    (
+        &["cannot read", "invalid", "malformed", "unexpected end", "parse"],
+        "The file may be damaged or in another format than its extension says. Re-export it from the program that made it.",
+    ),
+];
+
+/// Index into `RULES` of the first rule matching this error text.
+pub fn rule_for(error: &str) -> Option<usize> {
+    let e = error.to_ascii_lowercase();
+    RULES.iter().position(|(keys, _)| keys.iter().any(|k| e.contains(k)))
+}
+
 /// What to try for a node error, matched on the text of the message.
 pub fn next_step(error: &str) -> Option<&'static str> {
-    let e = error.to_ascii_lowercase();
-    let rules: &[(&[&str], &str)] = &[
-        (&["no file path set"], "Set the File in the Modify tab, or use File > Import Mesh."),
-        (
-            &["unsupported file extension"],
-            "Use OBJ, STL, PLY, 3MF, XYZ/PTS, E57 or LAS, or export your file to one of these first.",
-        ),
-        (
-            &["os error 2", "os error 3", "cannot find the file", "cannot find the path", "no such file"],
-            "The file is not at that path. Check the spelling, or pick it again in the Modify tab.",
-        ),
-        (
-            &["os error 5", "permission denied", "access is denied"],
-            "Vernon may not read that file. Close the program that has it open, or copy the file to another folder.",
-        ),
-        (
-            &["held until the scene is trusted"],
-            "Choose File > Trust Scene after checking what this scene would run or write.",
-        ),
-        (
-            &["not connected"],
-            "Wire the previous node's output to this input in the Node Editor, or add the missing step.",
-        ),
-        (
-            &["executable", "program not found", "not found on path"],
-            "Install the program and set its path in Utilities > External Tools. Without it Vernon only writes the input files.",
-        ),
-        (
-            &["cannot read", "invalid", "malformed", "unexpected end", "parse"],
-            "The file may be damaged or in another format than its extension says. Re-export it from the program that made it.",
-        ),
-    ];
-    rules.iter().find(|(keys, _)| keys.iter().any(|k| e.contains(k))).map(|(_, hint)| *hint)
+    rule_for(error).map(|i| RULES[i].1)
 }
 
 /// A line about the size of freshly imported geometry, and whether the size
