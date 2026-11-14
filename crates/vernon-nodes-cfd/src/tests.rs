@@ -833,6 +833,50 @@ fn fast_tier_clearance_is_kept_and_only_x_and_y_move() {
     assert!((b.min.z - 50.0).abs() < 1e-9 && (b.max.z - 338.0).abs() < 1e-9, "the 50 mm clearance stays");
 }
 
+/// The latest time written completely on every rank: each restart field and
+/// the time record present and non-empty. A run stopped by its budget can be
+/// killed in the middle of a write; the previous write is then the restart.
+fn latest_complete_time(case: &std::path::Path, ranks: usize) -> Option<(f64, String)> {
+    let complete = |name: &str| {
+        (0..ranks).all(|r| {
+            let dir = case.join(format!("processor{r}")).join(name);
+            crate::diagnostic::arms::CHECKPOINT_FIELDS.iter().chain(["uniform/time"].iter()).all(|f| std::fs::metadata(dir.join(f)).is_ok_and(|m| m.is_file() && m.len() > 0))
+        })
+    };
+    numeric_time_dirs(&case.join("processor0"))
+        .into_iter()
+        .rev()
+        .filter(|(t, _)| *t > 0.0)
+        .map(|(t, d)| (t, d.file_name().unwrap().to_string_lossy().to_string()))
+        .find(|(_, name)| complete(name))
+}
+
+#[test]
+fn fast_tier_checkpoint_skips_a_write_cut_short() {
+    let case = tmp("fast-complete");
+    let write = |rel: &str| {
+        let p = case.join(rel);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, "x").unwrap();
+    };
+    for r in 0..2 {
+        for t in ["0.2", "0.3"] {
+            for f in crate::diagnostic::arms::CHECKPOINT_FIELDS.iter().chain(["uniform/time"].iter()) {
+                write(&format!("processor{r}/{t}/{f}"));
+            }
+        }
+        // The latest write was cut off on rank 1: no phi.
+        for f in ["U", "p", "k"] {
+            write(&format!("processor{r}/0.4/{f}"));
+        }
+    }
+    write("processor0/0.4/omega");
+    assert_eq!(latest_complete_time(&case, 2), Some((0.3, "0.3".to_string())));
+    std::fs::remove_file(case.join("processor1/0.3/uniform/time")).unwrap();
+    assert_eq!(latest_complete_time(&case, 2), Some((0.2, "0.2".to_string())));
+    assert_eq!(latest_complete_time(&tmp("fast-complete-none"), 2), None);
+}
+
 /// A per-run work directory for files the harness writes itself.
 fn case_root_for(label: &str) -> std::path::PathBuf {
     let dir = std::env::temp_dir().join(format!("vernon-fast-{label}"));
@@ -984,8 +1028,7 @@ fn real_openfoam_fast_tier_run() {
     if let Some(from) = &cfg.preserve_case {
         let from = std::path::PathBuf::from(from);
         let dir = std::path::PathBuf::from(cfg.checkpoint_dir.as_deref().expect("set VERNON_FAST_CHECKPOINT_DIR"));
-        let (time, time_dir) = numeric_time_dirs(&from.join("processor0")).pop().expect("the case has decomposed time directories");
-        let time_name = time_dir.file_name().unwrap().to_string_lossy().to_string();
+        let (time, time_name) = latest_complete_time(&from, cfg.np as usize).expect("the case has a complete decomposed time directory");
         let row: Value = serde_json::from_slice(&std::fs::read(&cfg.out_file).expect("VERNON_FAST_OUT names the run's row")).unwrap();
         assert_eq!(row["label"].as_str(), Some(cfg.label.as_str()), "the row must be the preserved run's own");
         assert!((row["transient"]["delta_t_s"].as_f64().unwrap() - dt).abs() < 1e-15, "the run's time step must be this harness's");
@@ -1209,8 +1252,9 @@ fn real_openfoam_fast_tier_run() {
     // Preserve the end of the main window for the next hour, before the
     // half-step segment changes the step and purges this write.
     let checkpoint = cfg.checkpoint_dir.as_deref().map(|dir| {
-        let (time, time_dir) = numeric_time_dirs(&case.join("processor0")).pop().expect("decomposed time directories");
-        let time_name = time_dir.file_name().unwrap().to_string_lossy().to_string();
+        let Some((time, time_name)) = latest_complete_time(&case, cfg.np as usize) else {
+            return serde_json::json!({"error": "no complete decomposed time directory to preserve"});
+        };
         let mut chain = seed.as_ref().map(|s| s.record.seed_chain.clone()).unwrap_or_default();
         if let Some(s) = &seed {
             chain.push(s.record.label.clone());

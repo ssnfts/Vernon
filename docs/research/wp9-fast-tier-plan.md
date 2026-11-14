@@ -397,6 +397,28 @@ cancellation between grid error and the half model. The next informative
 test is a grid step on this body (dx0 0.0708, about 1M cells), seeded hours
 as here.
 
+**2026-11-14/15, grid step (user: "Run grid step").** Mesh dx0 0.0708:
+877,623 cells (half model), non-orthogonality 64.5°, skewness 2.34; 3.5 s per
+step (Courant peak 20 in the wall layers). The fresh hour `dx0708-…-a` ran
+out of budget 11 steps before its first check (5.88 of 6 CTU); a run cut off
+by the budget used to leave no checkpoint, so the harness now preserves the
+latest time written completely on every rank (`latest_complete_time`, unit
+test), and `-a` was preserved at 7 CTU. `-b` could not start WSL
+(`CreateInstance/ERROR_TIMEOUT`) and ran no steps.
+
+**WSL image moved to the internal disk (user: "Move it to C:").** The Vernon
+distribution's image was on the external USB drive E: through the
+`REA\tools` junction; E: was repeatedly saturated (up to 2,200% busy, at
+times with little attributable process I/O), and WSL failed to start three
+times in two days. With only the Vernon distribution terminated (another
+distribution, AI-3D, was running a job and was left alone), `wsl --manage
+Vernon-Ubuntu-24.04 --move C:\WSL\Vernon-Ubuntu-24.04` moved the 6.4 GB
+image in 100 s; WSL now starts in 4 s with OpenFOAM in place. The setup
+history in `docs/CONTINUATION.md` still names the old location
+(`C:/Users/mabdu/REA/tools/wsl/ubuntu-24.04`); it is history and is left as
+written. The grid step resumes from `-a`'s 7 CTU checkpoint (`-c`, then `-d`,
+`-e` as needed).
+
 What this adds: the honest fast-tier statement for this body is a trend,
 not a value: the wash-out needed is longer than the budget allows at 0.5M
 cells and 16 ranks. Any pass within the hour would need either a converged
