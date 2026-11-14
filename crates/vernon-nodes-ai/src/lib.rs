@@ -15,8 +15,11 @@ use vernon_graph::Registry;
 pub mod aero;
 pub mod bridge;
 pub mod compare;
+pub mod forecast;
 pub mod parts;
 pub mod prep;
+pub mod speak;
+pub mod transcribe;
 #[cfg(test)]
 mod tests;
 
@@ -29,6 +32,9 @@ pub fn register(reg: &mut Registry) {
     parts::register(reg);
     aero::register(reg);
     compare::register(reg);
+    speak::register(reg);
+    transcribe::register(reg);
+    forecast::register(reg);
 }
 
 /// Stable 64-bit FNV-1a hash, used to name artifact folders by their inputs.
