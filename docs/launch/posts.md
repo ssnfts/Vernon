@@ -98,7 +98,9 @@ Try it: `cargo run -p vernon-cli -- cook examples/bodykit_pipeline.vrn` cooks 40
 failed and ends "gates: 0 failing, 5 expected". The five are declared in the scene with reasons
 (single panel has no wheels, placeholder solid mesher, airflow case written but not solved).
 
-Validation is the weak point and I have tried to be exact about it. Analytic checks pass, and
+Validation is the weak point and I have tried to be exact about it. The analytic geometry,
+structure and flattening checks pass (the older steady airflow runs fail their drag check: they
+never converged), and
 distance and linear-static results match two open-source tools on small cases. For airflow, the
 only claim: on the classic slant-body case with a 25° slant, the fast tier is within about 7-10%
 of the published 1984 wind-tunnel value (half model, ~0.5M cells, under 35 minutes per run after
@@ -123,7 +125,7 @@ Likely questions to prepare (answers from VALIDATION.md only):
 |---|---|
 | 198 node types, 195 implemented, 3 placeholders, nine stages | `docs/NODES.md`, `CHANGELOG.md` |
 | 40 nodes, 0 failed, 0 failing gates, 5 expected, reasons | cook of `examples/bodykit_pipeline.vrn`, 2026-11-14 |
-| Analytic checks pass; open-source tool comparisons on small cases | `docs/VALIDATION.md` Tiers A and B (stated by CHANGELOG as passing) |
+| Analytic geometry, structure and flattening checks pass; open-source tool comparisons on small cases; steady airflow drag check fails | quick bench run 2026-11-14 (`vernon-bench run --quick --no-perf`): 12 of 13 Tier A pass, `A.cfd.ahmed_drag_window` fails (0.369 vs 0.285, not converged); Tier B: CloudCompare, CalculiX, OpenFOAM reduction pass, COLMAP and slicer skipped |
 | Slant-body 25° sentence, half model, 0.5M cells, under 35 minutes | `docs/VALIDATION.md` "CFD: what may be claimed" (signed 2026-11-13) |
 | Steady runs did not converge; no ranking of designs; no road-car figure | same section and "What is NOT validated" |
 | Printed-part FEA limits; retention curves are placeholders | "What is NOT validated" |
@@ -132,5 +134,5 @@ Likely questions to prepare (answers from VALIDATION.md only):
 | Solvers run as separate processes only when run is on | `CHANGELOG.md`, `CLEAN_ROOM.md` |
 | MCP server, CLI commands | `README.md`, `CHANGELOG.md` |
 
-Open issue: "Analytic and open-source comparisons pass" relies on the bench report. Re-run
-`bench\run.ps1 -Quick` and confirm before posting; I did not run it.
+Bench confirmed 2026-11-14 (quick, without timings): see the table row above. Re-run before
+posting if the code has changed since.
