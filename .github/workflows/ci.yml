@@ -1,0 +1,118 @@
+# Continuous integration: build, test, clippy, example cook, clean-room test and the
+# dependency checks on Windows (GNU toolchain), Linux and macOS.
+# Tests that need an external program (OpenFOAM, CalculiX, a slicer, ...) are
+# #[ignore]d in the source and stay ignored here. No CI job installs or runs them.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: windows-gnu
+            os: windows-latest
+            target: x86_64-pc-windows-gnu
+          - name: linux
+            os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - name: macos
+            os: macos-latest
+            target: aarch64-apple-darwin
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Windows: MinGW-w64 from MSYS2 supplies gcc, ld and dlltool for the GNU target.
+      - name: MSYS2 MinGW (Windows only)
+        if: runner.os == 'Windows'
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: false
+          path-type: inherit
+          install: mingw-w64-x86_64-toolchain
+      - name: Put MinGW on PATH (Windows only)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $mingw = Join-Path $env:RUNNER_TEMP 'msys64\mingw64\bin'
+          if (-not (Test-Path $mingw)) { $mingw = 'C:\msys64\mingw64\bin' }
+          if (-not (Test-Path (Join-Path $mingw 'gcc.exe'))) { throw "gcc.exe not found under $mingw" }
+          $mingw | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
+
+      # Linux: windowing and GPU crates locate system libraries at run time; the
+      # headers and pkg-config below cover anything that probes for them at build time.
+      - name: System packages (Linux only)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends pkg-config libxkbcommon-dev libwayland-dev libx11-dev libgl1-mesa-dev libvulkan-dev
+
+      - name: Rust toolchain
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            tc=stable-x86_64-pc-windows-gnu
+          else
+            tc=stable
+          fi
+          rustup toolchain install "$tc" --profile minimal --component clippy
+          rustup default "$tc"
+          rustc -vV
+          cargo -V
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Build
+        run: cargo build --workspace --target ${{ matrix.target }}
+
+      - name: Test (ignored tests stay ignored)
+        run: cargo test --workspace --target ${{ matrix.target }}
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --target ${{ matrix.target }} -- -D warnings
+
+      - name: Clean-room test (trademarks in user-visible strings)
+        run: cargo test -p vernon-cli --test clean_room --target ${{ matrix.target }}
+
+      # Exit 0 means: every node cooked and every gate passed or is listed under expect_fail.
+      - name: Example cook
+        run: cargo run -p vernon-cli --target ${{ matrix.target }} -- cook examples/bodykit_pipeline.vrn --work "$RUNNER_TEMP/cook-work"
+
+      - name: Dependency check, no cc/cmake/bindgen build scripts (all three targets)
+        shell: pwsh
+        run: ./scripts/release/check-deps.ps1
+
+  deny:
+    name: cargo-deny
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check licenses bans sources
