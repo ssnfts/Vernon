@@ -1,8 +1,9 @@
 # Tutorial: mount strength
 
-**Scene:** `examples/bodykit_pipeline.vrn`, the structure nodes (FEA) and the
-inputs they take from the airflow and solar stages.
-**Time:** about 30 minutes.
+**Scenes:** `examples/bodykit_pipeline.vrn` (Part 1: the structure nodes and
+the inputs they take from the airflow and solar stages) and
+`examples/mount_strength.vrn` (Part 2: a bracket solved to a safety factor).
+**Time:** about 45 minutes.
 **You will learn:** what the structural stage needs to check a body kit's
 mounts, what the example builds for that check, and where the example stops.
 
@@ -15,10 +16,11 @@ Read [the user guide](README.md) sections 5, 6 and 9 first. Read the whole of
   material, its loss of stiffness with heat, two mount sites, the aero load
   at two speeds, the surface temperature mapped onto the solid, and the input
   decks for a structural solver.
-- **The example does not solve the decks, and it does not compute a safety
-  factor.** The scene has no solver node and no safety-factor node. The last
-  step of this tutorial therefore has nothing to read. See "Where the example
-  stops".
+- **The body-kit example does not solve the decks.** Its 3 mm panel is far
+  thinner than the stand-in mesher's voxels, so the built-in solver cannot use
+  it (see "Where the body-kit example stops"). Part 2 therefore solves a
+  separate, solid mount bracket, `examples/mount_strength.vrn`, through to a
+  safety factor.
 - Every number here is an input or an estimate. None of it is a measured
   strength.
 
@@ -250,33 +252,72 @@ are millimetres, newtons, tonnes, seconds and MPa. Open the file in a text
 editor and you can see the material cards with the temperature rows, the mount
 sets and the loads. The decks are complete inputs. Nothing has run them.
 
-## Where the example stops
+## Where the body-kit example stops
 
-The chain ends at the decks. The scene has:
+The body-kit chain ends at the decks. Its panel is a 3 mm shell, and the
+built-in mesher fills it with 8 mm voxel tetrahedra, much thicker than the
+shell. That model is too large for the built-in solver at 8 mm (145,602
+unknowns against its limit of 60,000), and at 12 mm it does not converge (the
+solver reports that the body may be under-constrained). A real solve of the
+panel needs the external tetrahedral mesher and then either solver; the decks
+from Step 8 are ready for that. If you run an external solver on them, check
+its result against the bearing hand check (`fea.hand_check`) and the mesh
+convergence study (`fea.mesh_study`) before you trust it.
 
-- no node that runs a solver (`fea.solve_linear` or `fea.solve_external`), and
-- no node that computes a safety factor (`fea.safety_factor`).
+## Part 2: solve a mount bracket to a safety factor
 
-Because of that, this tutorial cannot show a safety factor at each mount. The
-project's own gate for this is "safety factor at every mount" (README,
-the structure step). The example does not check it. Nothing in this
-scene passes or fails on strength.
+`examples/mount_strength.vrn` is a small solid part the built-in mesher can
+represent exactly: a 120 × 32 × 40 mm ASA bracket, clamped over one 32 × 40 mm
+end face (a bonded end) and loaded on its top by a wing's downforce.
 
-This is an open item in the example, not a step you can finish by following
-the tutorial. The tutorial does not add those nodes, because it must run on the
-example as shipped. Adding a solver node is a change to the scene, and a
-solver run is a separate job with its own checks. The FEA behaviour contract is
-in [docs/specs/structural-fea.md](../specs/structural-fea.md).
+```powershell
+cargo run -p vernon-cli -- cook examples/mount_strength.vrn
+```
 
-If you run an external solver on the written decks yourself, check its result
-against the bearing hand check (`fea.hand_check`) and the mesh convergence study
-(`fea.mesh_study`) before you trust it. A
-safety factor from this example is an estimate, and the report says so.
+It takes about half a minute. You should see `12 nodes cooked, 0 failed` and
+one expected gate, the stand-in mesher. Here the stand-in is not a compromise:
+the box's mesh volume error is 0 %.
+
+The chain, node by node:
+
+| Node | What it does | Numbers you should see |
+|---|---|---|
+| `solid` | ten-node tetrahedra, 8 mm | 1,800 elements, volume error 0 % |
+| `mount` | clamps the end face (16 mm patch radius) | 51 nodes held |
+| `wing_load` | 0.05 m² of lift at 200 km/h on the top face | 85.6 N down |
+| `bump` | a 4 g bump plus gravity on the part's own mass | 3.8 N |
+| `cases` | aero, aero at 1.25 × speed, bump, aero plus bump | 4 cases |
+| `solve` | the built-in reference solver | worst case (overspeed): 0.149 mm deflection, 1.98 MPa peak stress |
+| `results` | reads the result files back onto the mesh | volume error 0 % in every case |
+| `reactions` | checks that the mount carries the load | 85.65 N in the aero case; equilibrium error 1.7e-6 |
+| `safety` | safety factor by the printed-layer (Tsai-Wu) criterion | `sf_min = 10.78`, `sf_mount_min = 19.51`, both against a target of 3 |
+
+`safety` also reports `speed_limit_kmh = 473.8`: the speed at which the
+governing case would reach the target. It is the same placeholder material as
+Part 1, so it is an estimate, not a rating.
+
+**How you hold the part matters as much as its size.** The same bracket held
+by an 8 mm bolt patch in the middle of the end face, instead of the whole face,
+reaches only `sf_min = 2.45` (failing the target of 3), `sf_mount_min = 3.14`
+and a speed limit of 226 km/h, with 4.6 times the deflection. A bolted joint
+is somewhere between the two; the mount model is a choice you must justify,
+not a detail. Try it: set `r_w_mm` on the `mount` node to 8 and cook again.
+
+What Part 2 is and is not:
+
+- It shows the whole chain running: mesh, mounts, loads, solve, read-back,
+  reactions and a safety factor that a gate checks.
+- The material, the temperature curve and the loads are the same estimates as
+  in Part 1, and the part sits at 23 °C (no temperature map), so heat is not
+  in this result.
+- The built-in solver has no thermal expansion, so a model with a temperature
+  field keeps its safety factor as an estimate (the report says so).
 
 ## What this tutorial does not show
 
-- A safety factor, a pass or a fail at the mounts. See above.
-- Bump loads (gravity, acceleration). None are connected.
+- A safety factor at the body-kit panel's mounts. See "Where the body-kit
+  example stops".
+- Bump loads on the body-kit panel (Part 2 has one on the bracket).
 - Fatigue, creep or long-term load. Creep needs the oven test plan, which
   sets the creep factor; this example keeps it at 1.
 - Bolt preload, thermal expansion, layer anisotropy beyond the strength ratio.
@@ -287,3 +328,5 @@ safety factor from this example is an estimate, and the report says so.
 - Which two numbers in this tutorial are placeholders, and which report flags
   them?
 - Why is the raw stress peak at a mount not the safety factor?
+- In Part 2, why does the safety factor change so much between an 8 mm bolt
+  patch and a clamped end face?
