@@ -42,6 +42,9 @@ processes**, not linked into Vernon, so Vernon's own code stays Apache-2.0:
 | CalculiX | GPL-2.0 | FEA solver (`fea.*` deck writers and the optional run); `bench/` runs the cantilever deck through it (native or inside WSL) as a Tier B reference |
 | PartCrafter (code and `wgsxm/PartCrafter` weights) | MIT | image to separate mesh parts (`geo.ai_partcrafter`), run as a Python process in the user's own model install; weights are never bundled |
 | DoMINO via PhysicsNeMo (code Apache-2.0; `nvidia/domino_drivaerml` weights under the NVIDIA Open Model Agreement) | Apache-2.0 / NVIDIA Open Model Agreement | AI aerodynamic preview (`cfd.ai_aero_preview`), run as a separate process; weights are never bundled and results are labelled unvalidated |
+| Kokoro (`kokoro` package and `hexgrad/Kokoro-82M` weights) | Apache-2.0 | text to speech (`geo.ai_text_to_speech`), run as a Python process in the user's own model install; weights are never bundled |
+| Whisper (`openai/whisper-large-v3-turbo` weights, run with the `transformers` package) | MIT (weights) / Apache-2.0 (package) | speech to text (`geo.ai_speech_to_text`), run as a separate process; weights are never bundled |
+| Chronos-2 (`chronos-forecasting` package and `amazon/chronos-2` weights) | Apache-2.0 | advisory forecast of a number series (`cfd.ai_convergence_forecast`), run as a separate process; no acceptance gate reads it; weights are never bundled |
 | fTetWild | MPL-2.0 | tetrahedral meshing of watertight surfaces (`fea.tet_mesh`); driven as a process, no source copied, so the file-level copyleft never reaches Vernon's files |
 | OrcaSlicer / PrusaSlicer | AGPL-3.0 | slicing and G-code (`print.slice_external`); `bench/` also slices a stored plate with them, as a separate process, to check G-code against `print.flavour_check` |
 | Klipper | GPL-3.0 | printer firmware (target only: Vernon writes macros, never links it) |
