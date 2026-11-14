@@ -42,3 +42,5 @@ try {
 } finally { Pop-Location }
 if ($fail -gt 0) { Write-Host "`n$fail banned-crate finding(s)"; exit 1 }
 Write-Host "`nno banned build-script crates in the resolve"
+# `cargo tree -i` exits non-zero when the crate is absent (the passing case), so state success explicitly.
+exit 0
