@@ -78,6 +78,21 @@ evidence. For current commands use docs/SETUP.md and docs/CFD-RUNBOOK.md.
   Fast-tier summary on the 0.5M-cell half model: both slant bodies Cd ≈
   0.30–0.31; +7–10% at 25°, +16% at 35°; the experimental 25° → 35° drop is
   not reproduced. The remaining gap is setup and grid, not averaging.
+- **Setup and grid (user, 2026-11-14).** The 0.285 / 0.260 slant references
+  turned out to be unsourced (the spec forbids remembered values; ERCOFTAC
+  gives conditions but no Cd), and our stilted bodies carry 14–15% of their
+  drag on the stilts. The open slant-body dataset's own validation runs are a
+  sourced, same-method reference: the classic 25° body without stilts, full
+  body, SA-DDES, 80 CTU, Cd 0.300 / 0.292 / 0.286 / 0.279 at 3.6M / 10.1M /
+  21.4M / 35.1M cells (files under `scratch/wp9-data/ahmedml/validation/`).
+  That body through our pipeline (harness option `VERNON_FAST_KEEP_CLEARANCE`
+  keeps its 50 mm clearance): fresh hour `-a` not passed (still drifting at
+  the 15 CTU cap), seeded hour `-b` **PASS, Cd 0.267 ± 0.007, −4.3% against
+  the 35M-cell value**, half-step agrees. Fixes on the way: one rounding
+  allowance `BOUNDARY_CTU = 1e-6` (a first `-a` looped 14 times on a zero-
+  length segment and was stopped), and the harness stops on a plan that would
+  not advance. WSL dropped once more mid-run (image on E:). Next useful test:
+  a 1M-cell grid step on this body.
 - Nothing was launched through the runner; no gate was lowered; no run was
   relabelled.
 

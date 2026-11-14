@@ -23,6 +23,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::convergence::{effective_sample_size, two_sided_z};
 
+/// Rounding allowance on averaging lengths, in convective units. Solver times
+/// are written to a fixed precision, so a window that ends exactly on a check
+/// boundary can come out about 1e-7 CTU short of it.
+pub const BOUNDARY_CTU: f64 = 1e-6;
+
 /// Tunables of the transient gate. Times are seconds; lengths are CTU.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TransientParams {
@@ -222,9 +227,11 @@ pub fn assess(time: &[f64], value: &[f64], switch_time_s: f64, p: &TransientPara
     let (t, v) = (&time[first..], &value[first..]);
     let mut r = empty_report(start, end.max(start), p.ctu_s, t.len());
     let mut reasons = Vec::new();
-    // The same rounding allowance `next_segment_end_s` uses, so a segment
-    // that ends exactly on a check boundary is assessed there, not skipped.
-    if r.averaged_ctu + 1e-9 < p.min_average_ctu {
+    // A rounding allowance of one millionth of a convective unit (solver
+    // times are written to a fixed precision), matched in
+    // `next_segment_end_s`, so a segment that ends exactly on a check
+    // boundary is assessed there, not skipped.
+    if r.averaged_ctu + BOUNDARY_CTU < p.min_average_ctu {
         reasons.push(format!(
             "averaging: {:.2} of the required {:.2} CTU available after the wash-out",
             r.averaged_ctu, p.min_average_ctu
@@ -323,7 +330,7 @@ pub fn assess(time: &[f64], value: &[f64], switch_time_s: f64, p: &TransientPara
 
     r.verdict = if reasons.is_empty() {
         Verdict::Pass
-    } else if r.averaged_ctu + 1e-9 >= p.max_average_ctu {
+    } else if r.averaged_ctu + BOUNDARY_CTU >= p.max_average_ctu {
         reasons.push(format!("cap: {:.2} CTU averaged without a pass", r.averaged_ctu));
         Verdict::Fail
     } else {
@@ -339,11 +346,11 @@ pub fn next_segment_end_s(report: &TransientReport, switch_time_s: f64, p: &Tran
         return None;
     }
     let start = switch_time_s + p.washout_ctu * p.ctu_s;
-    let next_ctu = if report.averaged_ctu + 1e-9 < p.min_average_ctu {
+    let next_ctu = if report.averaged_ctu + BOUNDARY_CTU < p.min_average_ctu {
         p.min_average_ctu
     } else {
         // the next check boundary strictly after what has been averaged
-        let k = ((report.averaged_ctu - p.min_average_ctu) / p.check_every_ctu + 1e-9).floor() + 1.0;
+        let k = ((report.averaged_ctu - p.min_average_ctu) / p.check_every_ctu + BOUNDARY_CTU).floor() + 1.0;
         p.min_average_ctu + k * p.check_every_ctu
     };
     Some(start + next_ctu.min(p.max_average_ctu) * p.ctu_s)
@@ -750,6 +757,17 @@ mod tests {
         assert!((r.averaged_ctu - 6.0).abs() < 1e-6, "{}", r.averaged_ctu);
         assert!(!r.reasons.iter().any(|s| s.starts_with("averaging")), "{:?}", r.reasons);
         assert_eq!(r.verdict, Verdict::Pass, "{:?}", r.reasons);
+        // Run a of 2026-11-14: the last written time was rounded about 4e-7
+        // CTU short of the boundary. It must be assessed, and if it were not,
+        // the next segment must still end after the current one.
+        let mut short = t.clone();
+        *short.last_mut().unwrap() -= 4e-7 * 0.0261;
+        let r = assess(&short, &v, switch, &p).unwrap();
+        assert!(!r.reasons.iter().any(|s| s.starts_with("averaging")), "{:?}", r.reasons);
+        let mut cont = r.clone();
+        cont.verdict = Verdict::Continue;
+        let next = next_segment_end_s(&cont, switch, &p).unwrap();
+        assert!(next > *short.last().unwrap() + 0.5 * 0.0261, "the next segment must advance: {next}");
     }
 
     #[test]

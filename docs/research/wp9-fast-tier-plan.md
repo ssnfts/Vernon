@@ -330,6 +330,73 @@ both bodies: 7–10% above the experiment at 25°, 16% above at 35°, and it doe
 not reproduce the experimental drop from 25° to 35°. More averaging on this
 grid will not change that; the remaining gap belongs to the setup and grid.
 
+**2026-11-14, user: "Setup and grid". Three findings before any new run.**
+
+1. **The 0.285 / 0.260 references are not sourced.** The spec
+   (`automotive-cfd.md`) states there is no sourced absolute slant-body drag
+   and that remembered values are not references; the ERCOFTAC pages it cites
+   (best practice, description, test data) give the conditions (40 m/s, Re
+   2.78e6, 50 mm clearance, 30 mm stilts that "must be included", about 4%
+   blockage) but no drag coefficients. The comparisons above against 0.285
+   and 0.260 are therefore labelled unsourced; they are kept as recorded but
+   not used as a gate.
+2. **Our bodies carry their stilts in the drag.** Splitting the averaged
+   drag of `-g`, `-i`, `-h`, `-k` by surface: stilts 14.0–14.8% of the total;
+   without them Cd is 0.260 / 0.268 (25°) and 0.259 / 0.257 (35°). The slant
+   pressure share is 21–22% (25°) and 26–27% (35°) against the spec's 55% /
+   35%: too low and in the wrong order, which points at the slant flow
+   (attachment on the 25° slant), not at the averaging.
+3. **A sourced reference with the same method exists: the open slant-body
+   dataset's own validation runs.** Same Re (U 1 m/s, nu 3.75e-7, L 1.044 m),
+   the classic 25° body (1.044 × 0.389 × 0.288 m, slant 25.0°, 50 mm
+   clearance) **without stilts**, full body, OpenFOAM SA-DDES, 80 CTU,
+   Aref 0.112032 m². Their averaged Cd over the second half of the run, by
+   mesh: 3.58M cells 0.300, 10.1M 0.292, 21.4M 0.286, 35.1M 0.279 (t ≥ 20
+   CTU gives the same within 0.001). Files under
+   `scratch/wp9-data/ahmedml/validation/` (licence CC BY-SA 4.0).
+
+So the like-for-like test is that stilt-free body through our pipeline. The
+harness gains `VERNON_FAST_KEEP_CLEARANCE` (mesh the body where it stands
+instead of dropping it onto the ground; part of the mesh identity only when
+set, so earlier checkpoints stay valid; unit test). Queue: a fresh hour
+(`fast-ahmedml25-20261114-a`), then an hour seeded from it (`-b`), 0.5M-cell
+half model, compared against the dataset's own grid sequence.
+
+**Runs on the stilt-free validation body (2026-11-14).** Two false starts
+first: WSL stopped mid-steady-start (its image is on the external E: drive,
+busy again), and the restarted `-a` hit a runaway loop: its averaging came
+out about 4e-7 CTU short of the 6 CTU boundary (written times carry fixed
+precision), more than the 1e-9 allowance, so the stop rule planned the same
+end time 14 times before it was stopped by hand. Fixed: one allowance,
+`transient::BOUNDARY_CTU = 1e-6`, used by `assess` and
+`next_segment_end_s`, with a test of the run-`a` case; the harness also stops
+if a plan would not advance by one step.
+
+| Run | Window (CTU) | Cd ± s.e. | vs dataset 35M (0.279) | Gate | Wall |
+|---|---|---|---|---|---|
+| steady start | 600 iterations | 0.343 | +23% | trend only | 4.5 min |
+| `-a` (fresh) | 2–17 | 0.274 ± 0.016 | −1.6% | not passed: trend 2.2%/CTU at the cap | 40.5 min |
+| `-b` (seeded from `-a`) | 17–25 | **0.267 ± 0.007** | **−4.3%** | **PASS**: trend 1.65%/CTU and halves 5.6%, neither significant; per-step rule on all 800 steps; half-step 0.266 ± 0.002, difference 0.0009, allowed 0.0141 | 23.2 min |
+
+Mesh 450,164 cells (half model), non-orthogonality 62.8°, skewness 2.51;
+Courant peak 11.2 (wall layers), 1.2 s/step. Measured frontal area 0.11216
+m² against the dataset's 0.112032.
+
+**What this answers.** On the stilt-free body, with a reference that is
+sourced and uses the same method, the fast tier's 0.5M-cell half model gives
+Cd 0.267 ± 0.007: within 5% of the dataset's finest mesh (0.279, 35M cells,
+full body) and 11% under its coarsest (0.300, 3.6M). The earlier slant-body
+rows were not comparable with that reference: they carry stilts (14–15% of
+their drag), and their 0.285 / 0.260 references are unsourced. Caveats: this
+is one passing window on one grid; the drag was still drifting down through
+`-a` and the start of `-b`, so the next window could move again (the 25°
+stilted body moved by four standard errors between windows); and the
+dataset's own trend (0.300 → 0.279 with refinement) runs the opposite way to
+ours being lower on a coarser grid, so agreement here may partly be
+cancellation between grid error and the half model. The next informative
+test is a grid step on this body (dx0 0.0708, about 1M cells), seeded hours
+as here.
+
 What this adds: the honest fast-tier statement for this body is a trend,
 not a value: the wash-out needed is longer than the budget allows at 0.5M
 cells and 16 ranks. Any pass within the hour would need either a converged

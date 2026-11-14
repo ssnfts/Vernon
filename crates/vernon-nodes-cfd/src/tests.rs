@@ -728,6 +728,11 @@ struct FastTier {
     checkpoint_dir: Option<String>,
     /// Checkpoint an already finished case instead of running anything.
     preserve_case: Option<String>,
+    /// Mesh the STL body where it stands in z (its own ground clearance),
+    /// only moved so the nose is at x = 0 and the centre line at y = 0. For
+    /// bodies without wheels or supports, which preparation would otherwise
+    /// drop onto the ground.
+    keep_clearance: bool,
 }
 
 impl FastTier {
@@ -753,6 +758,7 @@ impl FastTier {
             seed_dir: get("VERNON_FAST_SEED_DIR"),
             checkpoint_dir: get("VERNON_FAST_CHECKPOINT_DIR"),
             preserve_case: get("VERNON_FAST_PRESERVE_CASE"),
+            keep_clearance: get("VERNON_FAST_KEEP_CLEARANCE").as_deref() == Some("1"),
         };
         assert!(cfg.preserve_case.is_none() || (cfg.checkpoint_dir.is_some() && cfg.seed_dir.is_none()), "preserving needs VERNON_FAST_CHECKPOINT_DIR and no seed");
         assert!(cfg.budget_min > 0.0 && cfg.budget_min <= 60.0, "the fast tier is bounded at one hour");
@@ -800,6 +806,31 @@ fn fast_step(length_m: f64, u_ms: f64, requested: Option<f64>) -> (f64, f64, f64
     let ctu = length_m / u_ms;
     let steps_per_ctu = (ctu / requested.unwrap_or(ctu / 100.0)).round().max(10.0);
     (ctu, steps_per_ctu, ctu / steps_per_ctu)
+}
+
+/// Move a body so its nose is at x = 0 and its centre line at y = 0,
+/// keeping its height above the ground (z) exactly as given.
+fn keeping_clearance(body: &Geometry) -> Geometry {
+    let b = body.bounds();
+    let mut out = body.clone();
+    out.transform(glam::DMat4::from_translation(glam::DVec3::new(-b.min.x, -0.5 * (b.min.y + b.max.y), 0.0)));
+    out
+}
+
+#[test]
+fn fast_tier_clearance_is_kept_and_only_x_and_y_move() {
+    use vernon_core::DVec3;
+    // A 1044 mm box floating 50 mm above the ground, nose at x = -1044.
+    let pts = vec![
+        DVec3::new(-1044.0, -194.7, 50.0), DVec3::new(0.0, -194.7, 50.0), DVec3::new(0.0, 194.7, 50.0), DVec3::new(-1044.0, 194.7, 50.0),
+        DVec3::new(-1044.0, -194.7, 338.0), DVec3::new(0.0, -194.7, 338.0), DVec3::new(0.0, 194.7, 338.0), DVec3::new(-1044.0, 194.7, 338.0),
+    ];
+    let faces = vec![vec![3, 2, 1, 0], vec![4, 5, 6, 7], vec![0, 1, 5, 4], vec![1, 2, 6, 5], vec![2, 3, 7, 6], vec![3, 0, 4, 7]];
+    let g = keeping_clearance(&Geometry::from_polygons(pts, faces));
+    let b = g.bounds();
+    assert!((b.min.x).abs() < 1e-9 && (b.max.x - 1044.0).abs() < 1e-9);
+    assert!((b.min.y + b.max.y).abs() < 1e-9);
+    assert!((b.min.z - 50.0).abs() < 1e-9 && (b.max.z - 338.0).abs() < 1e-9, "the 50 mm clearance stays");
 }
 
 /// A per-run work directory for files the harness writes itself.
@@ -875,7 +906,16 @@ fn real_openfoam_fast_tier_run() {
     // The slant body keeps its patch names (body, body_slant, body_stilts)
     // only in the raw geometry, as the October runs meshed it; the prepared
     // copy merges everything into `body`.
-    let mesh_geometry = if is_slant { g(body) } else { prep[0].clone() };
+    let mesh_geometry = if is_slant {
+        g(body)
+    } else if cfg.keep_clearance {
+        // Preparation drops a body without wheels onto the ground; a body that
+        // floats on its own clearance (the stilt-free validation body) is meshed
+        // where it stands instead.
+        g(keeping_clearance(&body))
+    } else {
+        prep[0].clone()
+    };
     let measured = prep[1].as_json().unwrap().as_ref().clone();
     let mut reference = measured.clone();
     let (a_front, length) = if is_slant {
@@ -919,11 +959,16 @@ fn real_openfoam_fast_tier_run() {
     // the flow state. `crate::fast_seed` compares these before any seed is used.
     let (ctu, steps_per_ctu, dt) = fast_step(length, cfg.u_ms, cfg.delta_t_s);
     let body_key = crate::fast_seed::body_key(&cfg.geometry).unwrap();
-    let mesh_inputs_fnv1a64 = crate::fast_seed::mesh_inputs_fingerprint(&serde_json::json!({
+    let mut mesh_inputs = serde_json::json!({
         "body": body_key, "angle_deg": if is_slant { Some(cfg.angle_deg) } else { None },
         "plan": plan[0].as_json().unwrap().as_ref(), "domain": domain[0].as_json().unwrap().as_ref(),
         "reference": reference_value, "flavour": "opencfd2606", "n_layers": 5, "np": cfg.np,
-    }));
+    });
+    // Only when set, so the identities of earlier checkpoints stay valid.
+    if cfg.keep_clearance {
+        mesh_inputs["keep_clearance"] = serde_json::json!(true);
+    }
+    let mesh_inputs_fnv1a64 = crate::fast_seed::mesh_inputs_fingerprint(&mesh_inputs);
     let identity = |recipe: &str| crate::fast_seed::SeedIdentity {
         body: body_key.clone(), angle_deg: if is_slant { Some(cfg.angle_deg) } else { None }, np: cfg.np,
         mesh_inputs_fnv1a64: mesh_inputs_fnv1a64.clone(), recipe_fnv1a64: recipe.to_string(),
@@ -1138,6 +1183,13 @@ fn real_openfoam_fast_tier_run() {
             }
             Some(next) => {
                 let need_steps = ((next - end_s) / dt).round();
+                // A plan that would not advance by one step can only repeat
+                // itself (run a of 2026-11-14 did, 14 times): stop instead.
+                if need_steps < 1.0 {
+                    stop_reason = format!("stop rule did not advance: next end {next} s against current {end_s} s");
+                    report = Some(r);
+                    break;
+                }
                 // Reserve the half-step segment at twice the step count.
                 let reserve = half_total_ctu * steps_per_ctu * 2.0 * seconds_per_step + 60.0;
                 if need_steps * seconds_per_step + reserve > remaining(started).as_secs_f64() {
