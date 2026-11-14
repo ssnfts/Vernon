@@ -105,8 +105,8 @@ function Test-InstallCycle([string]$Base, [string]$Label) {
 
         $o = & "$inst\bin\vernon-cli.exe" cook "$inst\examples\bodykit_pipeline.vrn" 2>&1 | Out-String
         $code = $LASTEXITCODE
-        Check 'installed vernon-cli cooks the example (exit 0: only the 2 expected gates)' ($code -eq 0) "exit $code`n$($o.Substring([math]::Max(0, $o.Length - 600)))"
-        Check 'cook reported 38 nodes' ($o -match '38')
+        Check 'installed vernon-cli cooks the example (exit 0: only the 5 expected gates)' ($code -eq 0) "exit $code`n$($o.Substring([math]::Max(0, $o.Length - 600)))"
+        Check 'cook gate summary: 0 failing, 5 expected' ($o -match 'gates: 0 failing, 5 expected')
 
         $probe = Start-Process -FilePath "$inst\bin\vernon.exe" -ArgumentList @("`"$inst\examples\bodykit_pipeline.vrn`"") -WorkingDirectory $inst -WindowStyle Hidden -PassThru
         Start-Sleep -Seconds $ProbeSeconds
