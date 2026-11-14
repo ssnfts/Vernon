@@ -18,11 +18,14 @@ use vernon_graph::Registry;
 pub mod aero;
 pub mod bridge;
 pub mod compare;
+pub mod cutout;
+pub mod docsearch;
 pub mod forecast;
 pub mod parts;
 pub mod prep;
 pub mod speak;
 pub mod transcribe;
+pub mod vision;
 #[cfg(test)]
 mod roundtrip_tests;
 #[cfg(test)]
@@ -40,6 +43,9 @@ pub fn register(reg: &mut Registry) {
     speak::register(reg);
     transcribe::register(reg);
     forecast::register(reg);
+    docsearch::register(reg);
+    cutout::register(reg);
+    vision::register(reg);
 }
 
 /// Stable 64-bit FNV-1a hash, used to name artifact folders by their inputs.
