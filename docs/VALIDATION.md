@@ -73,10 +73,8 @@ at 10k, 100k and 1M triangles (tetrahedra for FEA).
 
 ### End to end (E)
 
-`E.pipeline.cook` cooks `examples/bodykit_pipeline.vrn` and requires 38 nodes, 0 failed, 0
-unexpected failing gates and the 2 documented expected gates (AGENTS.md). The brief for this suite
-quoted 40 nodes and 5 expected gates; the file in the repository has 38 and 2, so the suite
-checks what the repository documents. `E.pipeline.stage_smoke` runs `vernon-cli cook --node` for
+`E.pipeline.cook` cooks `examples/bodykit_pipeline.vrn` and requires 40 nodes, 0 failed, 0
+unexpected failing gates and the 5 documented expected gates (AGENTS.md). `E.pipeline.stage_smoke` runs `vernon-cli cook --node` for
 the last node of each stage. `E.app.start_probe` launches the desktop binary and requires it to
 stay up for 6 s; it is SKIPPED unless the app was built (`bench\run.ps1 -WithApp`).
 

@@ -11,15 +11,15 @@ use crate::tier_b::repo_root;
 const TIER: &str = "E";
 const PIPELINE: &str = "examples/bodykit_pipeline.vrn";
 /// Counts documented in AGENTS.md for the shipped example.
-const EXPECT_NODES: usize = 38;
-const EXPECT_EXPECTED_GATES: usize = 2;
+const EXPECT_NODES: usize = 40;
+const EXPECT_EXPECTED_GATES: usize = 5;
 
 pub fn run() -> Vec<Case> {
     vec![cook_pipeline(), stage_smoke(), app_probe()]
 }
 
 fn cook_pipeline() -> Case {
-    run_case("E.pipeline.cook", TIER, "Cook examples/bodykit_pipeline.vrn in-process", "AGENTS.md definition of done: 38 nodes, 0 failing gates, 2 expected (the brief for this suite quoted 40 nodes / 5 expected; the shipped file has 38 / 2)", |ck| {
+    run_case("E.pipeline.cook", TIER, "Cook examples/bodykit_pipeline.vrn in-process", "AGENTS.md definition of done: 40 nodes, 0 failing gates, 5 expected", |ck| {
         let reg = vernon_cli::registry();
         let mut graph = vernon_cli::load_graph(&repo_root().join(PIPELINE), &reg).map_err(|e| format!("{e:#}"))?;
         graph.work_root = Some(scratch("e2e_pipeline"));
