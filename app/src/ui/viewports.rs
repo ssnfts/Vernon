@@ -566,27 +566,38 @@ pub fn show(app: &mut VernonApp, ctx: &egui::Context) {
         });
 }
 
-/// Start panel over an empty scene: the two ways in.
+/// Width of the start panel's content: 380 px, narrower when the viewport
+/// area is (a small window with wide side panels), never below 200.
+fn welcome_width(area_width: f32) -> f32 {
+    (area_width - 40.0).clamp(200.0, 380.0)
+}
+
+/// Start panel over an empty scene: the two ways in. It is centred in the
+/// viewport area (the central panel, so side panels are excluded) and kept
+/// inside it.
 fn welcome(app: &mut VernonApp, ctx: &egui::Context, area: Rect) {
+    let width = welcome_width(area.width());
+    let button = [width - 20.0, 32.0];
     egui::Area::new(egui::Id::new("welcome_panel"))
         .order(egui::Order::Foreground)
         .pivot(egui::Align2::CENTER_CENTER)
         .fixed_pos(area.center())
+        .constrain_to(area)
         .show(ctx, |ui| {
             egui::Frame::popup(ui.style()).show(ui, |ui| {
-                ui.set_width(380.0);
+                ui.set_width(width);
                 ui.label(RichText::new("Welcome to Vernon").heading());
                 ui.label(
                     RichText::new("The scene is empty. Pick a start:")
                         .color(theme::TEXT_DIM),
                 );
                 ui.add_space(6.0);
-                if ui.add_sized([360.0, 32.0], egui::Button::new("Open the demo (body-kit pipeline)")).clicked() {
+                if ui.add_sized(button, egui::Button::new("Open the demo (body-kit pipeline)")).clicked() {
                     app.replace_with_demo();
                 }
                 ui.label(RichText::new("A car panel goes through scan, clean, surface, split and checks. Cook runs by itself.").small().color(theme::TEXT_DIM));
                 ui.add_space(6.0);
-                if ui.add_sized([360.0, 32.0], egui::Button::new("Import a mesh or scan (OBJ, STL, PLY, 3MF, XYZ, E57, LAS)")).clicked() {
+                if ui.add_sized(button, egui::Button::new("Import a mesh or scan (OBJ, STL, PLY, 3MF, XYZ, E57, LAS)")).clicked() {
                     app.open_dialog(super::FileMode::Import);
                 }
                 ui.label(RichText::new("Lengths are read in millimetres; Vernon reports the size so you can spot a unit mix-up.").small().color(theme::TEXT_DIM));
@@ -1190,6 +1201,13 @@ fn tools(
 mod tests {
     use super::*;
     use crate::registry::build_registry;
+
+    #[test]
+    fn start_panel_fits_narrow_viewport_areas() {
+        assert_eq!(welcome_width(1200.0), 380.0);
+        assert_eq!(welcome_width(300.0), 260.0);
+        assert_eq!(welcome_width(100.0), 200.0);
+    }
 
     /// Spec golden 12: scene undo (Ctrl+Z) and viewport undo (Shift+Z) are
     /// separate histories.
