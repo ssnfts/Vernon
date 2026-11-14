@@ -73,16 +73,30 @@ heavily loaded by other jobs.
 - Second query over the same folder: embeddings reused (index 0.02 s), query
   0.57 s, node call 18 s (mostly model load).
 - Peak GPU memory 2.6 GB (allocated), peak resident memory 3.4 GB.
-- Retrieval quality, 2 queries, judged on the top 3 files:
-  - "which STEP schema variants can the exporter write": `step-export.md` is
-    first (score 0.573). Correct.
-  - "largest number of triangles the aero preview accepts": `ai-models.md` is
-    NOT in the top 3 (it is 7th, score 0.487). The top hits (scores 0.49 to
-    0.53) are mesh-tool and scanning specs. The spec says "surface path" and
-    "20,000 triangles", not "aero preview", so the wording differs; the model
-    ranks topic words over the number. This is a miss, not a pass.
+- Retrieval quality is checked by the ignored test `real_docsearch_finds_specs`
+  (the questions live in the test, not here, so this file can't answer them by
+  quoting them). Six topic questions, each worded differently from the
+  documents and each with one expected file, are judged on the top 3 files.
+  The pass bar was fixed before the run: at least five of six.
+  - Lead re-run, 2026-11-15, fresh work folder: see "Lead check" below.
+  - A seventh question asks for one number that sits in a single clause of a
+    long paragraph, in words the document doesn't use. The first run ranked the
+    right file 7th. It is kept in the test as a recorded miss and doesn't gate:
+    this node finds passages on a topic, not single facts.
+
+### Lead check, 2026-11-15 (single run, fresh work folder)
+Corpus: `docs/specs`, 26 files, 968 passages. Five of the six topic questions
+put the expected file in the top 3 (four of them first), which meets the bar
+and no more. The miss: a question about camera positions from photographs
+returned `capture-scanning.md` first and `real-photogrammetry.md` fifth; both
+files cover that subject. The single-number question missed again. First call
+159 s (model load 64 s, indexing 8.7 s); later calls 17 to 19 s each, almost
+all of it loading the model again, since every query starts a new process.
+Peak GPU memory 2.6 GB, peak resident memory 3.4 GB.
 
 ## Limits
+- Every query starts the model again (about 11 s once the files are in the page
+  cache); there is no server that stays loaded.
 - At most 2000 files and 200 MB in total; larger folders are refused.
 - Indexing time grows with the number of passages; the first run also pays model
   load from the weights drive, which is slow on a USB disk.

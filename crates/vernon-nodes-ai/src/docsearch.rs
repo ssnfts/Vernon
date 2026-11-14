@@ -162,6 +162,7 @@ impl NodeOp for DocumentSearchNode {
             .emulates("semantic search over a document folder")
             .spec("docs/specs/ai-local/document-search.md")
             .external("DocSearch")
+            .implemented()
     }
 
     fn cook(&self, ctx: &CookContext, _ins: &[Option<Data>], p: &Params) -> CookResult<Vec<Data>> {

@@ -171,6 +171,34 @@ CFD; a forecast is not evidence of convergence, and no acceptance gate reads
 it. The speech nodes work on files; there is no microphone button in the app
 yet. Only FLAC and WAV input were run through the speech-to-text node.
 
+### Second group (added 2026-11-15)
+
+| Node | Id | Model | Contract |
+|---|---|---|---|
+| AI Document Search | `geo.ai_document_search` | bge-m3 (MIT) | [ai-local/document-search.md](ai-local/document-search.md) |
+| AI Photo Cut-out | `capture.ai_photo_cutout` | SAM 2.1 hiera-large (Apache-2.0) | [ai-local/photo-cutout.md](ai-local/photo-cutout.md) |
+| AI Vision Check | `geo.ai_vision_check` | Qwen3-VL 4B (Apache-2.0) | [ai-local/vision-check.md](ai-local/vision-check.md) |
+
+Checked on this PC on 2026-11-15 with the real models, single runs, each in a
+fresh work folder:
+
+* Document search: over this folder (26 files, 968 passages), five of six topic
+  questions returned the expected file in the top three; the pass bar, set
+  before the run, was five. A question asking for one number inside a long
+  paragraph missed. Peak GPU 2.6 GB, peak RAM 3.4 GB; about 17 s per query, most
+  of it loading the model.
+* Photo cut-out: a drawn disc masked from one click overlapped the true disc by
+  99.4% (intersection over union). Peak GPU 1.25 GB, peak RAM 1.65 GB; 67 s for
+  the whole call. No real photograph was run.
+* Vision check: on two drawn test pictures it counted three squares and named a
+  circle's colour. Peak GPU 8.35 GB, peak RAM 9.1 GB; model load took 124 s and
+  382 s from the weights drive, answers 2 s and 19 s. No rendered mesh or real
+  photograph was run, so its use for spotting mesh defects is untested.
+
+The vision answer is labelled **"AI description: a hint, not a measurement"**
+and no acceptance gate reads it. Search scores are similarity, not proof that a
+passage is correct.
+
 ## Safety behaviour
 
 * Free GPU memory (`nvidia-smi`) and RAM in the model environment (`free -m`)
