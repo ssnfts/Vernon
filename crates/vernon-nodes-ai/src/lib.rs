@@ -4,6 +4,9 @@
 //! * `ai.select_part` picks one generated part.
 //! * `ai.aero_preview` runs the DoMINO DrivAerML surface and volume surrogates (NVIDIA Open Model License).
 //! * `ai.aero_compare` compares two previews.
+//! * `ai.text_to_speech` speaks text into a WAV file (Kokoro-82M, Apache-2.0).
+//! * `ai.speech_to_text` writes a recording out as text (Whisper large-v3-turbo, MIT).
+//! * `ai.convergence_forecast` forecasts a number series as advice only (Chronos-2, Apache-2.0).
 //!
 //! Nothing here validates CFD. Every DoMINO output is labelled
 //! [`AERO_LABEL`], carries `cfd_validation = DEFERRED`, and uses `ai_`-prefixed
@@ -20,6 +23,8 @@ pub mod parts;
 pub mod prep;
 pub mod speak;
 pub mod transcribe;
+#[cfg(test)]
+mod roundtrip_tests;
 #[cfg(test)]
 mod tests;
 

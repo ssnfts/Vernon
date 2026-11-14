@@ -143,6 +143,34 @@ smoke settings) took 366 s. These figures are inference speed only. **There is n
 accuracy or speed-up-versus-OpenFOAM figure in this document, because none has
 been measured.**
 
+## More local models (added 2026-11-14)
+
+Three further nodes follow the same pattern (separate process, user-run
+install script, no download from a node, results cached by input hash). Each
+has its own short contract:
+
+| Node | Id | Model | Contract |
+|---|---|---|---|
+| AI Speech from Text | `geo.ai_text_to_speech` | Kokoro-82M (Apache-2.0) | [ai-local/speech-out.md](ai-local/speech-out.md) |
+| AI Text from Speech | `geo.ai_speech_to_text` | Whisper large-v3-turbo (MIT) | [ai-local/speech-in.md](ai-local/speech-in.md) |
+| AI Convergence Forecast | `cfd.ai_convergence_forecast` | Chronos-2 (Apache-2.0) | [ai-local/forecast.md](ai-local/forecast.md) |
+
+Checked on this PC on 2026-11-14 with the real models, single runs, each in a
+fresh work folder (`cargo test -p vernon-nodes-ai -- --ignored real_`):
+
+* Speech out: a 3.7 s, 24 kHz WAV; peak RAM 1.23 GB; CPU only.
+* Speech in: an 11 s public-domain clip transcribed with its expected words;
+  peak GPU 1.83 GB, peak RAM 2.55 GB.
+* Round trip: a 15-word, two-sentence text spoken by the first node and written
+  back by the second; 15 of 15 words matched.
+* Forecast: on a synthetic decaying series the median at step 200 was 1.023
+  times the true continuation; peak GPU 0.49 GB, peak RAM 1.42 GB.
+
+The forecast is **advice only**. It is trained on general time series, not on
+CFD; a forecast is not evidence of convergence, and no acceptance gate reads
+it. The speech nodes work on files; there is no microphone button in the app
+yet. Only FLAC and WAV input were run through the speech-to-text node.
+
 ## Safety behaviour
 
 * Free GPU memory (`nvidia-smi`) and RAM in the model environment (`free -m`)

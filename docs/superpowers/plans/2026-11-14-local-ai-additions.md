@@ -1,6 +1,6 @@
 # More local AI in Vernon: ordered plan and agent assignments, 2026-11-14
 
-Status: in progress. Wave 1 started 2026-11-14. This adds to the
+Status: wave 1 (items 1 to 3) built and verified with the real models on 2026-11-14; waves 2 and 3 not started. This adds to the
 [2026-11-04 AI plan](2026-11-04-ai-assistant-and-machine-split.md) and to
 section 5 of [docs/PLAN.md](../../PLAN.md#5-local-ai-what-to-add). The rules
 there don't change: models run out of process, nothing downloads without the
