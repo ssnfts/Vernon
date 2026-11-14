@@ -26,6 +26,7 @@ pub mod docsearch;
 pub mod forecast;
 pub mod parts;
 pub mod prep;
+pub mod sketch;
 pub mod speak;
 pub mod transcribe;
 pub mod vision;
@@ -35,7 +36,7 @@ mod roundtrip_tests;
 mod tests;
 
 /// The label every DoMINO result carries.
-pub const AERO_LABEL: &str = "AI prediction — CFD validation pending";
+pub const AERO_LABEL: &str = "AI prediction â€” CFD validation pending";
 /// Status string stored in provenance next to the label.
 pub const CFD_VALIDATION: &str = "DEFERRED";
 
@@ -49,6 +50,7 @@ pub fn register(reg: &mut Registry) {
     docsearch::register(reg);
     cutout::register(reg);
     vision::register(reg);
+    sketch::register(reg);
 }
 
 /// Stable 64-bit FNV-1a hash, used to name artifact folders by their inputs.
