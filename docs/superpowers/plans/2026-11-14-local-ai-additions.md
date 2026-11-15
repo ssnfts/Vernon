@@ -1,6 +1,6 @@
 # More local AI in Vernon: ordered plan and agent assignments, 2026-11-14
 
-Status: wave 1 (items 1 to 3) built and verified with the real models on 2026-11-14; waves 2 and 3 not started. This adds to the
+Status: wave 1 (items 1 to 3) built and verified with the real models on 2026-11-14; wave 2 (items 4 to 6) built and verified with the real models on 2026-11-15; wave 3 not started. This adds to the
 [2026-11-04 AI plan](2026-11-04-ai-assistant-and-machine-split.md) and to
 section 5 of [docs/PLAN.md](../../PLAN.md#5-local-ai-what-to-add). The rules
 there don't change: models run out of process, nothing downloads without the
@@ -57,7 +57,21 @@ done.
 | **Whisper speech agent** | #2 | `transcribe.rs`, `whisper_bridge.py`, `install_whisper.sh`, `docs/specs/ai-local/speech-in.md` | A known public-domain recording transcribes to its known words |
 | **Chronos forecast agent** | #3 | `forecast.rs`, `chronos_bridge.py`, `install_chronos.sh`, `docs/specs/ai-local/forecast.md` | A synthetic decaying series forecasts within a stated tolerance; a real solver log parses |
 | Lead | wiring, merge, checks | `lib.rs`, `CLEAN_ROOM.md`, `docs/NODES.md`, `docs/specs/ai-models.md` | Round trip: Kokoro speaks a sentence, Whisper writes it back, the words match |
-| Wave 2 agents | #4, #5, #6 | assigned after wave 1 is merged | — |
+| **Document search agent** | #4 | `docsearch.rs`, `docsearch_bridge.py`, `install_docsearch.sh`, `docs/specs/ai-local/document-search.md` | Topic questions about this repository's own specs return the right file in the top three |
+| **Photo cut-out agent** | #5 | `cutout.rs`, `sam2_bridge.py`, `install_sam2.sh`, `docs/specs/ai-local/photo-cutout.md` | A drawn disc is masked from one click and the mask overlaps the true disc by at least 90% |
+| **Vision check agent** | #6 | `vision.rs`, `vision_bridge.py`, `install_vision.sh`, `docs/specs/ai-local/vision-check.md` | Drawn test pictures: the count of squares and the colour of a circle come back right |
+
+## What changed from the plan in wave 2
+
+* **Vision check (#6)** uses `Qwen/Qwen3-VL-4B-Instruct` in half precision through
+  the `transformers` package, not the 8B model in 4-bit behind a llama.cpp
+  server. It needs no server to manage and fits beside other work on a 16 GB
+  GPU (8.35 GB measured). The 8B model is untested.
+* **Document search (#4)** reads PDFs as text with `pypdf`. The
+  `granite-docling` PDF reader in the table above was not built, so scanned
+  pages and complex layouts aren't read.
+* **Photo cut-out (#5)** runs SAM 2.1 through the `transformers` package, not
+  the model's own package.
 
 The README's **Local AI** table is updated by the session that maintains the
 README, one row per addition, once that addition is verified.
