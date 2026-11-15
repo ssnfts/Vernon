@@ -31,7 +31,7 @@ Three properties separate Vernon from the tools it stands beside:
 
 | Area | State on 2026-11-11 |
 |---|---|
-| Node catalogue | 201 nodes, 198 implemented, 3 white-box ([NODES.md](NODES.md)) |
+| Node catalogue | 204 nodes, 201 implemented, 3 white-box ([NODES.md](NODES.md)) |
 | Pipeline demo | `examples/bodykit_pipeline.vrn` cooks all nine stages on a synthetic fender |
 | Desktop app | egui/wgpu, quad viewports, node graph, agent chat panel |
 | Agent | `vernon-agent` (OpenAI-compatible client, so any llama.cpp or Ollama server works) and `vernon-cli mcp` |
