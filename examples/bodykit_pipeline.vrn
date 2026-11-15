@@ -38,7 +38,7 @@
     "17": { "type_id": "cfd.frontal_area", "name": "frontal_area", "pos": [1100, 240], "inputs": [[16, 0]] },
     "18": { "type_id": "cfd.tunnel_domain", "name": "tunnel", "pos": [1100, 360], "inputs": [[16, 1]] },
     "19": { "type_id": "cfd.refinement_plan", "name": "refinement", "pos": [1100, 480], "inputs": [[16, 1], [18, 0], null, [15, 0]] },
-    "20": { "type_id": "cfd.mesh_setup", "name": "mesh_dicts", "pos": [1100, 600], "inputs": [[19, 0], [18, 0], [16, 0]] },
+    "20": { "type_id": "cfd.mesh_setup", "name": "mesh_dicts", "pos": [1100, 600], "params": { "layer_mode": "first_layer_yplus", "yplus_target": 30.0 }, "inputs": [[19, 0], [18, 0], [16, 0]] },
     "21": { "type_id": "cfd.case_setup", "name": "cfd_case", "pos": [1100, 720], "inputs": [[20, 0], [15, 0], null, null, [16, 1], [18, 0]] },
 
     "22": { "type_id": "fea.material_fdm", "name": "material", "pos": [1320, 0], "params": { "preset": "asa" } },

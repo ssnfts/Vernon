@@ -149,17 +149,16 @@ cargo run -p vernon-cli -- cook examples/bodykit_pipeline.vrn --node cfd_case
 
 ```text
 base_cells = 464
-first_layer_mm = 2.4113 mm
-first_layer_yplus_estimate = 169.4716
+first_layer_mm = 0.4268 mm
+first_layer_yplus_estimate = 30
 surfaces_written = 1
 ram_estimate_gb_low = 30 GB, ram_estimate_gb_high = 60 GB
 ```
 
 The 30 to 60 GB memory figure is an estimate for a mesh at the 30 million cell
 limit, as its note says. It is not the memory this 464 cell base mesh would
-need. The first layer in this mesh setup is 2.41 mm (y+ about 169), but the
-refinement plan asks for 0.43 mm (y+ 30). The example does not reconcile the
-two. Treat that difference as an open item, not as a checked result.
+need. The scene sets this node to size the first layer from the y+ target,
+so the 0.4268 mm layer (y+ 30) matches the refinement plan.
 
 `cfd_case` writes the steady turbulence model and the boundary settings:
 
