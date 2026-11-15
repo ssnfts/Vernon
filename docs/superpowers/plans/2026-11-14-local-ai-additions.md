@@ -1,6 +1,6 @@
 # More local AI in Vernon: ordered plan and agent assignments, 2026-11-14
 
-Status: wave 1 (items 1 to 3) built and verified with the real models on 2026-11-14; wave 2 (items 4 to 6) built and verified with the real models on 2026-11-15; wave 3 not started. This adds to the
+Status: wave 1 (items 1 to 3) built and verified with the real models on 2026-11-14; wave 2 (items 4 to 6) built and verified with the real models on 2026-11-15; wave 3: item 7 built and verified with the real model on 2026-11-16, items 8 and 9 blocked (see "Wave 3" below). This adds to the
 [2026-11-04 AI plan](2026-11-04-ai-assistant-and-machine-split.md) and to
 section 5 of [docs/PLAN.md](../../PLAN.md#5-local-ai-what-to-add). The rules
 there don't change: models run out of process, nothing downloads without the
@@ -19,7 +19,7 @@ Licences below were read from the Hugging Face API on 2026-11-14.
 | 4 | **Offline document search** | `BAAI/bge-m3` (search), `ibm-granite/granite-docling-258M` (PDF reading) | MIT, Apache-2.0 | Mature libraries; needs an index format | 2 |
 | 5 | **Photo cut-out** (mask one part in a photo) | `facebook/sam2.1-hiera-large` | Apache-2.0 | Mature; needs a click or box as a prompt | 2 |
 | 6 | **Vision check** (item K in PLAN.md) | `Qwen/Qwen3-VL-8B-Instruct`, 4-bit | Apache-2.0 | Larger download and a llama.cpp server to manage | 2 |
-| 7 | **Sketch from words** | `black-forest-labs/FLUX.2-klein-4B` | Apache-2.0 | 24 GB download and a heavy GPU load, so not while CFD runs | 3 |
+| 7 | **Sketch from words** | `black-forest-labs/FLUX.2-klein-4B` | Apache-2.0 | 15 GB download (24 GB for the whole repository) and a heavy GPU load, so not while CFD runs | 3 |
 | 8 | **Print watchdog** | uses #6 on a timer | — | Depends on #6 and on a camera feed | 3 |
 | 9 | **Body fit from a photo** | `facebook/sam-3d-body-dinov3` | SAM licence, gated | Blocked until the user accepts the licence on Hugging Face; opt-in only | 3 |
 
@@ -60,6 +60,7 @@ done.
 | **Document search agent** | #4 | `docsearch.rs`, `docsearch_bridge.py`, `install_docsearch.sh`, `docs/specs/ai-local/document-search.md` | Topic questions about this repository's own specs return the right file in the top three |
 | **Photo cut-out agent** | #5 | `cutout.rs`, `sam2_bridge.py`, `install_sam2.sh`, `docs/specs/ai-local/photo-cutout.md` | A drawn disc is masked from one click and the mask overlaps the true disc by at least 90% |
 | **Vision check agent** | #6 | `vision.rs`, `vision_bridge.py`, `install_vision.sh`, `docs/specs/ai-local/vision-check.md` | Drawn test pictures: the count of squares and the colour of a circle come back right |
+| **Sketch agent**, finished by the lead | #7 | `sketch.rs`, `sketch_bridge.py`, `install_sketch.sh`, `docs/specs/ai-local/sketch-from-words.md` | A prompt for a red ball on white gives a picture that is red in the middle and white in the corners |
 
 ## What changed from the plan in wave 2
 
@@ -72,6 +73,21 @@ done.
   pages and complex layouts aren't read.
 * **Photo cut-out (#5)** runs SAM 2.1 through the `transformers` package, not
   the model's own package.
+
+## Wave 3
+
+* **Sketch from words (#7)** is built. The real model drew the test picture on
+  2026-11-16 (7.8 GB of GPU memory, 16.7 GB of RAM, parts moved to the GPU one
+  at a time). The download is the 15 GB of pipeline folders, not the whole
+  24 GB repository. The agent wrote the node, bridge and install script but did
+  not run the real model; the lead ran it and wrote the spec. The first real
+  run timed out because the install drive was saturated by other jobs, so the
+  passing run read a checksum-matched copy of the weights from the internal
+  drive.
+* **Print watchdog (#8)** is not started. It needs photos or a feed from the
+  printer's camera to test against, and none exists yet.
+* **Body fit from a photo (#9)** is not started. The model is gated: the user
+  has to accept its licence on Hugging Face first, and it would be opt-in.
 
 The README's **Local AI** table is updated by the session that maintains the
 README, one row per addition, once that addition is verified.

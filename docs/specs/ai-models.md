@@ -199,6 +199,24 @@ The vision answer is labelled **"AI description: a hint, not a measurement"**
 and no acceptance gate reads it. Search scores are similarity, not proof that a
 passage is correct.
 
+### Third group (added 2026-11-16)
+
+| Node | Id | Model | Contract |
+|---|---|---|---|
+| AI Sketch from Words | `geo.ai_sketch_from_words` | FLUX.2-klein-4B (Apache-2.0) | [ai-local/sketch-from-words.md](ai-local/sketch-from-words.md) |
+
+Checked on this PC on 2026-11-16 with the real model, one run in a fresh work
+folder: a prompt for a red ball on a white background, 512 x 512, 4 steps. The
+picture's middle was red (R 245, G 16, B 24) and its corners white. Peak GPU
+7.8 GB, peak RAM 16.7 GB, with the model's parts moved to the GPU one at a time
+because 14.9 GB of weights don't fit beside other work on a 16 GB card. Loading
+took 110 s and drawing 228 s. The whole call took 2553 s because the
+environment's drive was saturated by other jobs; a quiet machine was not
+measured. One prompt only: picture quality on design prompts is not assessed.
+
+The picture is labelled **"AI picture: a concept sketch, not a design or a
+measurement"** and no acceptance gate reads it.
+
 ## Safety behaviour
 
 * Free GPU memory (`nvidia-smi`) and RAM in the model environment (`free -m`)
