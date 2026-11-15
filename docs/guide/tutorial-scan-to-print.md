@@ -228,7 +228,7 @@ You should see:
 
 ```text
 package_3mf (print.package_write)
-  file: ...\n14_package_3mf\parts.3mf
+  file: .../n14_package_3mf/parts.3mf
   report: Package writer [PASS]
     part_count = 12 count
     triangle_count = 29238 count

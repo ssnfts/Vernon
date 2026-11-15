@@ -159,6 +159,13 @@ fn fmt_num(v: f64) -> String {
     vernon_core::units::fmt_value(v)
 }
 
+/// A path for printing with forward slashes. Per-node work folders are named
+/// `n<id>_<name>`, so a Windows path printed with backslashes reads
+/// `...\n20_mesh_dicts`, which looks like a literal `\n` escape.
+fn display_path(p: &Path) -> String {
+    p.display().to_string().replace('\\', "/")
+}
+
 /// One-line description of a data value.
 pub fn describe(data: &Data) -> String {
     match data {
@@ -168,7 +175,7 @@ pub fn describe(data: &Data) -> String {
             g.prims.len()
         ),
         Data::Report(r) => format!("report: {} ({} metrics)", r.title, r.metrics.len()),
-        Data::File(p) => format!("file: {}", p.display()),
+        Data::File(p) => format!("file: {}", display_path(p)),
         Data::Json(v) => {
             let t = v.to_string();
             if t.len() > 100 {
@@ -568,5 +575,13 @@ mod format_tests {
         assert!(text.contains("area = 3 mm²"), "{text}");
         assert!(!text.contains("-0"), "{text}");
         assert!(text.contains("flag = 1 \n"), "{text:?}");
+    }
+
+    #[test]
+    fn file_paths_print_without_backslash_n() {
+        let p = std::path::PathBuf::from(r"C:\work\n20_mesh_dicts\case");
+        let text = describe(&Data::File(p));
+        assert_eq!(text, "file: C:/work/n20_mesh_dicts/case");
+        assert!(!text.contains("\\n"), "{text}");
     }
 }
