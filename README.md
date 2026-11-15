@@ -10,7 +10,7 @@ command panel, modifier stack) over a procedural node graph. It runs
 offline, is Apache-2.0 licensed for commercial use, and can be driven by a
 local AI agent.
 
-> **Status: pre-alpha.** 201 of 204 nodes run their real algorithm and the
+> **Status: pre-alpha.** 204 of 207 nodes run their real algorithm and the
 > full pipeline cooks on a synthetic part. No binary release exists yet, no
 > real scanned part has been taken through to print, and the CFD stage has no
 > validated result. See [Validation status](#validation-status) and
@@ -133,8 +133,8 @@ but not solved); `--ignore-gates` keeps the exit code at 0.
 
 | Stage | Implemented | White-box |
 |---|---:|---:|
-| Geometry (including AI parts from an image and AI speech) | 24 | 0 |
-| 1 Capture | 22 | 0 |
+| Geometry (including AI parts from an image, AI speech, document search and vision check) | 26 | 0 |
+| 1 Capture (including the AI photo cut-out) | 23 | 0 |
 | 2 Clean / Align | 26 | 0 |
 | 3 Mesh → Surface | 23 | 0 |
 | 4 Split / Print | 25 | 1 |
@@ -143,7 +143,7 @@ but not solved); `--ignore-gates` keeps the exit code at 0.
 | 7 Solar / Heat | 14 | 0 |
 | 7b Flatten | 6 | 0 |
 | 8 Performance | 19 | 0 |
-| **All** | **201** | **3** |
+| **All** | **204** | **3** |
 
 A *white-box* node has its final ports and parameters but a placeholder
 algorithm; it cooks and says so in a warning. The full catalogue, with what
@@ -163,6 +163,9 @@ their weights are never bundled, and nothing downloads without your say.
 | **AI Convergence Forecast** (`cfd.ai_convergence_forecast`) | Forecasts where a residual or other number series is heading (Chronos-2, Apache-2.0) | Works on a synthetic series; advice only, no gate reads it; not yet run on a real solver log |
 | **AI Speech from Text** (`geo.ai_text_to_speech`) | Text becomes a 24 kHz WAV file (Kokoro-82M, Apache-2.0) | Works; runs on the CPU, about 1.2 GB of RAM |
 | **AI Text from Speech** (`geo.ai_speech_to_text`) | An audio file becomes text with timed segments (Whisper large-v3-turbo, MIT) | Works; about 1.8 GB of GPU memory; only FLAC and WAV input tested |
+| **AI Document Search** (`geo.ai_document_search`) | Finds the passages in a folder of .md, .txt and .pdf files that best match a question (bge-m3, MIT) | Works; 5 of 6 test questions found the right file in the top three; about 2.6 GB of GPU memory; misses single-number lookups; no PDF tested |
+| **AI Photo Cut-out** (`capture.ai_photo_cutout`) | Masks one part in a photo from a click or a box (SAM 2.1 large, Apache-2.0) | Works on a drawn test picture (overlap 0.99 with the true shape); about 1.3 GB of GPU memory; no real photograph tested |
+| **AI Vision Check** (`geo.ai_vision_check`) | Answers a question about a picture (Qwen3-VL 4B, Apache-2.0) | Works on drawn test pictures; about 8.4 GB of GPU memory; a hint, not a measurement, and no gate reads it; mesh defects untested |
 | **In-app agent chat** | Builds and cooks graphs through typed tools; speaks the OpenAI-compatible API, so a local llama.cpp or Ollama server works | Works; no bundled model yet |
 | **MCP server** (`vernon-cli mcp`) | The same tools for any MCP client | Works |
 
@@ -172,10 +175,11 @@ no drag or lift figure, and no acceptance gate reads it. Set
 node to use it. Supported inputs, licences, measured memory and time, and
 the limits are in [docs/specs/ai-models.md](docs/specs/ai-models.md).
 
-The speech and forecast nodes each have a spec in
+The speech, forecast, search, cut-out and vision nodes each have a spec in
 [docs/specs/ai-local/](docs/specs/ai-local/) and a one-off install script you
 run yourself (`scripts/ai/install_kokoro.sh`, `install_whisper.sh`,
-`install_chronos.sh`, each with `--yes`); the nodes never download anything.
+`install_chronos.sh`, `install_docsearch.sh`, `install_sam2.sh`,
+`install_vision.sh`, each with `--yes`); the nodes never download anything.
 The speech nodes read and write files; the app has no microphone button yet.
 In a round trip (one node speaks, the other writes it back) 15 of 15 words
 matched. All figures are single runs on the reference PC.
