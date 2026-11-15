@@ -419,6 +419,42 @@ history in `docs/CONTINUATION.md` still names the old location
 written. The grid step resumes from `-a`'s 7 CTU checkpoint (`-c`, then `-d`,
 `-e` as needed).
 
+**Grid-step results (2026-11-15).** Steps ran 2.8–3.1 s on the internal
+disk.
+
+| Run | Window (CTU) | Cd ± s.e. | Outcome |
+|---|---|---|---|
+| `-c` (from `-a`) | 7–15 | 0.261 ± 0.006 | budget stop, trend 1.7%/CTU |
+| `-d` (from `-c`) | 15–21 | 0.241 ± 0.001 | main window stationary, **half-step check failed**: Δt/2 gave 0.237 ± 0.0003, difference 0.0042 against 0.0025 allowed |
+| `-e` (from `-d`) | 21–29 | 0.245 ± 0.004 | budget stop, trend 1.0–1.3%/CTU (rising) |
+
+So on the 0.9M-cell mesh the drag settles near Cd 0.24–0.245, **lower than
+the 0.5M-cell mesh's 0.267 and further from the reference** (−12 to −14%
+against the dataset's 0.279). The dataset's own refinement lowers Cd toward
+0.279 from above (0.300 → 0.279); ours lowers it from below, away from the
+reference. The 0.5M agreement (−4.3%) was therefore partly coincidental, as
+cautioned above. Two signs of what is wrong on the finer mesh:
+
+- **Time step.** At Δt = CTU/100 the peak Courant number rises from 11
+  (0.5M) to 20 (0.9M) in the wall layers, and the half-step segment no longer
+  agrees with the main window. The fixed CTU/100 step is not converged on
+  this mesh; a Δt/2 main run would double the cost per hour.
+- **Wall treatment.** The average body y+ falls from 72 (0.5M) to 55 (0.9M),
+  min about 2, max 395–622: the first cell straddles the buffer layer over
+  part of the body, where wall functions are least reliable, and refining
+  moves more of the body there.
+
+What the fast tier can and cannot say for this body: at 0.5M cells it lands
+within 5% of a sourced reference with the same method, but that agreement
+does not survive one grid step, so it is not a validated value. Making the
+grid study meaningful needs, in order of cost: the time step tied to the
+mesh (Δt from a wake Courant target, not a fixed CTU/100) with the half-step
+check as the gate it already is; layer settings that keep y+ in the
+wall-function range as cells shrink (or y+ ≈ 1 layers, which need the 1.5M+
+cells the spec gives for low-Re); and then a full-body case to remove the
+half-model approximation. Each is a bounded code or setup change; none is
+an averaging problem.
+
 What this adds: the honest fast-tier statement for this body is a trend,
 not a value: the wash-out needed is longer than the budget allows at 0.5M
 cells and 16 ranks. Any pass within the hour would need either a converged

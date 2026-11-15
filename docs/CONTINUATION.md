@@ -93,6 +93,19 @@ evidence. For current commands use docs/SETUP.md and docs/CFD-RUNBOOK.md.
   length segment and was stopped), and the harness stops on a plan that would
   not advance. WSL dropped once more mid-run (image on E:). Next useful test:
   a 1M-cell grid step on this body.
+- **Grid step and WSL move (2026-11-14/15).** The Vernon WSL image moved
+  from the external E: drive to `C:\WSL\Vernon-Ubuntu-24.04` (user-approved;
+  `wsl --manage --move`, 100 s; only that distribution stopped). The harness
+  now checkpoints a budget-stopped run's last complete write. On the
+  0.9M-cell mesh (dx0 0.0708) the validation body settles near **Cd
+  0.24–0.245** (`-d` 0.241 over 15–21 CTU, half-step check failed; `-e`
+  0.245 over 21–29, still trending): lower than the 0.5M mesh's 0.267 and
+  12–14% under the dataset's 0.279, while the dataset's refinement converges
+  from above. The 0.5M agreement does not survive the grid step. Likely
+  causes: the fixed Δt = CTU/100 (Courant peak 11 → 20, half-step
+  disagreement) and wall-function y+ (body mean 72 → 55, min ~2). Next work
+  is setup, not averaging: Δt from a wake Courant target, layer settings for
+  y+, then a full body. Details in the plan's section 6.
 - Nothing was launched through the runner; no gate was lowered; no run was
   relabelled.
 
