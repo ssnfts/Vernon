@@ -106,6 +106,13 @@ evidence. For current commands use docs/SETUP.md and docs/CFD-RUNBOOK.md.
   disagreement) and wall-function y+ (body mean 72 → 55, min ~2). Next work
   is setup, not averaging: Δt from a wake Courant target, layer settings for
   y+, then a full body. Details in the plan's section 6.
+- **Time step from a wake Courant target (2026-11-15).** Harness option
+  `VERNON_FAST_WAKE_CO` (step from the near-wake cell size; unit test) and
+  seeded runs may change step (checked at the seed's step, then switched,
+  0.5 CTU adjustment). `dx0708-…-f` (0.9M, Courant 1 → 118 steps/CTU):
+  **PASS, Cd 0.245 ± 0.002 (−12.2%)**, half-step agrees. Same value as at
+  CTU/100, so the time step was not the cause of the low drag on the finer
+  mesh; wall treatment (y+) and the half model remain.
 - Nothing was launched through the runner; no gate was lowered; no run was
   relabelled.
 

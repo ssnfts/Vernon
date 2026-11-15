@@ -733,6 +733,9 @@ struct FastTier {
     /// bodies without wheels or supports, which preparation would otherwise
     /// drop onto the ground.
     keep_clearance: bool,
+    /// Courant number to hold in the near-wake cells (free-stream speed over
+    /// the near-wake cell size); sets the fixed time step when given.
+    wake_co: Option<f64>,
 }
 
 impl FastTier {
@@ -759,9 +762,12 @@ impl FastTier {
             checkpoint_dir: get("VERNON_FAST_CHECKPOINT_DIR"),
             preserve_case: get("VERNON_FAST_PRESERVE_CASE"),
             keep_clearance: get("VERNON_FAST_KEEP_CLEARANCE").as_deref() == Some("1"),
+            wake_co: get("VERNON_FAST_WAKE_CO").map(|v| v.trim().parse().expect("VERNON_FAST_WAKE_CO must be a number")),
         };
         assert!(cfg.preserve_case.is_none() || (cfg.checkpoint_dir.is_some() && cfg.seed_dir.is_none()), "preserving needs VERNON_FAST_CHECKPOINT_DIR and no seed");
         assert!(cfg.budget_min > 0.0 && cfg.budget_min <= 60.0, "the fast tier is bounded at one hour");
+        assert!(cfg.wake_co.is_none() || cfg.delta_t_s.is_none(), "give a wake Courant target or a time step, not both");
+        assert!(cfg.wake_co.is_none_or(|c| c > 0.0 && c <= 4.0), "the wake Courant target must lie in (0, 4]");
         assert!((500..=2000).contains(&cfg.steady_iter), "the steady start runs 500..=2000 iterations");
         cfg
     }
@@ -806,6 +812,31 @@ fn fast_step(length_m: f64, u_ms: f64, requested: Option<f64>) -> (f64, f64, f64
     let ctu = length_m / u_ms;
     let steps_per_ctu = (ctu / requested.unwrap_or(ctu / 100.0)).round().max(10.0);
     (ctu, steps_per_ctu, ctu / steps_per_ctu)
+}
+
+/// Refinement level of the near-wake box in every fast-tier mesh.
+const NEAR_WAKE_LEVEL: i32 = 3;
+
+/// The fixed time step that holds `co` in cells of size `cell_m` at the
+/// free-stream speed: an integer number of steps per convective unit, rounded
+/// up so the Courant number never exceeds the target.
+fn courant_step(ctu: f64, cell_m: f64, u_ms: f64, co: f64) -> (f64, f64) {
+    let steps_per_ctu = (ctu * u_ms / (co * cell_m) - 1e-9).ceil().max(10.0);
+    (steps_per_ctu, ctu / steps_per_ctu)
+}
+
+#[test]
+fn fast_tier_courant_step_follows_the_wake_cell_size() {
+    let ctu = 1.044 / 40.0;
+    // 0.5M mesh: dx0 0.092, near-wake level 3: 11.5 mm cells; Co 1 needs 91 steps per CTU.
+    let (steps, dt) = courant_step(ctu, 0.092 / 8.0, 40.0, 1.0);
+    assert_eq!(steps, 91.0);
+    assert!(40.0 * dt / (0.092 / 8.0) <= 1.0 + 1e-12);
+    // 0.9M mesh: dx0 0.0708: 8.85 mm cells; 118 steps per CTU, and twice that for Co 0.5.
+    assert_eq!(courant_step(ctu, 0.0708 / 8.0, 40.0, 1.0).0, 118.0);
+    assert_eq!(courant_step(ctu, 0.0708 / 8.0, 40.0, 0.5).0, 236.0);
+    // An exact fit is not rounded up a step.
+    assert_eq!(courant_step(0.1, 0.004, 40.0, 1.0).0, 1000.0);
 }
 
 /// Move a body so its nose is at x = 0 and its centre line at y = 0,
@@ -989,7 +1020,7 @@ fn real_openfoam_fast_tier_run() {
         ("body_min", ParamValue::Int(4)),
         ("body_max", ParamValue::Int(4)),
         ("underbody_level", ParamValue::Int(3)),
-        ("near_wake_level", ParamValue::Int(3)),
+        ("near_wake_level", ParamValue::Int(i64::from(NEAR_WAKE_LEVEL))),
         ("far_wake_level", ParamValue::Int(2)),
     ]);
     let bounded = |processes: i64, minutes: i64| {
@@ -1001,7 +1032,22 @@ fn real_openfoam_fast_tier_run() {
     // Identity of this run, as a checkpoint must match it: the body, every
     // mesh input, the solver recipe (filled in once the case is written) and
     // the flow state. `crate::fast_seed` compares these before any seed is used.
-    let (ctu, steps_per_ctu, dt) = fast_step(length, cfg.u_ms, cfg.delta_t_s);
+    // Time step: from a wake Courant target when given (the near-wake cells,
+    // free-stream speed), else an explicit step, else CTU/100 (the rule every
+    // earlier checkpoint was written with).
+    let wake_cell_m = cfg.dx0_m / 2f64.powi(NEAR_WAKE_LEVEL);
+    let (ctu, steps_per_ctu, dt, step_policy) = match cfg.wake_co {
+        Some(co) => {
+            let ctu = length / cfg.u_ms;
+            let (steps, dt) = courant_step(ctu, wake_cell_m, cfg.u_ms, co);
+            (ctu, steps, dt, format!("wake Courant {co} on {:.2} mm near-wake cells", 1000.0 * wake_cell_m))
+        }
+        None => {
+            let (ctu, steps, dt) = fast_step(length, cfg.u_ms, cfg.delta_t_s);
+            (ctu, steps, dt, if cfg.delta_t_s.is_some() { "explicit".to_string() } else { "CTU/100".to_string() })
+        }
+    };
+    println!("time step: {dt:.6e} s ({steps_per_ctu} per CTU, {step_policy}; free-stream Courant in the near wake {:.2})", cfg.u_ms * dt / wake_cell_m);
     let body_key = crate::fast_seed::body_key(&cfg.geometry).unwrap();
     let mut mesh_inputs = serde_json::json!({
         "body": body_key, "angle_deg": if is_slant { Some(cfg.angle_deg) } else { None },
@@ -1013,15 +1059,16 @@ fn real_openfoam_fast_tier_run() {
         mesh_inputs["keep_clearance"] = serde_json::json!(true);
     }
     let mesh_inputs_fnv1a64 = crate::fast_seed::mesh_inputs_fingerprint(&mesh_inputs);
-    let identity = |recipe: &str| crate::fast_seed::SeedIdentity {
+    let identity_at = |recipe: &str, step: f64| crate::fast_seed::SeedIdentity {
         body: body_key.clone(), angle_deg: if is_slant { Some(cfg.angle_deg) } else { None }, np: cfg.np,
         mesh_inputs_fnv1a64: mesh_inputs_fnv1a64.clone(), recipe_fnv1a64: recipe.to_string(),
-        u_ms: cfg.u_ms, nu: cfg.nu, rho, delta_t_s: dt, ctu_s: ctu,
+        u_ms: cfg.u_ms, nu: cfg.nu, rho, delta_t_s: step, ctu_s: ctu,
     };
+    let identity = |recipe: &str| identity_at(recipe, dt);
     // Fast-tier rule (user decision 2026-11-12): stationarity and per-step
     // convergence are gated; ESS and the standard error are reported with
     // the mean as its interval.
-    let p = crate::transient::TransientParams::fast_tier(ctu);
+    let mut p = crate::transient::TransientParams::fast_tier(ctu);
 
     // Checkpoint an already finished run (no solver runs): its latest written
     // time, with the identity this harness computes for the same settings.
@@ -1050,11 +1097,25 @@ fn real_openfoam_fast_tier_run() {
     // Start: a verified checkpoint of the same body and settings, or a mesh
     // and a short steady solution.
     let seed = cfg.seed_dir.as_deref().map(|d| crate::fast_seed::Seed::open(std::path::Path::new(d), cfg.np as usize).unwrap_or_else(|e| panic!("seed: {e}")));
+    // A seed written with another time step: the state is checked against the
+    // seed's own step (everything else must match), then restarted at this
+    // run's step after an adjustment of half a convective unit, as the
+    // half-step segment does. Statistics use only samples after it.
+    let seed_step = seed.as_ref().map(|s| s.record.identity.delta_t_s);
+    let step_change = seed_step.filter(|s| (s - dt).abs() > 1e-12 * dt);
     let cont = match &seed {
+        Some(s) if step_change.is_some() => {
+            p.washout_ctu = 0.5;
+            crate::transient::Continuation::fresh(s.record.time_s, &p)
+        }
         Some(s) => crate::transient::Continuation::resume(s.record.transient_start_s, s.record.time_s, &p),
         None => crate::transient::Continuation::fresh(0.0, &p),
     }
     .unwrap_or_else(|e| panic!("continuation: {e}"));
+    // Convective units on the solution's own clock (since its first switch off
+    // the steady start), whatever the continuation counts from.
+    let chain_start_s = seed.as_ref().map_or(0.0, |s| s.record.transient_start_s);
+    let chain_ctu = |t: f64| (t - chain_start_s) / ctu;
     let first_end = cont.first_end_s(&p);
     let washout_s = cont.window_start_s;
     let (mesh_case, mesh_row, start_row, steady_dir) = match &seed {
@@ -1125,8 +1186,10 @@ fn real_openfoam_fast_tier_run() {
     let ddes = cook(&reg, "cfd.case_setup", vec![Some(mesh_case), j(&air), j(&bc[0]), None, reference.clone(), j(&domain[0])], &[
         ("solver_mode", ParamValue::Str("transient_ddes".into())),
         ("end_time_s", ParamValue::Float(first_end)),
-        ("delta_t_s", ParamValue::Float(dt)),
-        ("max_delta_t_s", ParamValue::Float(dt)),
+        // Written at the seed's step when it differs, so the recipe can be
+        // checked against the seed; switched to this run's step after.
+        ("delta_t_s", ParamValue::Float(seed_step.unwrap_or(dt))),
+        ("max_delta_t_s", ParamValue::Float(seed_step.unwrap_or(dt))),
         ("time_step_mode", ParamValue::Str("fixed".into())),
         ("write_interval_s", ParamValue::Float(ctu)),
         ("average_from_s", ParamValue::Float(washout_s)),
@@ -1140,11 +1203,11 @@ fn real_openfoam_fast_tier_run() {
     let half_average_ctu = 1.0;
     let half_total_ctu = 0.5 + half_average_ctu;
     let case = ddes[0].as_file().unwrap().clone();
-    let recipe = crate::fast_seed::recipe_fingerprint(&case).unwrap();
+    let seed_recipe = crate::fast_seed::recipe_fingerprint(&case).unwrap();
     let mut seeded = Vec::new();
     match (&seed, &steady_dir) {
         (Some(s), _) => {
-            s.check(&identity(&recipe), &cfg.label).unwrap_or_else(|e| panic!("{e}"));
+            s.check(&identity_at(&seed_recipe, s.record.identity.delta_t_s), &cfg.label).unwrap_or_else(|e| panic!("{e}"));
             seeded = s.install(&case).unwrap_or_else(|e| panic!("install: {e}"));
             println!("installed {} restart files from {}", seeded.len(), s.record.label);
         }
@@ -1162,6 +1225,19 @@ fn real_openfoam_fast_tier_run() {
         }
         (None, None) => unreachable!(),
     }
+    if let (Some(old), Some(s)) = (step_change, &seed) {
+        // The restart time records carry the old step and would override
+        // controlDict; without them the solver takes this run's step.
+        let text = std::fs::read_to_string(case.join("system/controlDict")).unwrap();
+        // The fixed-step dictionary has no maxDeltaT; deltaT is the only step.
+        std::fs::write(case.join("system/controlDict"), set_dict_entry(&text, "deltaT", &format!("{dt}"))).unwrap();
+        for r in 0..cfg.np {
+            let _ = std::fs::remove_file(case.join(format!("processor{r}")).join(&s.time_name).join("uniform/time"));
+        }
+        println!("time step changed at restart: {old:.6e} s -> {dt:.6e} s; {} CTU of adjustment before averaging", p.washout_ctu);
+    }
+    // This run's own recipe (with its step) is what its checkpoint carries.
+    let recipe = crate::fast_seed::recipe_fingerprint(&case).unwrap();
 
     let var = |k: &str| std::env::var(k).unwrap_or_else(|_| panic!("set {k}"));
     let wsl = crate::extproc::WslOpts { distribution: var("VERNON_WSL_DISTRO"), user: var("VERNON_WSL_USER"), environment_file: var("VERNON_WSL_ENV_FILE") };
@@ -1260,8 +1336,8 @@ fn real_openfoam_fast_tier_run() {
             chain.push(s.record.label.clone());
         }
         let record = crate::fast_seed::SeedRecord {
-            label: cfg.label.clone(), identity: identity(&recipe), transient_start_s: cont.switch_time_s, time_s: time,
-            ctu_reached: cont.cumulative_ctu(time, &p), seed_chain: chain,
+            label: cfg.label.clone(), identity: identity(&recipe), transient_start_s: chain_start_s, time_s: time,
+            ctu_reached: chain_ctu(time), seed_chain: chain,
             stop: if stop_reason.is_empty() { format!("{:?}", report.verdict) } else { stop_reason.clone() },
             mesh: mesh_row.clone(),
         };
@@ -1353,8 +1429,10 @@ fn real_openfoam_fast_tier_run() {
         "ctu_s": ctu, "delta_t_s": dt, "steps_per_ctu": steps_per_ctu, "seconds_per_step": seconds_per_step,
         "acceptance": p, "segments": segments, "assessment": report, "per_step": step_report, "step_rule": step_rule,
         "half_step": half, "half_step_agreement": half_agreement,
-        "continuation": cont, "averaged_from_ctu": cont.cumulative_ctu(report.window_start_s, &p),
-        "averaged_to_ctu": cont.cumulative_ctu(report.window_end_s, &p), "checkpoint": checkpoint,
+        "continuation": cont, "averaged_from_ctu": chain_ctu(report.window_start_s),
+        "averaged_to_ctu": chain_ctu(report.window_end_s),
+        "time_step": {"rule": step_policy, "delta_t_s": dt, "steps_per_ctu": steps_per_ctu, "near_wake_cell_m": wake_cell_m,
+            "near_wake_free_stream_courant": cfg.u_ms * dt / wake_cell_m, "changed_at_restart_from_s": step_change}, "checkpoint": checkpoint,
     });
     let verdict_row = serde_json::json!({
         "stop_reason": stop_reason, "gate_passed": gate_passed,

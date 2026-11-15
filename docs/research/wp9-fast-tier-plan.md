@@ -455,6 +455,33 @@ cells the spec gives for low-Re); and then a full-body case to remove the
 half-model approximation. Each is a bounded code or setup change; none is
 an averaging problem.
 
+**2026-11-15, time step from a wake Courant target (user: "Time step from
+Courant").** Harness changes (unit-tested): `VERNON_FAST_WAKE_CO` sets the
+fixed step so the free-stream Courant number in the near-wake cells
+(dx0 / 2³) does not exceed the target, rounded up to an integer number of
+steps per CTU (`courant_step`); without it the old CTU/100 rule stands, so
+earlier checkpoints stay valid. A seeded run may now change its step: the
+case is written at the seed's step so the full identity and recipe check
+still applies, then switched to the new step, the restart time records are
+removed so the solver takes it, and half a convective unit of adjustment
+precedes the averaging. The row records the step policy and the change.
+
+**`fast-ahmedml25-dx0708-20261115-f` (0.9M mesh, seeded from `-e` at 29
+CTU, wake Courant 1 → 118 steps per CTU, Δt 2.21e-4 s): PASS, 56 min. Cd
+0.245 ± 0.002 over cumulative 29.5–35.5 CTU, −12.2% against the dataset's
+0.279.** Trend 0.22%/CTU and halves 1.3%, neither significant; ESS 11.7;
+per-step rule on all 709 steps (Courant peak 17.0 in the wall layers);
+half-step 0.240 ± 0.008, difference 0.005, allowed 0.015: agrees.
+
+**What the time step changed.** The value did not move: 0.241–0.245 at
+CTU/100 (`-d`, `-e`) and 0.245 at the wake-Courant step. The half-step check
+now agrees, but partly because its own interval is wider here (0.008 against
+0.0003 in `-d`); its windows also follow the main window in time, so slow
+wake drift and step sensitivity are mixed in one test. The low drag on the
+finer mesh is not a time-step effect. That leaves the wall treatment (body
+y+ mean 55 with a minimum near 2) and the half model as the candidates, in
+that order of cost.
+
 What this adds: the honest fast-tier statement for this body is a trend,
 not a value: the wash-out needed is longer than the budget allows at 0.5M
 cells and 16 ranks. Any pass within the hour would need either a converged
