@@ -11,10 +11,11 @@ use vernon_core::{Metric, Report, Severity};
 use vernon_graph::node::inputs;
 use vernon_graph::{CookContext, CookError, CookResult, Data, DataKind, NodeOp, NodeTypeInfo, ParamSpec, Params, PortSpec};
 
-use crate::common::{info, material, path_or_default, placeholder, printer_bed, v3_json, work_dir, MATERIAL_IDS, PRINTER_IDS};
+use crate::common::{info, material, path_or_default, printer_bed, v3_json, work_dir, MATERIAL_IDS, PRINTER_IDS};
 use crate::gcode::{self, SummaryOptions, FLAVOURS};
 use crate::mesh;
 use crate::package::{self, UNIT_IDS};
+use crate::script_bridge::{self, Insertion};
 use crate::slicer::{self, ProfileSpec, SliceArgs};
 use crate::upload::{self, UploadParams};
 
@@ -221,7 +222,31 @@ impl NodeOp for ProfileBuild {
             rep.metric("equivalent_filament_diameter_mm", Metric::new(slicer::pellet_diameter(spec.pellet_coef), "mm"));
         }
         rep.metric("round_trip_validated", Metric::new(1.0, "bool"));
-        rep.note(Severity::Info, "Preset subset parsed and validated against documented fields. A successful import by an external slicer has not been checked.");
+        if ini {
+            rep.note(Severity::Info, "INI subset parsed and validated against its documented fields; the key schema covers JSON presets only.");
+        } else {
+            // Check every written key against the key schema of the slicer version it was compared with.
+            let (mut unknown, mut mistyped) = (0usize, 0usize);
+            let mut unknown_keys = Vec::new();
+            for (path, kind) in paths.iter().zip(["process", "printer", "filament"]) {
+                let value: Value = serde_json::from_str(&std::fs::read_to_string(path)?).map_err(|e| ctx.fail(e.to_string()))?;
+                for f in crate::profile_schema::validate_json_preset(&value) {
+                    if f.kind == crate::profile_schema::FindingKind::UnknownKey {
+                        unknown += 1;
+                        unknown_keys.push(format!("{kind}:{}", f.key));
+                    } else {
+                        mistyped += 1;
+                        rep.note(Severity::Error, format!("{kind} preset key `{}`: {}", f.key, f.message));
+                    }
+                }
+            }
+            if !unknown_keys.is_empty() {
+                rep.note(Severity::Warning, format!("preset keys not known to the checked slicer version (written, but it may ignore them): {}", unknown_keys.join(", ")));
+            }
+            rep.metric("preset_unknown_keys", Metric::new(unknown as f64, "count"));
+            rep.metric("preset_mistyped_keys", Metric::new(mistyped as f64, "count").with_limit(0.0, true));
+            rep.note(Severity::Info, "Preset keys checked against the key list of OrcaSlicer 2.4.2. A successful import by an external slicer has not been checked here.");
+        }
         let out = json!({
             "process": s(&paths[0]), "printer": s(&paths[1]), "filament": s(&paths[2]),
             "load_settings": [s(&paths[0]), s(&paths[1])], "load_filaments": [s(&paths[2])],
@@ -579,26 +604,73 @@ impl NodeOp for RemoteUpload {
 
 pub struct ScriptBridge;
 
+/// Insertions from a connected graph JSON (`{"insertions": [{"layer": 10, "gcode": "M600"}]}`).
+fn insertions_from_json(v: &Value) -> Result<Vec<Insertion>, String> {
+    let list = v.get("insertions").and_then(Value::as_array).ok_or("the connected JSON needs an `insertions` list")?;
+    list.iter()
+        .enumerate()
+        .map(|(i, e)| {
+            let layer = e.get("layer").and_then(Value::as_u64).and_then(|l| u32::try_from(l).ok());
+            let gcode = e.get("gcode").and_then(Value::as_str);
+            match (layer, gcode) {
+                (Some(layer), Some(g)) => Ok(Insertion { layer, gcode: g.to_string() }),
+                _ => Err(format!("insertion {i} needs a whole `layer` number and a `gcode` text")),
+            }
+        })
+        .collect()
+}
+
 impl NodeOp for ScriptBridge {
     fn info(&self) -> NodeTypeInfo {
-        info("print.script_bridge", "Script Bridge", "Write a placeholder script for the 2.5.0-alpha Python plugin API, checked against public documentation on 2026-10-28. The interface remains unstable; hooks are not implemented.")
-            .emulates("slicer scripting plugin interface")
+        info("print.script_bridge", "Script Bridge", "Write a post-processing script for the slicer that inserts G-code lines (a pause, a message, a fan change) at the start of chosen layers, plus the setting value that runs it. The script edits the exported G-code in place and writes a result file.")
+            .emulates("slicer post-processing script interface")
+            .implemented()
             .input(PortSpec::optional("graph", DataKind::Json))
-            .param(ParamSpec::string("name", "Plugin name", "vernon_hook").help("File name stem of the script."))
+            .param(ParamSpec::string("name", "Script name", "vernon_hook").help("File name stem of the script."))
+            .param(ParamSpec::string("layers", "Layers", "10").help("Layer numbers (counting from 1) where the lines go, separated by commas. Ignored when a JSON list is connected."))
+            .param(ParamSpec::string("gcode", "G-code lines", "M117 layer {layer}").help("Lines to insert before each layer; {layer} becomes the layer number. Write several lines with a | between them."))
+            .param(ParamSpec::string("python", "Python program", "python").help("Program that runs the script when the slicer calls it (Python 3, standard library only)."))
             .output(PortSpec::new("script", DataKind::File))
+            .output(PortSpec::new("setting", DataKind::Json))
             .output(PortSpec::new("report", DataKind::Report))
     }
 
-    fn cook(&self, ctx: &CookContext, _inp: &[Option<Data>], p: &Params) -> CookResult<Vec<Data>> {
+    fn cook(&self, ctx: &CookContext, inp: &[Option<Data>], p: &Params) -> CookResult<Vec<Data>> {
         let stem: String = p.str("name")?.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '_').collect();
         let stem = if stem.is_empty() { "vernon_hook".to_string() } else { stem };
-        let f = work_dir(ctx)?.join(format!("{stem}.py"));
-        let text = "# Example slicer plugin written by Vernon (placeholder).\n# The slicer's plugin interface is still changing, so this file only marks\n# the places where a hook would hand data back to the graph.\n\nHOOKS = [\n    \"slice_finished\",\n    \"gcode_exported\",\n    \"upload_finished\",\n]\n\n\ndef on_event(name, payload):\n    \"\"\"Called by the slicer; Vernon does not run this file itself.\"\"\"\n    return None\n";
-        std::fs::write(&f, text)?;
+        let insertions = if let Some(j) = inp.first().and_then(|d| d.as_ref()).and_then(|d| d.as_json()) {
+            insertions_from_json(j).map_err(|e| ctx.fail(e))?
+        } else {
+            let template = p.str("gcode")?.replace('|', "
+");
+            let mut out = Vec::new();
+            for tok in p.str("layers")?.split(',').map(str::trim).filter(|t| !t.is_empty()) {
+                let layer: u32 = tok.parse().map_err(|_| ctx.fail(format!("`{tok}` is not a layer number")))?;
+                out.push(Insertion { layer, gcode: template.replace("{layer}", &layer.to_string()) });
+            }
+            out
+        };
+        if insertions.is_empty() {
+            return Err(ctx.fail("give at least one layer, or connect a JSON list of insertions"));
+        }
+        let dir = work_dir(ctx)?;
+        let request = dir.join(format!("{stem}_request.json"));
+        let result = dir.join(format!("{stem}_result.json"));
+        let f = dir.join(format!("{stem}.py"));
+        std::fs::write(&request, script_bridge::request_json(&insertions).map_err(|e| ctx.fail(e.to_string()))?)?;
+        std::fs::write(&f, script_bridge::script(&request, &result))?;
+        let python = p.str("python")?.trim();
+        let python = if python.is_empty() { "python" } else { python };
+        let setting = format!("\"{python}\" \"{}\"", f.display());
+        let mut layers: Vec<u32> = insertions.iter().map(|i| i.layer).collect();
+        layers.sort_unstable();
+        layers.dedup();
         let mut rep = Report::new("Script bridge");
-        rep.metric("hook_count", Metric::new(3.0, "count"));
-        placeholder(&mut rep, "writes an inert example; the real node will generate hooks once the slicer's plugin interface is stable");
-        Ok(vec![Data::File(f), Data::report(rep)])
+        rep.metric("insertion_count", Metric::new(insertions.len() as f64, "count"));
+        rep.metric("layer_count", Metric::new(layers.len() as f64, "count"));
+        rep.note(Severity::Info, "Put the setting value into the slicer's post-processing scripts list. The result file named in the JSON output tells afterwards which insertions were applied.");
+        let out = json!({"post_process": [setting], "request": s(&request), "result": s(&result), "script": s(&f)});
+        Ok(vec![Data::File(f), Data::json(out), Data::report(rep)])
     }
 }
 
@@ -657,6 +729,20 @@ mod tests {
         assert_eq!(printer["pellet_modded_printer"], "1");
         assert!((metric(&out[1], "equivalent_filament_diameter_mm") - 1.75).abs() < 1e-3);
         assert!(cook(&ProfileBuild, "prof_bad", &[], &[("layer_height", ParamValue::Float(0.5))]).is_err());
+    }
+
+    #[test]
+    fn profile_builder_reports_unknown_preset_keys_as_a_metric() {
+        let out = cook(&ProfileBuild, "prof_keys", &[], &[]).unwrap();
+        let rep = out[1].as_report().unwrap();
+        assert_eq!(metric(&out[1], "preset_mistyped_keys"), 0.0, "{:?}", rep.notes);
+        assert!(rep.passes());
+        // The four extension keys are the only ones the checked slicer version does not list.
+        assert_eq!(metric(&out[1], "preset_unknown_keys"), crate::profile_schema::PRESET_EXTENSIONS.len() as f64);
+        assert!(rep.notes.iter().any(|(s, t)| *s == Severity::Warning && t.contains("pellet_modded_printer")));
+        // INI presets use another key dialect and are not counted.
+        let ini = cook(&ProfileBuild, "prof_keys_ini", &[], &[("format", ParamValue::Str("ini".into()))]).unwrap();
+        assert!(!ini[1].as_report().unwrap().metrics.contains_key("preset_unknown_keys"));
     }
 
     #[test]
@@ -810,10 +896,44 @@ G1 X10 E1
     }
 
     #[test]
-    fn script_bridge_writes_an_inert_file() {
-        let out = cook(&ScriptBridge, "sb", &[], &[("name", ParamValue::Str("my hook!".into()))]).unwrap();
+    fn script_bridge_writes_a_script_a_request_and_the_setting() {
+        let set = [("name", ParamValue::Str("my hook!".into())), ("layers", ParamValue::Str("2, 5".into())), ("gcode", ParamValue::Str("M117 layer {layer}|M600".into()))];
+        let out = cook(&ScriptBridge, "sb", &[], &set).unwrap();
         let f = out[0].as_file().unwrap();
-        assert!(f.file_name().unwrap().to_string_lossy() == "myhook.py");
-        assert!(std::fs::read_to_string(f).unwrap().contains("HOOKS"));
+        assert_eq!(f.file_name().unwrap().to_string_lossy(), "myhook.py");
+        let j = out[1].as_json().unwrap();
+        let setting = j["post_process"][0].as_str().unwrap();
+        assert!(setting.starts_with("\"python\" \"") && setting.contains("myhook.py"), "{setting}");
+        let req = script_bridge::parse_request(&std::fs::read_to_string(j["request"].as_str().unwrap()).unwrap()).unwrap();
+        assert_eq!(req.iter().map(|i| (i.layer, i.gcode.as_str())).collect::<Vec<_>>(), [(2, "M117 layer 2
+M600"), (5, "M117 layer 5
+M600")]);
+        assert_eq!(metric(&out[2], "insertion_count"), 2.0);
+        // The written script and request apply to a small G-code file.
+        let gcode = tmp("sb_run").join("job.gcode");
+        std::fs::write(&gcode, ";LAYER_CHANGE
+G1 X1
+;LAYER_CHANGE
+G1 X2
+").unwrap();
+        let (text, res) = script_bridge::apply_to_gcode(&std::fs::read_to_string(&gcode).unwrap(), &req);
+        assert!(text.contains("M117 layer 2
+M600
+;LAYER_CHANGE
+G1 X2"));
+        assert_eq!(res[1].status, script_bridge::Status::Failed);
+        assert!(out[2].as_report().unwrap().notes.iter().all(|(_, s)| !s.starts_with("white-box placeholder")));
+    }
+
+    #[test]
+    fn script_bridge_takes_a_json_list_and_rejects_empty_input() {
+        let j = json!({"insertions": [{"layer": 3, "gcode": "M0"}]});
+        let out = cook(&ScriptBridge, "sb_json", &[Some(Data::json(j))], &[("layers", ParamValue::Str("9".into()))]).unwrap();
+        assert_eq!(metric(&out[2], "insertion_count"), 1.0);
+        let req = std::fs::read_to_string(out[1].as_json().unwrap()["request"].as_str().unwrap()).unwrap();
+        assert!(req.contains("\"layer\":3") && !req.contains("\"layer\":9"));
+        assert!(cook(&ScriptBridge, "sb_none", &[], &[("layers", ParamValue::Str("".into()))]).is_err());
+        assert!(cook(&ScriptBridge, "sb_bad", &[], &[("layers", ParamValue::Str("two".into()))]).is_err());
+        assert!(cook(&ScriptBridge, "sb_badjson", &[Some(Data::json(json!({"insertions": [{"layer": 0, "gcode": "M0"}]})))], &[]).is_err());
     }
 }

@@ -96,7 +96,7 @@ fender in one graph.
 | 1 Capture | Import scans (PLY/OBJ/STL/XYZ), scale bars and markers, feature registration, robust multi-scan alignment, scan quality; verified external photogrammetry | 22 | 0 |
 | 2 Clean / Align | Decimate, remesh, outliers, smoothing, ICP alignment, certified conservative wrap, signed deviation with percentile gate | 26 | 0 |
 | 3 Mesh → Surface | Region refinement, field-aligned quad remeshing, connected B-spline layouts, measured subdivision continuity, analytic primitive recognition, sections, loft, thicken, surface deviation, STEP export | 23 | 0 |
-| 4 Split / Print | Projected body-line cuts, bounded partition search, dovetail/dowel/plug keys, strain-screened snap hooks, bed fit, 3MF packages, JSON/INI presets and G-code checks | 25 | 1 |
+| 4 Split / Print | Projected body-line cuts, bounded partition search, dovetail/dowel/plug keys, strain-screened snap hooks, bed fit, 3MF packages, JSON/INI presets and G-code checks | 26 | 0 |
 | 5 Airflow (CFD) | Vehicle prep, frontal area, virtual tunnel, refinement plan, OpenFOAM case writing, convergence, force coefficients, Cp maps, AI aero preview and variant comparison (DoMINO, unvalidated) | 21 | 2 |
 | 6 Structure (FEA) | Printed orthotropic materials with temperature derating, mounts, aero/bump loads, CalculiX decks and results, safety factors | 20 | 0 |
 | 7 Solar / Heat | Sun position, weather files, sky matrix, incident radiation, surface temperature balance vs heat-deflection temperature | 14 | 0 |
