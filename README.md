@@ -10,7 +10,7 @@ command panel, modifier stack) over a procedural node graph. It runs
 offline, is Apache-2.0 licensed for commercial use, and can be driven by a
 local AI agent.
 
-> **Status: pre-alpha.** 205 of 208 nodes run their real algorithm and the
+> **Status: pre-alpha.** 206 of 209 nodes run their real algorithm and the
 > full pipeline cooks on a synthetic part. No binary release exists yet, no
 > real scanned part has been taken through to print, and the CFD stage has no
 > validated result. See [Validation status](#validation-status) and
@@ -137,13 +137,13 @@ but not solved); `--ignore-gates` keeps the exit code at 0.
 | 1 Capture (including the AI photo cut-out) | 23 | 0 |
 | 2 Clean / Align | 26 | 0 |
 | 3 Mesh → Surface | 23 | 0 |
-| 4 Split / Print | 25 | 1 |
+| 4 Split / Print (including the AI print watchdog) | 26 | 1 |
 | 5 Airflow (CFD, including the AI aero preview and convergence forecast) | 22 | 2 |
 | 6 Structure (FEA) | 20 | 0 |
 | 7 Solar / Heat | 14 | 0 |
 | 7b Flatten | 6 | 0 |
 | 8 Performance | 19 | 0 |
-| **All** | **205** | **3** |
+| **All** | **206** | **3** |
 
 A *white-box* node has its final ports and parameters but a placeholder
 algorithm; it cooks and says so in a warning. The full catalogue, with what
@@ -167,6 +167,7 @@ their weights are never bundled, and nothing downloads without your say.
 | **AI Photo Cut-out** (`capture.ai_photo_cutout`) | Masks one part in a photo from a click or a box (SAM 2.1 large, Apache-2.0) | Works on a drawn test picture (overlap 0.99 with the true shape); about 1.3 GB of GPU memory; no real photograph tested |
 | **AI Vision Check** (`geo.ai_vision_check`) | Answers a question about a picture (Qwen3-VL 4B, Apache-2.0) | Works on drawn test pictures; about 8.4 GB of GPU memory; a hint, not a measurement, and no gate reads it; mesh defects untested |
 | **AI Sketch from Words** (`geo.ai_sketch_from_words`) | Draws a concept picture from a text prompt (FLUX.2 klein 4B, Apache-2.0) | Works on one test prompt; about 7.8 GB of GPU memory and 17 GB of RAM (the check asks for 21.4 GB free); labelled "AI picture: a concept sketch, not a design or a measurement"; makes no geometry and no gate reads it |
+| **AI Print Watchdog** (`print.ai_print_watchdog`) | Looks at the newest picture in a printer-camera folder and answers a yes/no question with a verdict: possible failure, looks OK or unclear (Qwen3-VL 4B, Apache-2.0) | Works on drawn test pictures; untested on real print photos, so how well it spots a failed print is unknown; about 8.3 GB of GPU memory; checks once per cook and never stops or pauses a printer; labelled "AI print check: a hint, not a measurement; it never stops a print"; no gate reads it |
 | **In-app agent chat** | Builds and cooks graphs through typed tools; speaks the OpenAI-compatible API, so a local llama.cpp or Ollama server works | Works; no bundled model yet |
 | **MCP server** (`vernon-cli mcp`) | The same tools for any MCP client | Works |
 
@@ -176,11 +177,13 @@ no drag or lift figure, and no acceptance gate reads it. Set
 node to use it. Supported inputs, licences, measured memory and time, and
 the limits are in [docs/specs/ai-models.md](docs/specs/ai-models.md).
 
-The speech, forecast, search, cut-out, vision and sketch nodes each have a spec in
+The speech, forecast, search, cut-out, vision, sketch and print watchdog nodes
+each have a spec in
 [docs/specs/ai-local/](docs/specs/ai-local/) and a one-off install script you
 run yourself (`scripts/ai/install_kokoro.sh`, `install_whisper.sh`,
 `install_chronos.sh`, `install_docsearch.sh`, `install_sam2.sh`,
-`install_vision.sh`, `install_sketch.sh`, each with `--yes`); the nodes never download anything.
+`install_vision.sh`, `install_sketch.sh`, each with `--yes`); the nodes never
+download anything. The print watchdog uses the vision check's model and install.
 The speech nodes read and write files; the app has no microphone button yet.
 In a round trip (one node speaks, the other writes it back) 15 of 15 words
 matched. All figures are single runs on the reference PC.
