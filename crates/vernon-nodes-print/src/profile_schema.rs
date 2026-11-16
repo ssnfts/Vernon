@@ -6,6 +6,16 @@
 //! section where the setting is described. The topics are generic section titles;
 //! exact page URLs are UNVERIFIED and deliberately not recorded here.
 //!
+//! SOURCE CHECK (2026-11-15): every key below was compared with the key set that
+//! OrcaSlicer 2.4.2 (https://github.com/OrcaSlicer/OrcaSlicer, release v2.4.2; settings
+//! are defined in its `PrintConfig` and described in its wiki) writes into the config
+//! block at the end of its own G-code. That block lists 621 keys; all of the keys here
+//! are among them. Only key names and value shapes were taken, as facts about the file
+//! format; no source text was copied. The bench case `B.slicer.flavour_check` repeats
+//! the comparison against a real slice whenever the slicer is installed. Keys that
+//! `print.profile_build` writes but that 2.4.2 does not list are NOT in the schema, so
+//! `validate_profile` reports them as `UnknownKey` (see `PRESET_EXTENSIONS`).
+//!
 //! NOTES - UNVERIFIED / left out: per-feature speed keys for bridges over infill,
 //! "seam gap", adaptive pressure-advance model tables, and any key introduced after
 //! the presets this schema was written against. They are not listed because I could
@@ -65,12 +75,13 @@ const fn k(name: &'static str, ty: KeyType, doc: &'static str) -> KeySpec {
 /// The schema, sorted by name (checked by a test).
 pub static SCHEMA: &[KeySpec] = &[
     k("activate_chamber_temp_control", Bool, "filament: chamber"),
+    k("bed_temperature_formula", Enum(&["by_first_filament", "by_highest_temp"]), "printer: bed temperature"),
     k("bottom_shell_layers", Int(0, 1000), "quality: shells"),
     k("bottom_shell_thickness", Float(0.0, 100.0), "quality: shells"),
     k("bridge_flow", Float(0.5, 2.0), "quality: bridging"),
     k("bridge_speed", Float(1.0, 1000.0), "speed: bridges"),
     k("brim_width", Float(0.0, 100.0), "adhesion: brim"),
-    k("chamber_temperature", Float(0.0, 100.0), "filament: chamber"),
+    k("chamber_temperature", FloatList(0.0, 100.0), "filament: chamber"),
     k("cool_plate_temp", FloatList(0.0, 150.0), "filament: bed temperature"),
     k("curr_bed_type", Enum(BED_TYPES), "filament: bed type"),
     k("default_acceleration", Float(0.0, 100000.0), "speed: acceleration"),
@@ -112,6 +123,7 @@ pub static SCHEMA: &[KeySpec] = &[
     k("overhang_fan_speed", FloatList(0.0, 100.0), "filament: cooling"),
     k("pressure_advance", FloatList(0.0, 2.0), "filament: pressure advance"),
     k("print_sequence", Enum(&["by layer", "by object"]), "other: sequence"),
+    k("printable_area", Text, "printer: bed shape"),
     k("printable_height", Float(1.0, 5000.0), "printer: bed shape"),
     k("raft_layers", Int(0, 100), "support: raft"),
     k("reduce_infill_retraction", Bool, "printer: retraction"),
@@ -131,6 +143,7 @@ pub static SCHEMA: &[KeySpec] = &[
     k("sparse_infill_density", Percent(0.0, 100.0), "strength: infill"),
     k("sparse_infill_pattern", Enum(INFILL), "strength: infill"),
     k("sparse_infill_speed", Float(1.0, 1000.0), "speed: infill"),
+    k("support_chamber_temp_control", Bool, "printer: chamber"),
     k("support_threshold_angle", Int(0, 90), "support: overhang angle"),
     k("support_type", Enum(SUPPORT), "support: type"),
     k("textured_plate_temp", FloatList(0.0, 150.0), "filament: bed temperature"),
@@ -147,6 +160,26 @@ pub static SCHEMA: &[KeySpec] = &[
     k("wipe", FloatList(0.0, 1.0), "printer: retraction"),
     k("z_hop", FloatList(0.0, 50.0), "printer: retraction"),
 ];
+
+/// Keys that are lists (one entry per extruder or filament) in a JSON preset, besides every
+/// `FloatList` key. A JSON preset stores them as arrays of strings, all others as one string.
+const VECTOR_KEYS: &[&str] = &[
+    "activate_chamber_temp_control",
+    "enable_pressure_advance",
+    "filament_type",
+    "printable_area",
+];
+
+/// Keys that `print.profile_build` writes on purpose although the checked slicer version does
+/// not list them. They are reported (as unknown) so the owner sees them, never silently dropped.
+pub const PRESET_EXTENSIONS: &[&str] = &["build_plate_tilt_x", "build_plate_tilt_y", "pellet_flow_coefficient", "pellet_modded_printer"];
+
+/// Preset bookkeeping keys that are not settings.
+const META_KEYS: &[&str] = &["type", "name", "from", "inherits", "setting_id", "version", "instantiation"];
+
+fn expects_vector(spec: &KeySpec) -> bool {
+    matches!(spec.ty, FloatList(..)) || VECTOR_KEYS.contains(&spec.name)
+}
 
 /// Kind of problem found in a preset.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -264,6 +297,49 @@ pub fn validate_profile(map: &BTreeMap<String, String>) -> Vec<ProfileFinding> {
     out
 }
 
+/// Validate a JSON preset (the object a slicer reads with its load-settings option). Every
+/// value is a string, or an array of strings for per-extruder lists; bookkeeping keys are skipped.
+pub fn validate_json_preset(v: &serde_json::Value) -> Vec<ProfileFinding> {
+    let Some(obj) = v.as_object() else {
+        return vec![ProfileFinding { key: String::new(), kind: FindingKind::WrongType, message: "preset is not a JSON object".into() }];
+    };
+    let mut keys: Vec<&String> = obj.keys().filter(|k| !META_KEYS.contains(&k.as_str())).collect();
+    keys.sort();
+    let mut out = Vec::new();
+    for key in keys {
+        let mut push = |kind, message: String| out.push(ProfileFinding { key: key.clone(), kind, message });
+        let Some(spec) = lookup(key) else {
+            push(FindingKind::UnknownKey, format!("`{key}` is not a preset key of the checked slicer version"));
+            continue;
+        };
+        let (flat, is_array) = match &obj[key] {
+            serde_json::Value::String(s) => (s.clone(), false),
+            serde_json::Value::Array(a) if !a.is_empty() && a.iter().all(|x| x.is_string()) => {
+                (a.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join(","), true)
+            }
+            _ => {
+                push(FindingKind::WrongType, "value must be a string or a list of strings".into());
+                continue;
+            }
+        };
+        if is_array != expects_vector(spec) {
+            let want = if expects_vector(spec) { "a list of strings" } else { "a single string" };
+            push(FindingKind::WrongType, format!("`{key}` must be {want}"));
+            continue;
+        }
+        // Lists of non-numbers (text, bool, enum entries) are checked entry by entry.
+        let parts: Vec<&str> = if is_array && !matches!(spec.ty, FloatList(..)) { obj[key].as_array().unwrap().iter().filter_map(|x| x.as_str()).collect() } else { vec![flat.as_str()] };
+        for part in parts {
+            match check(spec.ty, part) {
+                Check::Ok => {}
+                Check::Type(m) => push(FindingKind::WrongType, m),
+                Check::Range(m) => push(FindingKind::OutOfRange, m),
+            }
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -356,5 +432,29 @@ mod tests {
     fn profile_schema_nan_rejected() {
         let f = validate_profile(&map(&[("layer_height", "NaN")]));
         assert_eq!(f[0].kind, FindingKind::WrongType);
+    }
+
+    #[test]
+    fn json_preset_shapes_are_checked() {
+        use serde_json::json;
+        let ok = json!({"type":"filament","name":"x","layer_height":"0.2","nozzle_temperature":["215"],"filament_type":["ASA"],"enable_pressure_advance":["0"]});
+        assert!(validate_json_preset(&ok).is_empty());
+        let f = validate_json_preset(&json!({"layer_height":["0.2"],"nozzle_temperature":"215","wall_loops":3,"layer_hight":"0.2"}));
+        let kinds: Vec<_> = f.iter().map(|x| (x.key.as_str(), x.kind)).collect();
+        assert_eq!(kinds, [
+            ("layer_height", FindingKind::WrongType),
+            ("layer_hight", FindingKind::UnknownKey),
+            ("nozzle_temperature", FindingKind::WrongType),
+            ("wall_loops", FindingKind::WrongType),
+        ]);
+        let f = validate_json_preset(&json!({"enable_pressure_advance":["2"]}));
+        assert_eq!(f[0].kind, FindingKind::WrongType);
+    }
+
+    #[test]
+    fn preset_extensions_are_unknown_to_the_schema() {
+        for k in PRESET_EXTENSIONS {
+            assert!(lookup(k).is_none(), "{k} is in the schema; drop it from PRESET_EXTENSIONS");
+        }
     }
 }
