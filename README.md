@@ -102,7 +102,7 @@ fender in one graph.
 | 7 Solar / Heat | Sun position, weather files, sky matrix, incident radiation, surface temperature balance vs heat-deflection temperature | 14 | 0 |
 | 7b Flatten | Seam cutting, conformal flattening, as-rigid-as-possible stretch-aware flattening, strain report, pattern map-back | 6 | 0 |
 | 8 Performance | Aero loads, top speed, point-mass lap model and sweeps, coastdown fit, pressure-tap validation, tuft classification from measured angles | 19 | 0 |
-| **All** | | **198** | **3** |
+| **All** | | **199** | **2** |
 
 Nodes that drive external open-source programs (COLMAP, OpenFOAM,
 CalculiX, fTetWild, OrcaSlicer) write complete inputs without them and only
