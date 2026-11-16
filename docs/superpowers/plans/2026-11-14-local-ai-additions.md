@@ -1,6 +1,6 @@
 # More local AI in Vernon: ordered plan and agent assignments, 2026-11-14
 
-Status: wave 1 (items 1 to 3) built and verified with the real models on 2026-11-14; wave 2 (items 4 to 6) built and verified with the real models on 2026-11-15; wave 3: item 7 built and verified with the real model on 2026-11-16, items 8 and 9 blocked (see "Wave 3" below). This adds to the
+Status: wave 1 (items 1 to 3) built and verified with the real models on 2026-11-14; wave 2 (items 4 to 6) built and verified with the real models on 2026-11-15; wave 3: item 7 built and verified with the real model on 2026-11-16, item 8 built and its mechanism verified with the real model on 2026-11-16 but untested on real print photos, item 9 blocked (see "Wave 3" below). This adds to the
 [2026-11-04 AI plan](2026-11-04-ai-assistant-and-machine-split.md) and to
 section 5 of [docs/PLAN.md](../../PLAN.md#5-local-ai-what-to-add). The rules
 there don't change: models run out of process, nothing downloads without the
@@ -61,6 +61,7 @@ done.
 | **Photo cut-out agent** | #5 | `cutout.rs`, `sam2_bridge.py`, `install_sam2.sh`, `docs/specs/ai-local/photo-cutout.md` | A drawn disc is masked from one click and the mask overlaps the true disc by at least 90% |
 | **Vision check agent** | #6 | `vision.rs`, `vision_bridge.py`, `install_vision.sh`, `docs/specs/ai-local/vision-check.md` | Drawn test pictures: the count of squares and the colour of a circle come back right |
 | **Sketch agent**, finished by the lead | #7 | `sketch.rs`, `sketch_bridge.py`, `install_sketch.sh`, `docs/specs/ai-local/sketch-from-words.md` | A prompt for a red ball on white gives a picture that is red in the middle and white in the corners |
+| Lead | #8 | `watchdog.rs`, `docs/specs/ai-local/print-watchdog.md` (model, bridge and install are those of #6) | Of two drawn pictures the newer one is checked, and a yes and a no become the right verdicts |
 
 ## What changed from the plan in wave 2
 
@@ -84,8 +85,13 @@ done.
   run timed out because the install drive was saturated by other jobs, so the
   passing run read a checksum-matched copy of the weights from the internal
   drive.
-* **Print watchdog (#8)** is not started. It needs photos or a feed from the
-  printer's camera to test against, and none exists yet.
+* **Print watchdog (#8)** is built as `print.ai_print_watchdog`: it takes the
+  newest picture in a camera folder and puts a yes/no question to the vision
+  model of #6. The real model was run on drawn pictures with a stand-in
+  question, which shows the node picks the newest picture and reads a yes or a
+  no correctly. It was not run on a photograph of a real print, because none
+  exists here yet, so its skill at spotting a failed print is unknown. It checks
+  once per cook; running it on a timer is a later app change. The lead built it.
 * **Body fit from a photo (#9)** is not started. The model is gated: the user
   has to accept its licence on Hugging Face first, and it would be opt-in.
 
