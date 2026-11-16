@@ -47,6 +47,26 @@
 //! to rounding; the factor is reported in [`Output::final_scale`] and is
 //! close to 1 when the dual iteration has converged.
 //!
+//! Stretch/compress factors ([`EdgeFactors`]) bias the edge term one way, so
+//! a larger factor makes that one-sided deviation more expensive and it
+//! shrinks. Without a one-sided mode the edge term is the global quadratic:
+//! in every global step each triangle edge's weight is multiplied by the
+//! stretch factor when the edge is currently longer than in 3-D and by the
+//! compress factor when it is shorter (separately for boundary and interior
+//! edges), an iteratively reweighted least-squares step as in the plain
+//! as-rigid-as-possible map, with the cotangents clamped positive so every
+//! weighted triangle stays positive semi-definite. With all factors at 1 the
+//! weights are the exact cotangents and the matrix is built once.
+//!
+//! In a one-sided mode the factors are not applied. There the material
+//! energy lives in the ADMM local step, so reweighting the global step only
+//! changes the penalty metric, not the fixed point (measured: a boundary
+//! stretch factor of 10 moved the F2 cap's boundary strain from 4.7440 % to
+//! 4.7469 %). Weighting the local step's edge term instead left the bound
+//! unmet within the iteration limit, and the final uniform scale then
+//! stretched every triangle (interior stretch 1.35 % -> 2.28 % with an
+//! interior stretch factor of 10, the opposite of the request).
+//!
 //! Orientation: triangles must be counter-clockwise seen from the side the
 //! normal `(v1-v0) x (v2-v0)` points to, and the start layout must have
 //! positive signed area everywhere (unless [`Params::allow_flipped_start`]);
@@ -90,6 +110,36 @@ impl MaterialWeights {
     }
 }
 
+/// Weights on the one-sided edge terms: how much more an edge that is
+/// stretched (or compressed) costs than one at its 3-D length. All 1 is the
+/// unbiased energy.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct EdgeFactors {
+    pub boundary_stretch: f64,
+    pub boundary_compress: f64,
+    pub interior_stretch: f64,
+    pub interior_compress: f64,
+}
+
+impl EdgeFactors {
+    pub const NONE: Self = Self { boundary_stretch: 1.0, boundary_compress: 1.0, interior_stretch: 1.0, interior_compress: 1.0 };
+
+    /// True when every factor is 1.
+    pub fn is_uniform(&self) -> bool {
+        [self.boundary_stretch, self.boundary_compress, self.interior_stretch, self.interior_compress].iter().all(|f| *f == 1.0)
+    }
+
+    /// The factor for an edge of flat/3-D length ratio `r`.
+    fn of(&self, boundary: bool, r: f64) -> f64 {
+        match (boundary, r > 1.0) {
+            (true, true) => self.boundary_stretch,
+            (true, false) => self.boundary_compress,
+            (false, true) => self.interior_stretch,
+            (false, false) => self.interior_compress,
+        }
+    }
+}
+
 /// Solver settings.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Params {
@@ -117,6 +167,9 @@ pub struct Params {
     /// Accept a start layout with flipped triangles: they are left out of the
     /// line search (and counted in [`Output::flipped`] if still flipped).
     pub allow_flipped_start: bool,
+    /// Stretch/compress weights on the edge term; [`EdgeFactors::NONE`] leaves it
+    /// unbiased. Not applied in a one-sided mode (see the module notes).
+    pub edge_factors: EdgeFactors,
 }
 
 impl Default for Params {
@@ -132,6 +185,7 @@ impl Default for Params {
             pin: 0,
             edge_tolerance: 1e-9,
             allow_flipped_start: false,
+            edge_factors: EdgeFactors::NONE,
         }
     }
 }
@@ -496,6 +550,14 @@ pub fn flatten_constrained(
     if p.material.total() <= 0.0 || [p.material.edge, p.material.area, p.material.shear].iter().any(|w| *w < 0.0) {
         return Err("material weights must be non-negative with a positive sum".into());
     }
+    let ef = p.edge_factors;
+    if [ef.boundary_stretch, ef.boundary_compress, ef.interior_stretch, ef.interior_compress].iter().any(|f| !(f.is_finite() && *f > 0.0)) {
+        return Err("stretch/compress factors must be positive and finite".into());
+    }
+    let biased = !ef.is_uniform();
+    let one_sided = p.mode != Mode::Rigid;
+    // reweight the global step only where the edge energy is the global quadratic
+    let biased_global = biased && !one_sided;
     let frames: Vec<Option<Frame>> = tris.iter().map(|t| frame(pos, t)).collect();
     let wsum = p.material.total();
     let w = |ti: usize| weights.get(ti).copied().unwrap_or(1.0).max(1e-6) * wsum;
@@ -532,31 +594,67 @@ pub fn flatten_constrained(
             .collect()
     };
     let wb = if p.boundary_weight > 0.0 { p.boundary_weight * wsum } else { 0.0 };
-
-    // Constant system matrix: edge form of the weighted Dirichlet energy, plus the boundary springs.
-    let mut trip = Vec::new();
-    for (ti, t) in tris.iter().enumerate() {
-        let Some(f) = frames[ti] else { continue };
-        let x = f.x();
-        for k in 0..3 {
-            let (i, j) = ((k + 1) % 3, (k + 2) % 3);
-            let c = 0.5 * w(ti) * cot_at(&x, k);
-            let (vi, vj) = (t[i], t[j]);
-            trip.extend([(vi, vi, c), (vj, vj, c), (vi, vj, -c), (vj, vi, -c)]);
+    let on_boundary: std::collections::BTreeSet<(usize, usize)> = boundary.iter().map(|&(a, b, _)| (a, b)).collect();
+    // Edge `k` of a triangle is the one opposite corner `k`: whether it is on the boundary,
+    // and its 3-D length.
+    let edge_info: Vec<[(bool, f64); 3]> = tris
+        .iter()
+        .map(|t| {
+            std::array::from_fn(|k| {
+                let (a, b) = (t[(k + 1) % 3], t[(k + 2) % 3]);
+                (on_boundary.contains(&(a.min(b), a.max(b))), dot3(sub3(pos[a], pos[b]), sub3(pos[a], pos[b])).sqrt())
+            })
+        })
+        .collect();
+    // Edge weights of the global step: the cotangents, times the one-sided factor of each
+    // edge's current length when the factors are biased (cotangents clamped positive then).
+    let edge_weights = |uv: &[[f64; 2]]| -> Vec<[f64; 3]> {
+        tris.iter()
+            .enumerate()
+            .map(|(ti, t)| {
+                let Some(f) = frames[ti] else { return [0.0; 3] };
+                let x = f.x();
+                std::array::from_fn(|k| {
+                    let cot = cot_at(&x, k);
+                    if !biased_global {
+                        return 0.5 * w(ti) * cot;
+                    }
+                    let (bnd, l3) = edge_info[ti][k];
+                    let d = sub2(uv[t[(k + 1) % 3]], uv[t[(k + 2) % 3]]);
+                    let r = d[0].hypot(d[1]) / l3.max(1e-300);
+                    0.5 * w(ti) * cot.max(1e-4) * ef.of(bnd, r)
+                })
+            })
+            .collect()
+    };
+    let system = |cw: &[[f64; 3]]| -> Csr {
+        let mut trip = Vec::new();
+        for (ti, t) in tris.iter().enumerate() {
+            if frames[ti].is_none() {
+                continue;
+            }
+            for k in 0..3 {
+                let (vi, vj) = (t[(k + 1) % 3], t[(k + 2) % 3]);
+                let c = cw[ti][k];
+                trip.extend([(vi, vi, c), (vj, vj, c), (vi, vj, -c), (vj, vi, -c)]);
+            }
         }
-    }
-    if wb > 0.0 {
-        for &(a, b, _) in &boundary {
-            trip.extend([(a, a, wb), (b, b, wb), (a, b, -wb), (b, a, -wb)]);
+        if wb > 0.0 {
+            for &(a, b, _) in &boundary {
+                trip.extend([(a, a, wb), (b, b, wb), (a, b, -wb), (b, a, -wb)]);
+            }
         }
-    }
-    let a = Csr::from_triplets(n, trip);
+        Csr::from_triplets(n, trip)
+    };
+    // Unbiased: a constant system matrix, the edge form of the weighted Dirichlet energy plus
+    // the boundary springs. Biased: rebuilt every iteration from the current edge lengths.
+    let mut cw = edge_weights(&uv);
+    let mut a = system(&cw);
     let mut free = vec![true; n];
     free[p.pin] = false;
 
     // scaled dual variables (Overby et al. 2017): a 2x2 matrix per triangle for a one-sided
     // mode (ADMM with the split Z_t = J_t), one scalar per boundary edge for the boundary length
-    let one_sided = p.mode != Mode::Rigid;
     let mut dual_t = vec![[[0.0f64; 2]; 2]; tris.len()];
     let mut split_t: Vec<Option<M2>> = vec![None; tris.len()];
     let mut dual_b = vec![0.0f64; boundary.len()];
@@ -568,6 +666,10 @@ pub fn flatten_constrained(
     let mut violation = 0.0;
     for it in 0..p.max_iterations {
         iterations = it + 1;
+        if biased_global && it > 0 {
+            cw = edge_weights(&uv);
+            a = system(&cw);
+        }
         // local step: targets for every triangle and boundary edge
         let targets: Vec<Option<M2>> = tris
             .iter()
@@ -612,7 +714,7 @@ pub fn flatten_constrained(
             })
             .collect();
         // global step
-        let (mut bx, mut by) = rhs(tris, &frames, &targets, &w, n);
+        let (mut bx, mut by) = rhs(tris, &frames, &targets, &cw, n);
         if wb > 0.0 {
             for (&(i, j, _), d) in boundary.iter().zip(&edge_targets) {
                 bx[i] += wb * d[0];
@@ -645,12 +747,12 @@ pub fn flatten_constrained(
         for (ti, t) in tris.iter().enumerate() {
             let (Some(f), Some(l)) = (frames[ti], targets[ti]) else { continue };
             let x = f.x();
-            for k in 0..3 {
+            for (k, &c) in cw[ti].iter().enumerate() {
                 let (i, j) = ((k + 1) % 3, (k + 2) % 3);
                 let e = sub2(x[i], x[j]);
                 let le = [l[0][0] * e[0] + l[0][1] * e[1], l[1][0] * e[0] + l[1][1] * e[1]];
                 let du = sub2(uv[t[i]], uv[t[j]]);
-                energy += 0.5 * w(ti) * cot_at(&x, k) * ((du[0] - le[0]).powi(2) + (du[1] - le[1]).powi(2));
+                energy += c * ((du[0] - le[0]).powi(2) + (du[1] - le[1]).powi(2));
             }
         }
         for (&(i, j, _), d) in boundary.iter().zip(&edge_targets) {
@@ -791,16 +893,15 @@ fn rhs(
     tris: &[[usize; 3]],
     frames: &[Option<Frame>],
     targets: &[Option<M2>],
-    w: &dyn Fn(usize) -> f64,
+    cw: &[[f64; 3]],
     n: usize,
 ) -> (Vec<f64>, Vec<f64>) {
     let (mut bx, mut by) = (vec![0.0; n], vec![0.0; n]);
     for (ti, t) in tris.iter().enumerate() {
         let (Some(f), Some(l)) = (frames[ti], targets[ti]) else { continue };
         let x = f.x();
-        for k in 0..3 {
+        for (k, &c) in cw[ti].iter().enumerate() {
             let (i, jn) = ((k + 1) % 3, (k + 2) % 3);
-            let c = 0.5 * w(ti) * cot_at(&x, k);
             let e = sub2(x[i], x[jn]);
             let le = [l[0][0] * e[0] + l[0][1] * e[1], l[1][0] * e[0] + l[1][1] * e[1]];
             bx[t[i]] += c * le[0];

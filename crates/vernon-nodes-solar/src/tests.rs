@@ -2393,6 +2393,49 @@ fn f2_e_a_boundary_weight_of_ten_gives_less_boundary_strain_than_all_ones() {
     assert!(heavy.boundary_strain_pct < plain.boundary_strain_pct, "{} % vs {} %", heavy.boundary_strain_pct, plain.boundary_strain_pct);
 }
 
+/// The constrained solver without a one-sided mode (floppy material, preserve boundary)
+/// applies the stretch/compress factors and the `*_mostly` presets too, and each moves the
+/// pattern the way it says; a one-sided mode leaves them out with a warning.
+#[test]
+fn the_constrained_solver_honours_the_stretch_compress_factors() {
+    let fl = ("material", s("floppy"));
+    let factors = |v: [f64; 4]| [("bnd_stretch", f(v[0])), ("bnd_compress", f(v[1])), ("int_stretch", f(v[2])), ("int_compress", f(v[3]))];
+    let custom = |v: [f64; 4], extra: &[(&'static str, ParamValue)]| {
+        let mut set = vec![("deformation", s("custom_a"))];
+        set.extend(factors(v));
+        set.extend(extra.iter().cloned());
+        f2_run(&set)
+    };
+    // (e) on the constrained path: a boundary weight of ten keeps the boundary closer to its 3-D length
+    let (heavy, plain) = (custom([10.0, 10.0, 1.0, 1.0], std::slice::from_ref(&fl)), custom([1.0; 4], std::slice::from_ref(&fl)));
+    eprintln!("floppy: boundary strain [10,10,1,1] {:.4} %, [1,1,1,1] {:.4} %", heavy.boundary_strain_pct, plain.boundary_strain_pct);
+    assert!(heavy.boundary_strain_pct < plain.boundary_strain_pct, "{} % vs {} %", heavy.boundary_strain_pct, plain.boundary_strain_pct);
+    assert_eq!(m(&heavy.report, "arap_exact_weights"), 0.0);
+    assert_eq!(m(&plain.report, "arap_exact_weights"), 1.0);
+    // the presets: stretching preferred keeps more area than compressing preferred
+    let mostly = |d: &str| f2_run(&[("deformation", s(d)), fl.clone()]);
+    let (st, free, co) = (mostly("stretch_mostly"), mostly("free"), mostly("compress_mostly"));
+    let share = |r: &F2Run, k: &str| m(&r.report, k);
+    eprintln!(
+        "floppy: area change stretch_mostly {:.3} %, free {:.3} %, compress_mostly {:.3} %; compression share {:.1} / {:.1} / {:.1} %, stretch share {:.1} / {:.1} / {:.1} %",
+        st.area_change_pct, free.area_change_pct, co.area_change_pct,
+        share(&st, "compress_share_pct"), share(&free, "compress_share_pct"), share(&co, "compress_share_pct"),
+        share(&st, "stretch_share_pct"), share(&free, "stretch_share_pct"), share(&co, "stretch_share_pct")
+    );
+    assert!(st.area_change_pct > free.area_change_pct && free.area_change_pct > co.area_change_pct, "{} {} {}", st.area_change_pct, free.area_change_pct, co.area_change_pct);
+    assert!(share(&st, "compress_max_pct") < share(&free, "compress_max_pct"), "stretch_mostly compresses less");
+    assert!(share(&co, "stretch_max_pct") < share(&free, "stretch_max_pct"), "compress_mostly stretches less");
+    // a one-sided mode leaves the factors out and says so; the constraint decides the shape
+    let so = |v: f64| f2_run(&[("deformation", s("stretch_only")), ("int_stretch", f(v))]);
+    let (so_heavy, so_plain) = (so(10.0), so(1.0));
+    assert_eq!(so_heavy.area_change_pct, so_plain.area_change_pct);
+    assert!(so_heavy.report.notes.iter().any(|(sev, t)| *sev == vernon_core::Severity::Warning && t.contains("not used together with stretch_only")));
+    assert!(!so_plain.report.notes.iter().any(|(_, t)| t.contains("not used together with stretch_only")));
+    for r in [&heavy.report, &st.report, &co.report] {
+        assert!(!r.notes.iter().any(|(_, t)| t.contains("not used by the constrained solver")));
+    }
+}
+
 /// Signed 2-D area of every triangle of a pattern (positive = counter-clockwise in x, y).
 fn pattern_signed_areas(pat: &Geometry) -> Vec<f64> {
     pat.triangles()
@@ -2523,7 +2566,11 @@ fn stretch_aware_biased_weights_report_that_they_are_not_the_plain_energy() {
     assert_eq!(m(&free, "arap_exact_weights"), 1.0);
     assert!(!has_note(&free, vernon_core::Severity::Warning, "floppy"));
     let (so, _, pat) = arap_run(&g, &[("deformation", s("stretch_only"))]);
-    assert_eq!(m(&so, "arap_exact_weights"), 0.0);
+    // the constrained solver with every factor at 1 uses the exact cotangent weights
+    assert_eq!(m(&so, "arap_exact_weights"), 1.0);
+    let (fb, _, _) = arap_run(&g, &[("material", s("floppy")), ("bnd_stretch", f(3.0))]);
+    assert_eq!(m(&fb, "arap_exact_weights"), 0.0);
+    assert!(has_note(&fb, vernon_core::Severity::Info, "stretch/compress factors are active"));
     assert!(has_note(&so, vernon_core::Severity::Info, "stretch_only is a hard constraint"));
     assert_eq!(m(&so, "compress_share_pct"), 0.0);
     assert!(all_finite(&so, &pat));
@@ -2654,3 +2701,4 @@ fn shared_data_is_not_mutated() {
     assert_eq!(*g, before);
     let _ = Prim::polygon(vec![0, 1, 2]);
 }
+

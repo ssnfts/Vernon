@@ -631,9 +631,17 @@ minimum of 3.454 % at that area (3.476 % at a preserved area on this mesh,
 final scale 1.0002288; (d) compress-only stretch share 0 %, area -6.681 %,
 final scale 0.9999974; (e) mean boundary strain 2.4365 % with [10,10,1,1]
 against 3.4958 % with [1,1,1,1]. The stretch/compress factors and the
-`*_mostly` presets still act as reweighted edge energies in the plain ARAP
-only; the constrained solver ignores them (a warning says so), and
-preserve-boundary does not combine with a one-sided mode (warning). `perf.tuft_analysis` reads a CSV
+`*_mostly` presets act as reweighted edge energies in the plain ARAP and,
+since 2026-11-15, in the constrained solver without a one-sided mode
+(floppy material, preserve boundary): floppy boundary strain 2.3411 % with
+[10,10,1,1] against 3.4960 % with [1,1,1,1]; area change +1.869 %
+(stretch_mostly), -0.042 % (free), -3.048 % (compress_mostly). With
+stretch_only or compress_only they are left out with a warning: there the
+shape comes from the ADMM local step, where global reweighting does not move
+the fixed point (boundary strain 4.7440 % -> 4.7469 %), and weighting the
+local step left the bound to the final uniform scale, which stretched the
+interior more (1.35 % -> 2.28 %), the wrong way. F2 (a)-(e) are unchanged.
+Preserve-boundary does not combine with a one-sided mode (warning). `perf.tuft_analysis` reads a CSV
 (`x,y,z,angle_deg`, optional `id` and `flow_deg`) or the JSON series and
 classifies each tuft into the spec's classes: reversed if the mean angle is
 more than `reversed_deg` off the flow, otherwise separated if it is more than

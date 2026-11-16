@@ -11,7 +11,7 @@ use vernon_graph::{
     PortSpec, Stage,
 };
 
-use crate::flatten_constraints::{flatten_constrained, MaterialWeights, Mode as ConstraintMode, Params as ConstraintParams};
+use crate::flatten_constraints::{flatten_constrained, EdgeFactors, MaterialWeights, Mode as ConstraintMode, Params as ConstraintParams};
 use crate::lscm::{align_uv, arap, compact, degenerate_tris, lscm, plane_fit, ArapOpts, ArapOut, Compact};
 use crate::strain::{angle_defect_sum, compute_strain, ply_fields, StrainOpts, StrainResult};
 use crate::topo::{analyze, auto_cut, cut_along, ekey, seam_from_polylines, TopoInfo};
@@ -542,9 +542,14 @@ impl NodeOp for StretchAwareNode {
             mode,
             material: if floppy { MaterialWeights::FLOPPY } else { RIGID_MATERIAL },
             boundary_weight: if o.preserve_boundary && mode == ConstraintMode::Rigid { BOUNDARY_WEIGHT } else { 0.0 },
+            // the same one-sided weights as the plain map: preset base times boundary or interior factor
+            factors: EdgeFactors {
+                boundary_stretch: o.base_stretch * o.bnd_stretch,
+                boundary_compress: o.base_compress * o.bnd_compress,
+                interior_stretch: o.base_stretch * o.int_stretch,
+                interior_compress: o.base_compress * o.int_compress,
+            },
         });
-        let custom = [o.bnd_stretch, o.bnd_compress, o.int_stretch, o.int_compress].iter().any(|f| *f != 1.0)
-            && deformation.starts_with("custom");
         // Disconnected input: every piece is flattened on its own.
         let groups = components(&g);
         let total = groups.len();
@@ -670,7 +675,7 @@ impl NodeOp for StretchAwareNode {
         if !exact {
             r.note(
                 Severity::Info,
-                "stretch/compress factors are active: edge weights are reweighted every iteration with the cotangents clamped to be positive, so this is a weighted variant of the published energy",
+                "stretch/compress factors are active: edge weights are reweighted every iteration by the factor of each edge's current stretch or compression, with the cotangents clamped to be positive, so this is a weighted variant of the published energy",
             );
         }
         if let Some(cs) = &cons {
@@ -696,6 +701,12 @@ impl NodeOp for StretchAwareNode {
                 ),
                 ConstraintMode::Rigid => &mut r,
             };
+            if mode != ConstraintMode::Rigid && !cs.factors.is_uniform() {
+                r.note(
+                    Severity::Warning,
+                    "the stretch/compress factors are not used together with stretch_only or compress_only: the one-sided constraint decides the shape",
+                );
+            }
             if o.preserve_boundary {
                 if mode == ConstraintMode::Rigid {
                     r.note(
@@ -708,12 +719,6 @@ impl NodeOp for StretchAwareNode {
                         "preserve_boundary is not applied together with stretch_only or compress_only: the one-sided constraint wins, so boundary lengths change",
                     );
                 }
-            }
-            if custom || deformation.ends_with("mostly") {
-                r.note(
-                    Severity::Warning,
-                    "the stretch/compress factors and the *_mostly presets are not used by the constrained solver (preserve boundary or floppy material); only the plain rigid map applies them",
-                );
             }
         }
         if floppy {
@@ -792,6 +797,8 @@ struct Constrained {
     material: MaterialWeights,
     /// 0 = boundary free.
     boundary_weight: f64,
+    /// Stretch/compress weights on the edge term.
+    factors: EdgeFactors,
 }
 
 /// Per-piece figures of the constrained solver.
@@ -908,13 +915,14 @@ fn run_constrained(c: &Compact, uv0: &[DVec2], o: &ArapOpts, cs: &Constrained) -
         tolerance: o.tol * 1e-2,
         pin,
         allow_flipped_start: true,
+        edge_factors: cs.factors,
         ..ConstraintParams::default()
     };
     match flatten_constrained(&pos, &tris, &start, &[], &params) {
         Ok(out) => {
             let uv = out.uv.iter().map(|q| DVec2::new(flip * q[0], q[1])).collect();
             (
-                ArapOut { uv, iterations: out.iterations, energy: out.energy, converged: out.converged, skipped, exact_weights: false, shortened_steps: out.shortened_steps },
+                ArapOut { uv, iterations: out.iterations, energy: out.energy, converged: out.converged, skipped, exact_weights: cs.factors.is_uniform() || cs.mode != ConstraintMode::Rigid, shortened_steps: out.shortened_steps },
                 Some(ConstrainedOut { final_scale: out.final_scale, violation: out.violation_before_scale }),
             )
         }
