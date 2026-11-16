@@ -482,6 +482,52 @@ finer mesh is not a time-step effect. That leaves the wall treatment (body
 y+ mean 55 with a minimum near 2) and the half model as the candidates, in
 that order of cost.
 
+**2026-11-16, wall layers fixed from a y+ estimate (user: "Wall-layer y+").**
+Cause found: `cfd.mesh_setup`'s default layer sizing (`relative_final`) puts
+the final layer at half the local cell, so the first layer shrank with the
+grid (1.39 mm at 0.5M, 1.07 mm at 0.9M) and the grid study also changed the
+wall treatment. The mesher now warns when that mode is in use and its y+
+estimate is more than 2× from `yplus_target` (default unchanged; test). The
+harness gains `VERNON_FAST_YPLUS` (`first_layer_yplus` mode, same first layer
+on every grid; part of the mesh identity only when set) and records the
+measured wall y+ per patch. With an estimate of 100 the first layer is 0.95
+mm on both grids, and the measured body y+ is a steady **mean 50–51 on both**
+(min 0.6–2.8, max 448–563). Both chains used the near-wake Courant-1 step.
+Two harness fixes on the way: `BOUNDARY_CTU` raised to 1e-3 (at 91 steps per
+CTU the accumulated times fell further short of a boundary), and the
+no-advance guard stopped such a run cleanly.
+
+| Grid | Run | Window (CTU) | Cd ± s.e. | Half-step (diff / allowed) | Gate |
+|---|---|---|---|---|---|
+| 0.45M | `yp100-dx0920-b` | 8–14 | 0.276 ± 0.004 | 0.018 / 0.012 | not passed |
+| 0.45M | `yp100-dx0920-c` | 14–21 | **0.251 ± 0.005** | 0.001 / 0.010 | **PASS** (22 min) |
+| 0.88M | `yp100-dx0708-b` | 7–13 | 0.257 ± 0.003 | — (budget) | not passed |
+| 0.88M | `yp100-dx0708-c` | 13–19 | **0.247 ± 0.002** | 0.0045 / 0.0040 | not passed (half-step) |
+| 0.88M | `yp100-dx0708-d` | 19–25 | **0.243 ± 0.003** | 0.0197 / 0.0072 | not passed (half-step) |
+
+**What the y+ fix shows.** With the wall model held fixed the two grids now
+agree: Cd 0.251 (0.45M) against 0.243–0.247 (0.88M), 2–3% apart, against
+0.267 vs 0.241–0.245 before (9% apart, with the wall model changing between
+them). The relative layers were behind the grid inconsistency. The result
+on both grids is still about 10–12% under the dataset's 0.279: on this
+setup the fast tier settles near Cd 0.245–0.25 for the stilt-free body.
+
+**What the half-step check shows.** On the 0.88M grid the half-step windows
+fell on both sides of their main windows (−0.0045, then +0.0197), each by
+more than the allowed difference, and the 0.45M chain passed once and failed
+once. The half-step segment averages only 1 CTU and follows the main window
+in time, so slow wake swings of about ±0.02 dominate it; it does not isolate
+time-step sensitivity at this window length. A meaningful check needs a
+longer half-step window (3+ CTU), which does not fit one hour on the 0.88M
+grid; it would need its own seeded hour.
+
+**Remaining gap to the reference.** The dataset's runs are full bodies on
+3.6M–35M cells with SA-DDES; ours are half bodies on 0.45–0.88M cells with
+SST-DDES and wall functions. The next candidates, in order of cost: the
+half-step check on its own hour (to settle the step), a full body (removes
+the symmetry plane, doubles the cells), and a y+ ≈ 1 layer study (needs the
+1.5M+ cells the spec gives for low-Re, beyond one hour per window here).
+
 What this adds: the honest fast-tier statement for this body is a trend,
 not a value: the wash-out needed is longer than the budget allows at 0.5M
 cells and 16 ranks. Any pass within the hour would need either a converged

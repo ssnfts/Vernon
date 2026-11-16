@@ -113,6 +113,18 @@ evidence. For current commands use docs/SETUP.md and docs/CFD-RUNBOOK.md.
   **PASS, Cd 0.245 ± 0.002 (−12.2%)**, half-step agrees. Same value as at
   CTU/100, so the time step was not the cause of the low drag on the finer
   mesh; wall treatment (y+) and the half model remain.
+- **Wall layers fixed from a y+ estimate (2026-11-16, 2f8d1ed).** The
+  mesher's default relative layers shrank with the grid (that also explains
+  the example scene's 2.41 mm vs 0.43 mm layer, fixed in the scene by the
+  agent-hierarchy session); `cfd.mesh_setup` now warns when the y+ target is
+  ignored, and the harness can fix the first layer (`VERNON_FAST_YPLUS`).
+  With a 0.95 mm first layer on both grids, measured body y+ is mean 50–51 on
+  both, and the grids agree: **Cd 0.251 ± 0.005 (0.45M, PASS)** and **0.243–
+  0.247 (0.88M; half-step checks failed both ways)**, 2–3% apart (they were
+  9% apart before). Both remain 10–12% under the dataset's 0.279. The 1 CTU
+  half-step segment is dominated by slow wake swings (±0.02) and needs a
+  longer window to test the step. Next candidates: a longer half-step check,
+  a full body, a y+ ≈ 1 study.
 - Nothing was launched through the runner; no gate was lowered; no run was
   relabelled.
 
