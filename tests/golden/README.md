@@ -44,13 +44,37 @@ Delete `reference_out.asc` afterwards; only `c2c.asc` is used.
 
 ### OrcaSlicer (open)
 
-`part.3mf` is written by `print.package_write`. Slicing it with
-`orca-slicer --slice 0 --outputdir <dir> part.3mf` stops with code 127. With hand-written printer, process and filament files
-(`--load-settings`, `--load-filaments`), even ones whose `compatible_printers`
-names the printer, its log (`00000.log` in the working folder) says "process
-not compatible with printer". The next step is a complete printer, process
-and filament profile set exported from the slicer's own interface, then the
-same command with those files.
+`part.3mf` is written by `print.package_write`. OrcaSlicer 2.4.2 slices it from the
+command line without any export from its interface, provided the printer, process and
+filament files each name an installed preset in `inherits`. A hand-written set with an
+empty `inherits` stops with "process not compatible with printer" (exit 127): the slicer
+decides compatibility from the preset each file derives from. The bench case
+`B.slicer.flavour_check` builds a working set at run time from the generic presets the
+install ships (`resources/profiles/Custom`: a generic Klipper printer and its standard
+process; `resources/profiles/OrcaFilamentLibrary`: a generic PLA), flattens each
+`inherits` chain into one full file, then sets
+`inherits` to the installed preset, `compatible_printers` of the process to the printer,
+and the three `*_settings_id` names. The files go to the bench scratch folder only; nothing
+of the slicer's profiles is copied into this repository. Command:
+
+```
+orca-slicer --slice 0 --outputdir <dir> --load-settings "machine.json;process.json" --load-filaments filament.json part.3mf
+```
+
+Result on this machine (2026-11-15): 100 layers, G-code with the slicer's own config block
+(621 keys). The case checks that G-code against `print.flavour_check` and that every key of
+`profile_schema::SCHEMA` is in that config block.
+
+The `orcaslicer/box_3mf` row in the table above stays "not recorded": layer count and
+filament grams have not been compared to Vernon's own estimate yet.
+
+If a machine has no OrcaSlicer install with a `resources/profiles` folder (a portable or
+Linux build keeps it elsewhere), the case is skipped with the reason. The owner then
+exports a set once: in the slicer choose a printer, a process and a filament, open each
+preset's menu, "Export preset" (or File > Export > Export preset bundle), save the three
+JSON files into one folder named `machine.json`, `process.json` and `filament.json`, and
+set the environment variable `VERNON_SLICER_PROFILES` to that folder before running the
+bench. The case then uses those files instead of building a set.
 
 ## Not compared
 

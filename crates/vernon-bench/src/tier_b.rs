@@ -201,6 +201,86 @@ fn colmap_sample() -> Case {
     })
 }
 
+/// Flatten one installed preset: follow its `inherits` chain through the folders the slicer
+/// installs next to its program and let each child override its parent.
+fn flatten_preset(roots: &[PathBuf], kind: &str, name: &str, depth: usize) -> Result<serde_json::Map<String, serde_json::Value>, String> {
+    if depth > 8 {
+        return Err(format!("preset {name}: inherits chain too deep"));
+    }
+    for root in roots {
+        for sub in [kind.to_string(), format!("{kind}/base")] {
+            let path = root.join(&sub).join(format!("{name}.json"));
+            let Ok(text) = std::fs::read_to_string(&path) else { continue };
+            let v: serde_json::Value = serde_json::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
+            let serde_json::Value::Object(own) = v else { return Err(format!("{}: not an object", path.display())) };
+            let mut base = match own.get("inherits").and_then(|x| x.as_str()).filter(|x| !x.is_empty()) {
+                Some(parent) => flatten_preset(roots, kind, parent, depth + 1)?,
+                None => Default::default(),
+            };
+            for (k, val) in own {
+                base.insert(k, val);
+            }
+            base.remove("inherits");
+            return Ok(base);
+        }
+    }
+    Err(format!("installed {kind} preset `{name}` not found"))
+}
+
+/// Write a full printer, process and filament set into `dir`, built from the generic
+/// presets that the installed slicer ships (a generic Klipper printer, its standard
+/// process and a generic PLA filament). The slicer accepts a set from the command line only
+/// when each file names the installed preset it derives from, so the files keep that name in
+/// `inherits` and the process lists the printer in `compatible_printers`.
+fn write_slicer_profile_set(exe: &Path, dir: &Path) -> Result<[PathBuf; 3], String> {
+    use serde_json::{json, Value};
+    let base = exe.parent().ok_or("slicer path has no folder")?.join("resources").join("profiles");
+    let roots = [base.join("Custom"), base.join("OrcaFilamentLibrary")];
+    const PRINTER: &str = "MyKlipper 0.4 nozzle";
+    const PROCESS: &str = "0.20mm Standard @MyKlipper";
+    const FILAMENT: &str = "Generic PLA @System";
+    let mut machine = flatten_preset(&roots, "machine", PRINTER, 0)?;
+    let mut process = flatten_preset(&roots, "process", PROCESS, 0)?;
+    let mut filament = flatten_preset(&roots, "filament", FILAMENT, 0)?;
+    for (map, name, parent) in [(&mut machine, "vernon_machine", PRINTER), (&mut process, "vernon_process", PROCESS), (&mut filament, "vernon_filament", FILAMENT)] {
+        map.insert("name".into(), json!(name));
+        map.insert("from".into(), json!("User"));
+        map.insert("inherits".into(), json!(parent));
+        map.remove("setting_id");
+        map.remove("instantiation");
+    }
+    machine.insert("printer_settings_id".into(), json!("vernon_machine"));
+    process.insert("print_settings_id".into(), json!("vernon_process"));
+    process.insert("compatible_printers".into(), json!([PRINTER]));
+    filament.insert("filament_settings_id".into(), json!(["vernon_filament"]));
+    filament.insert("compatible_printers".into(), json!([]));
+    let mut out = Vec::new();
+    for (file, map) in [("machine.json", machine), ("process.json", process), ("filament.json", filament)] {
+        let path = dir.join(file);
+        std::fs::write(&path, serde_json::to_string_pretty(&Value::Object(map)).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+        out.push(path);
+    }
+    out.try_into().map_err(|_| "expected three presets".to_string())
+}
+
+/// Keys of the config block a slicer appends to its G-code (`; key = value` lines).
+fn gcode_config_keys(text: &str) -> std::collections::BTreeSet<String> {
+    let mut inside = false;
+    let mut keys = std::collections::BTreeSet::new();
+    for line in text.lines() {
+        if line.contains("CONFIG_BLOCK_START") {
+            inside = true;
+        } else if line.contains("CONFIG_BLOCK_END") {
+            break;
+        } else if inside {
+            if let Some((k, _)) = line.strip_prefix("; ").and_then(|l| l.split_once(" = ")) {
+                keys.insert(k.trim().to_string());
+            }
+        }
+    }
+    keys
+}
+
 fn slicer_gcode() -> Case {
     const REF: &str = "OrcaSlicer (AGPL-3.0) / PrusaSlicer, separate process; G-code accepted by print.flavour_check";
     let orca = env_path("VERNON_SLICER").or_else(|| on_path(&["orca-slicer", "prusa-slicer-console", "prusa-slicer"])).or_else(|| program_files(r"OrcaSlicer\orca-slicer.exe"));
@@ -215,11 +295,30 @@ fn slicer_gcode() -> Case {
                 let _ = std::fs::remove_file(e.path());
             }
         }
-        let args: Vec<String> = vec!["--slice".into(), "0".into(), "--outputdir".into(), dir.to_string_lossy().into_owned(), part.to_string_lossy().into_owned()];
+        // An owner-exported set (a folder with machine.json, process.json and filament.json) wins.
+        let exported = env_path("VERNON_SLICER_PROFILES").map(|d| ["machine.json", "process.json", "filament.json"].map(|f| d.join(f)));
+        let set = match exported.map_or_else(|| write_slicer_profile_set(&exe, &dir), Ok) {
+            Ok(set) => set,
+            Err(e) => {
+                ck.skip(format!("no printer/process/filament set could be built from the installed slicer ({e}); export one from the slicer, see tests/golden/README.md"));
+                return Ok(());
+            }
+        };
+        let args: Vec<String> = vec![
+            "--slice".into(),
+            "0".into(),
+            "--outputdir".into(),
+            dir.to_string_lossy().into_owned(),
+            "--load-settings".into(),
+            format!("{};{}", set[0].display(), set[1].display()),
+            "--load-filaments".into(),
+            set[2].to_string_lossy().into_owned(),
+            part.to_string_lossy().into_owned(),
+        ];
         let exit = process::run_program(&exe, &args, &dir, &dir.join("slicer.log"), &process::RunOptions::with_timeout(Duration::from_secs(180))).map_err(|e| e.to_string())?;
         let gcode = std::fs::read_dir(&dir).map_err(|e| e.to_string())?.flatten().map(|e| e.path()).find(|p| p.extension().is_some_and(|x| x == "gcode"));
         let Some(gcode) = gcode else {
-            ck.skip(format!("the slicer produced no G-code (exit {exit:?}); command-line slicing needs a full exported printer/process/filament profile set, see tests/golden/README.md"));
+            ck.skip(format!("the slicer produced no G-code (exit {exit:?}); see {} and tests/golden/README.md", dir.join("00000.log").display()));
             return Ok(());
         };
         let mut best = None;
@@ -230,6 +329,12 @@ fn slicer_gcode() -> Case {
             best = Some(best.map_or(v, |b: usize| b.min(v)));
         }
         ck.close("violations in the best-matching dialect", best.unwrap_or(usize::MAX) as f64, 0.0, 0.0, 0.0, "count");
+        // The preset key schema must list only keys this slicer version really writes.
+        let text = std::fs::read_to_string(&gcode).map_err(|e| e.to_string())?;
+        let known = gcode_config_keys(&text);
+        let missing: Vec<&str> = vernon_nodes_print::profile_schema::SCHEMA.iter().map(|k| k.name).filter(|k| !known.contains(*k)).collect();
+        ck.note(format!("slicer config block lists {} keys; schema keys missing from it: {}", known.len(), if missing.is_empty() { "none".to_string() } else { missing.join(", ") }));
+        ck.close("preset schema keys the slicer does not know", missing.len() as f64, 0.0, 0.0, 0.0, "count");
         Ok(())
     })
 }
