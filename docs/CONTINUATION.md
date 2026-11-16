@@ -134,6 +134,15 @@ evidence. For current commands use docs/SETUP.md and docs/CFD-RUNBOOK.md.
   DDES with wall functions vs the dataset's SA-DDES) and the resolution
   (0.45–0.9M vs 3.6–35M cells). Also: a WSL start that timed out before any
   step ran is retried once (test).
+- **SA-DDES (2026-11-16).** Case-writer choice `les_model` (kOmegaSSTDDES
+  default, SpalartAllmarasDDES); nuTilda field, schemes and solver entries;
+  checkpoints and the per-step rule follow the model's fields; harness
+  `VERNON_FAST_LES_MODEL` (nuTilda started from the steady nut). Same 0.45M
+  half grid: fresh 0.290 (2–8 CTU, wash-out), seeded 0.261 (8–16), then
+  **`sa-…-c` PASS, Cd 0.264 ± 0.004 (16–25 CTU), −5.4%**, half-step agrees.
+  The model accounts for about half of the gap (SST 0.251 → SA 0.264); the
+  rest is still unexplained (candidates: resolution, y+ ≈ 1 walls). Details
+  in the plan's section 6.
 - Nothing was launched through the runner; no gate was lowered; no run was
   relabelled.
 

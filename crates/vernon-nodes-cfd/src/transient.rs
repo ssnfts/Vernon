@@ -456,6 +456,11 @@ pub struct StepRecord {
     pub k_final: Option<f64>,
     pub omega_first: Option<f64>,
     pub omega_final: Option<f64>,
+    /// The Spalart-Allmaras working variable, in its cases only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nu_tilda_first: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nu_tilda_final: Option<f64>,
 }
 
 /// Residuals of one outer loop, as the step accumulates them.
@@ -464,6 +469,7 @@ struct OuterLoop {
     u: Option<f64>,
     k: Option<f64>,
     omega: Option<f64>,
+    nu_tilda: Option<f64>,
 }
 
 #[derive(Default)]
@@ -482,6 +488,8 @@ impl StepBuilder {
             self.record.u_final = last.u;
             self.record.k_final = last.k;
             self.record.omega_final = last.omega;
+            self.record.nu_tilda_first = first.nu_tilda;
+            self.record.nu_tilda_final = last.nu_tilda;
         }
         self.record
     }
@@ -545,6 +553,7 @@ pub fn parse_pimple_log(text: &str) -> Vec<StepRecord> {
                 "Ux" | "Uy" | "Uz" => &mut l.u,
                 "k" => &mut l.k,
                 "omega" => &mut l.omega,
+                "nuTilda" => &mut l.nu_tilda,
                 _ => continue,
             };
             *slot = Some(slot.map_or(initial, |prev| prev.max(initial)));
@@ -590,6 +599,8 @@ pub struct StepReport {
     pub u_pass_fraction: f64,
     pub k_pass_fraction: f64,
     pub omega_pass_fraction: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nu_tilda_pass_fraction: Option<f64>,
     pub p_final_median: f64,
     pub co_max_peak: f64,
     pub co_mean_median: f64,
@@ -614,7 +625,10 @@ fn dropped(first: Option<f64>, last: Option<f64>, orders: f64) -> bool {
     }
 }
 
-/// Apply the per-step rule to the steps at or after `from_time_s`.
+/// Apply the per-step rule to the steps at or after `from_time_s`. A
+/// turbulence field the model does not solve (k and omega under the
+/// one-equation model, nuTilda under the two-equation one) appears in no
+/// step; its rule is not applied and its fraction is reported as absent.
 pub fn step_convergence(steps: &[StepRecord], from_time_s: f64, rule: &StepRule) -> Result<StepReport, String> {
     let counted: Vec<&StepRecord> = steps.iter().filter(|s| s.time_s >= from_time_s).collect();
     if counted.is_empty() {
@@ -624,12 +638,17 @@ pub fn step_convergence(steps: &[StepRecord], from_time_s: f64, rule: &StepRule)
     let fraction = |ok: &dyn Fn(&StepRecord) -> bool| counted.iter().filter(|s| ok(s)).count() as f64 / n;
     let p_pass = fraction(&|s| dropped(s.p_first, s.p_final, rule.min_drop_orders));
     let u_pass = fraction(&|s| dropped(s.u_first, s.u_final, rule.min_drop_orders));
-    let k_pass = fraction(&|s| dropped(s.k_first, s.k_final, rule.min_drop_orders));
-    let omega_pass = fraction(&|s| dropped(s.omega_first, s.omega_final, rule.min_drop_orders));
+    let solved = |f: &dyn Fn(&StepRecord) -> Option<f64>| counted.iter().any(|s| f(s).is_some());
+    let k_pass = if solved(&|s| s.k_first) { fraction(&|s| dropped(s.k_first, s.k_final, rule.min_drop_orders)) } else { f64::NAN };
+    let omega_pass = if solved(&|s| s.omega_first) { fraction(&|s| dropped(s.omega_first, s.omega_final, rule.min_drop_orders)) } else { f64::NAN };
+    let nu_tilda_pass = solved(&|s| s.nu_tilda_first).then(|| fraction(&|s| dropped(s.nu_tilda_first, s.nu_tilda_final, rule.min_drop_orders)));
+    if k_pass.is_nan() && omega_pass.is_nan() && nu_tilda_pass.is_none() {
+        return Err("no turbulence field (k, omega or nuTilda) is solved in the solver log".into());
+    }
     let dts: Vec<f64> = counted.iter().filter_map(|s| s.dt_s).collect();
     let mut reasons = Vec::new();
-    for (name, frac) in [("p drop", p_pass), ("U drop", u_pass), ("k drop", k_pass), ("omega drop", omega_pass)] {
-        if frac < rule.min_pass_fraction {
+    for (name, frac) in [("p drop", p_pass), ("U drop", u_pass), ("k drop", k_pass), ("omega drop", omega_pass), ("nuTilda drop", nu_tilda_pass.unwrap_or(f64::NAN))] {
+        if !frac.is_nan() && frac < rule.min_pass_fraction {
             reasons.push(format!("{name}: met in {:.1}% of steps, required {:.1}%", 100.0 * frac, 100.0 * rule.min_pass_fraction));
         }
     }
@@ -639,6 +658,7 @@ pub fn step_convergence(steps: &[StepRecord], from_time_s: f64, rule: &StepRule)
         u_pass_fraction: u_pass,
         k_pass_fraction: k_pass,
         omega_pass_fraction: omega_pass,
+        nu_tilda_pass_fraction: nu_tilda_pass,
         p_final_median: median(counted.iter().filter_map(|s| s.p_final).collect()),
         co_max_peak: counted.iter().filter_map(|s| s.co_max).fold(f64::NAN, f64::max),
         co_mean_median: median(counted.iter().filter_map(|s| s.co_mean).collect()),
@@ -954,5 +974,31 @@ End
         assert!(first.passed, "{:?}", first.reasons);
         // No steps after the start time is an error, not a pass.
         assert!(step_convergence(&steps, 11.0, &StepRule::default()).is_err());
+        assert_eq!(r.nu_tilda_pass_fraction, None);
+    }
+
+    #[test]
+    fn transient_step_rule_applies_to_the_one_equation_model_s_field() {
+        // The same log with nuTilda in place of k and omega: the second step
+        // drops nuTilda by 0.3 orders only.
+        let sa: String = LOG
+            .lines()
+            .filter(|l| !l.contains("Solving for k,"))
+            .map(|l| l.replace("Solving for omega,", "Solving for nuTilda,") + "
+")
+            .collect();
+        let steps = parse_pimple_log(&sa);
+        assert_eq!((steps[0].nu_tilda_first, steps[0].nu_tilda_final), (Some(0.004), Some(0.0002)));
+        assert_eq!((steps[0].k_first, steps[0].omega_first), (None, None));
+        let r = step_convergence(&steps, 0.0, &StepRule::default()).unwrap();
+        assert_eq!(r.nu_tilda_pass_fraction, Some(0.5));
+        assert!(r.k_pass_fraction.is_nan() && r.omega_pass_fraction.is_nan());
+        assert!(r.reasons.iter().any(|s| s.starts_with("nuTilda drop")), "{:?}", r.reasons);
+        assert!(!r.reasons.iter().any(|s| s.starts_with("k ") || s.starts_with("omega ")), "{:?}", r.reasons);
+        assert!(step_convergence(&steps[..1], 0.0, &StepRule::default()).unwrap().passed);
+        // A log with no turbulence solve at all fails closed.
+        let none: String = sa.lines().filter(|l| !l.contains("nuTilda")).map(|l| l.to_string() + "
+").collect();
+        assert!(step_convergence(&parse_pimple_log(&none), 0.0, &StepRule::default()).is_err());
     }
 }

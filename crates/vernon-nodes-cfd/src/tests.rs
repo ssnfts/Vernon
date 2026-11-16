@@ -742,6 +742,9 @@ struct FastTier {
     yplus_target: Option<f64>,
     /// Mesh and solve the whole body (no symmetry plane). Twice the cells.
     full_body: bool,
+    /// The detached-eddy turbulence model: kOmegaSSTDDES (default) or
+    /// SpalartAllmarasDDES (the open slant-body dataset's model).
+    les_model: String,
 }
 
 impl FastTier {
@@ -771,7 +774,9 @@ impl FastTier {
             wake_co: get("VERNON_FAST_WAKE_CO").map(|v| v.trim().parse().expect("VERNON_FAST_WAKE_CO must be a number")),
             yplus_target: get("VERNON_FAST_YPLUS").map(|v| v.trim().parse().expect("VERNON_FAST_YPLUS must be a number")),
             full_body: get("VERNON_FAST_FULL_BODY").as_deref() == Some("1"),
+            les_model: get("VERNON_FAST_LES_MODEL").unwrap_or_else(|| "kOmegaSSTDDES".into()),
         };
+        assert!(["kOmegaSSTDDES", "SpalartAllmarasDDES"].contains(&cfg.les_model.as_str()), "VERNON_FAST_LES_MODEL is kOmegaSSTDDES or SpalartAllmarasDDES");
         assert!(cfg.preserve_case.is_none() || (cfg.checkpoint_dir.is_some() && cfg.seed_dir.is_none()), "preserving needs VERNON_FAST_CHECKPOINT_DIR and no seed");
         assert!(cfg.budget_min > 0.0 && cfg.budget_min <= 60.0, "the fast tier is bounded at one hour");
         assert!(cfg.wake_co.is_none() || cfg.delta_t_s.is_none(), "give a wake Courant target or a time step, not both");
@@ -780,6 +785,67 @@ impl FastTier {
         assert!((500..=2000).contains(&cfg.steady_iter), "the steady start runs 500..=2000 iterations");
         cfg
     }
+}
+
+/// The working-variable field: the eddy-viscosity file `nut` (same
+/// dimensions; its header and internal values, in whatever write format the
+/// steady run used) renamed, with the boundary conditions of `own`, the
+/// case writer's ASCII field. Keywords in a binary field file are ASCII.
+fn nu_tilda_from_nut(own: &[u8], nut: &[u8]) -> Vec<u8> {
+    let find = |hay: &[u8], needle: &[u8], from: usize| hay[from..].windows(needle.len()).position(|w| w == needle).map(|i| i + from);
+    let internal = find(nut, b"
+internalField", 0).expect("a field file has an internalField");
+    let object = find(&nut[..internal], b"object", 0).expect("a field file names its object");
+    let object_end = find(nut, b";", object).expect("the object entry ends");
+    let nut_boundary = find(nut, b"
+boundaryField", internal).expect("a field file has a boundaryField");
+    let own_boundary = find(own, b"
+boundaryField", 0).expect("a field file has a boundaryField");
+    let mut out = nut[..object].to_vec();
+    out.extend_from_slice(b"object      nuTilda");
+    out.extend_from_slice(&nut[object_end..nut_boundary]);
+    out.extend_from_slice(&own[own_boundary..]);
+    out
+}
+
+#[test]
+fn fast_tier_nu_tilda_starts_from_the_steady_eddy_viscosity() {
+    let own = b"FoamFile
+{
+    format      ascii;
+    object      nuTilda;
+}
+dimensions [0 2 -1 0 0 0 0];
+
+internalField uniform 0.00015;
+
+boundaryField
+{
+    inlet { type fixedValue; value uniform 0.00015; }
+}
+";
+    // A binary internal field, including bytes that are not UTF-8.
+    let mut nut = b"FoamFile
+{
+    format      binary;
+    object      nut;
+}
+dimensions [0 2 -1 0 0 0 0];
+
+internalField nonuniform List<scalar> 2(".to_vec();
+    nut.extend_from_slice(&[0xff, 0xfe, 0x00, 0x3b, 0x80, 0x01, 0x02, 0x03, 0x9f, 0xc0, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66]);
+    nut.extend_from_slice(b");
+
+boundaryField
+{
+    inlet { type calculated; value uniform 0; }
+}
+");
+    let got = nu_tilda_from_nut(own, &nut);
+    let text = String::from_utf8_lossy(&got);
+    assert!(text.contains("object      nuTilda;") && !text.contains("object      nut;") && text.contains("format      binary;"), "{text}");
+    assert!(got.windows(4).any(|w| w == [0xff, 0xfe, 0x00, 0x3b]) && text.contains("type fixedValue; value uniform 0.00015;"), "{text}");
+    assert!(!text.contains("calculated") && !text.contains("internalField uniform"), "{text}");
 }
 
 /// Replace one unindented `key   value;` entry of an OpenFOAM dictionary.
@@ -880,7 +946,7 @@ fn latest_complete_time(case: &std::path::Path, ranks: usize) -> Option<(f64, St
     let complete = |name: &str| {
         (0..ranks).all(|r| {
             let dir = case.join(format!("processor{r}")).join(name);
-            crate::diagnostic::arms::CHECKPOINT_FIELDS.iter().chain(["uniform/time"].iter()).all(|f| std::fs::metadata(dir.join(f)).is_ok_and(|m| m.is_file() && m.len() > 0))
+            crate::diagnostic::arms::restart_fields(&dir).iter().chain(["uniform/time"].iter()).all(|f| std::fs::metadata(dir.join(f)).is_ok_and(|m| m.is_file() && m.len() > 0))
         })
     };
     numeric_time_dirs(&case.join("processor0"))
@@ -1278,6 +1344,7 @@ fn real_openfoam_fast_tier_run() {
 
     let ddes = cook(&reg, "cfd.case_setup", vec![Some(mesh_case), j(&air), j(&bc[0]), None, reference.clone(), j(&domain[0])], &[
         ("solver_mode", ParamValue::Str("transient_ddes".into())),
+        ("les_model", ParamValue::Str(cfg.les_model.clone())),
         ("end_time_s", ParamValue::Float(first_end)),
         // Written at the seed's step when it differs, so the recipe can be
         // checked against the seed; switched to this run's step after.
@@ -1314,6 +1381,16 @@ fn real_openfoam_fast_tier_run() {
                 }
             }
             assert!(seeded.iter().any(|f| f == "U") && seeded.iter().any(|f| f == "p"), "the steady start must provide U and p");
+            // The one-equation model starts its working variable from the
+            // steady eddy viscosity (equal away from walls), keeping its own
+            // boundary conditions.
+            if cfg.les_model == "SpalartAllmarasDDES" {
+                let nut = std::fs::read(steady_dir.join("nut")).expect("the steady start must provide nut");
+                let target = case.join("0/nuTilda");
+                let own = std::fs::read(&target).unwrap();
+                std::fs::write(&target, nu_tilda_from_nut(&own, &nut)).unwrap();
+                seeded.push("nuTilda (from nut)".to_string());
+            }
             println!("seeded from the steady start: {seeded:?}");
         }
         (None, None) => unreachable!(),
@@ -1527,7 +1604,7 @@ fn real_openfoam_fast_tier_run() {
         "label": cfg.label, "tier": "fast", "contract": "wp9-fast-tier-v1 (draft; not the road-car contract)",
         "geometry": cfg.geometry, "angle_deg": if is_slant { Some(cfg.angle_deg) } else { None },
         "u_ms": cfg.u_ms, "nu": cfg.nu, "rho": rho, "reynolds_length": cfg.u_ms * length / cfg.nu,
-        "length_m": length, "a_front_m2": a_front, "aref_m2": fast_aref(a_front, cfg.full_body), "half_model": !cfg.full_body,
+        "length_m": length, "a_front_m2": a_front, "aref_m2": fast_aref(a_front, cfg.full_body), "half_model": !cfg.full_body, "les_model": cfg.les_model,
         "dx0_m": cfg.dx0_m, "np": cfg.np,
     });
     let transient_row = serde_json::json!({

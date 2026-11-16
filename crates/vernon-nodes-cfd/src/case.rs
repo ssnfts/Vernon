@@ -173,6 +173,7 @@ fn setup_info() -> NodeTypeInfo {
         .param(ParamSpec::int("outer_correctors", "Transient outer correctors", 2, 1, 10).help("Transient recipe only: outer pressure-velocity loops per time step."))
         .param(ParamSpec::int("correctors", "Transient pressure correctors", 2, 1, 10).help("Transient recipe only: pressure corrections per outer loop."))
         .param(ParamSpec::choice("time_step_mode", "Transient time step", "adjustable", &["adjustable", "fixed"]).help("Transient recipe only. adjustable: the solver shrinks or grows the step to the Courant limit. fixed: the first time step is kept for the whole run, so a half-step check can be made against it."))
+        .param(ParamSpec::choice("les_model", "Transient turbulence model", "kOmegaSSTDDES", &["kOmegaSSTDDES", "SpalartAllmarasDDES"]).help("Transient recipe only. kOmegaSSTDDES transports k and omega; SpalartAllmarasDDES transports the one working variable nuTilda, free stream at ten times the kinematic viscosity."))
         .param(ParamSpec::float("average_from_s", "Transient averaging start", 0.0, 0.0, 100.0).unit("s").help("Transient recipe only: physical time at which the running averages of velocity and pressure start, normally the end of the wash-out. 0 averages from the start."))
         .help("Writes the two-equation RANS case (k-omega SST, wall functions) by default: initial and boundary fields, transport and turbulence settings, schemes, solver controls, force and force-coefficient monitors, porous and rotating-frame zones. Flag separated-flow features to have the report and the force coefficients warn that steady RANS is only a trend there. The solver recipe setting can instead write a transient detached-eddy case to run outside this graph.")
         .emulates("CFD GUI front end: steady solver case writer")
@@ -311,6 +312,11 @@ fn setup_cook(ctx: &CookContext, ins: &[Option<Data>], p: &Params) -> CookResult
                     other => return Err(ctx.fail(format!("unknown time step mode '{other}'"))),
                 },
                 average_from_s: p.float("average_from_s")?,
+                spalart_allmaras: match p.str("les_model")? {
+                    "SpalartAllmarasDDES" => true,
+                    "kOmegaSSTDDES" => false,
+                    other => return Err(ctx.fail(format!("unknown turbulence model '{other}'"))),
+                },
             };
             t.validate().map_err(|e| ctx.fail(e))?;
             Some(t)
@@ -360,6 +366,15 @@ fn setup_cook(ctx: &CookContext, ins: &[Option<Data>], p: &Params) -> CookResult
         write_setup_file(ctx, case, &format!("0/{name}"), &text)?;
         write_setup_file(ctx, case, &format!("0.orig/{name}"), &text)?;
     }
+    // The one-equation model's working variable exists only in its own cases.
+    if transient.as_ref().is_some_and(|t| t.spalart_allmaras) {
+        let text = foam::nu_tilda_field(&spec);
+        write_setup_file(ctx, case, "0/nuTilda", &text)?;
+        write_setup_file(ctx, case, "0.orig/nuTilda", &text)?;
+    } else {
+        remove_setup_file(ctx, case, "0/nuTilda")?;
+        remove_setup_file(ctx, case, "0.orig/nuTilda")?;
+    }
     for name in ["physicalProperties", "transportProperties"] {
         if name != flavour.physical_properties() {
             remove_setup_file(ctx, case, &format!("constant/{name}"))?;
@@ -381,14 +396,14 @@ fn setup_cook(ctx: &CookContext, ins: &[Option<Data>], p: &Params) -> CookResult
         case,
         &format!("constant/{}", flavour.momentum_transport()),
         &match &transient {
-            Some(_) => foam::ddes_turbulence(&spec),
+            Some(t) => foam::ddes_turbulence(&spec, t),
             None => foam::momentum_transport(&spec),
         },
     )?;
     let (control, schemes, solution) = match &transient {
         Some(t) => (
             foam::ddes_control_dict(&spec, t),
-            foam::ddes_fv_schemes(&spec),
+            foam::ddes_fv_schemes(&spec, t),
             foam::ddes_fv_solution(&spec, t),
         ),
         None => (
@@ -450,11 +465,7 @@ fn setup_cook(ctx: &CookContext, ins: &[Option<Data>], p: &Params) -> CookResult
         yaw_deg: domain.yaw_deg,
         turbulence: format!(
             "{} I={:.3}% nut/nu={:.1}",
-            if transient.is_some() {
-                "kOmegaSSTDDES"
-            } else {
-                "kOmegaSST"
-            },
+            transient.as_ref().map_or("kOmegaSST", |t| t.les_model()),
             spec.i_pct,
             spec.nut_ratio
         ),
@@ -465,7 +476,7 @@ fn setup_cook(ctx: &CookContext, ins: &[Option<Data>], p: &Params) -> CookResult
     m["solver_mode"] = json!(p.str("solver_mode")?);
     m["transient"] = match &transient {
         Some(t) => json!({
-            "application": "pimpleFoam", "turbulence_model": "kOmegaSSTDDES", "simulation_type": "LES",
+            "application": "pimpleFoam", "turbulence_model": t.les_model(), "simulation_type": "LES",
             "delta": "maxDeltaxyz", "time_basis": "seconds", "end_time_s": t.end_time_s, "delta_t_s": t.delta_t_s,
             "max_delta_t_s": t.max_delta_t_s, "max_co": t.max_co, "write_interval_s": t.write_interval_s,
             "outer_correctors": t.outer_correctors, "correctors": t.correctors,
@@ -1272,6 +1283,40 @@ mod tests {
             "{r:?}"
         );
         assert!(!r.metrics.contains_key("solve_done"));
+    }
+
+    #[test]
+    fn transient_spalart_allmaras_writes_its_one_field_and_keeps_the_sst_files_otherwise() {
+        let (sst, _) = ddes(&[], "ddes-sa-sst");
+        assert!(!sst.join("0/nuTilda").exists() && !sst.join("0.orig/nuTilda").exists());
+        let (case, _) = ddes(
+            &[("les_model", ParamValue::Str("SpalartAllmarasDDES".into())), ("nu", ParamValue::Float(1.5e-5))],
+            "ddes-sa",
+        );
+        let turb = read(&case, "constant/turbulenceProperties");
+        assert!(turb.contains("LESModel        SpalartAllmarasDDES;") && turb.contains("delta           maxDeltaxyz;"), "{turb}");
+        let nt = read(&case, "0/nuTilda");
+        assert!(nt.contains("[0 2 -1 0 0 0 0]") && nt.contains("uniform 0.00015"), "{nt}");
+        assert_eq!(nt, read(&case, "0.orig/nuTilda"));
+        let schemes = read(&case, "system/fvSchemes");
+        assert!(
+            schemes.contains("grad(nuTilda)   cellLimited Gauss linear 1;")
+                && schemes.contains("div(phi,nuTilda) Gauss linearUpwind grad(nuTilda);"),
+            "{schemes}"
+        );
+        let solution = read(&case, "system/fvSolution");
+        assert!(solution.contains("\"(U|k|omega|nuTilda)Final\"") && solution.contains("\"(U|k|omega|nuTilda)\"
+        {
+            tolerance       1e-06;"), "{solution}");
+        for f in ["0/nuTilda", "constant/turbulenceProperties", "system/fvSchemes", "system/fvSolution"] {
+            foam::check_syntax(&read(&case, f)).unwrap_or_else(|e| panic!("{f}: {e}"));
+        }
+        assert_eq!(manifest(&case).unwrap()["transient"]["turbulence_model"], "SpalartAllmarasDDES");
+        // The SST files do not change when the option exists but is off.
+        for f in ["constant/turbulenceProperties", "system/fvSchemes"] {
+            assert!(!read(&sst, f).contains("nuTilda"), "{f}");
+        }
+        assert!(read(&sst, "system/fvSolution").contains("\"(U|k|omega)Final\""));
     }
 
     fn m_time_step_mode(case: &Path) -> String {

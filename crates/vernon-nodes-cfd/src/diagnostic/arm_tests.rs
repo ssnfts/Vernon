@@ -210,6 +210,25 @@ fn a_preserved_checkpoint_is_complete_and_tamper_evident() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
+#[test]
+fn a_one_equation_checkpoint_needs_its_working_variable_in_place_of_k_and_omega() {
+    let root = std::env::temp_dir().join(format!("vernon-wp9-checkpoint-sa-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    fake_checkpoint(&root, 2000);
+    for n in 0..16 {
+        let dir = root.join(format!("processor{n}/2000"));
+        std::fs::remove_file(dir.join("k")).unwrap();
+        std::fs::remove_file(dir.join("omega")).unwrap();
+        write_text(&dir.join("nuTilda"), "nuTilda");
+    }
+    assert_eq!(crate::diagnostic::arms::restart_fields(&root.join("processor0/2000")), &SA_CHECKPOINT_FIELDS[..]);
+    assert_eq!(checkpoint_files(&root, 2000).unwrap().len(), 16 * (5 + 5 + 1) + 8);
+    // Without its working variable a rank is read as two-equation and fails.
+    std::fs::remove_file(root.join("processor4/2000/nuTilda")).unwrap();
+    assert!(checkpoint_files(&root, 2000).unwrap_err().contains("processor4/2000 has no k"));
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 /// The extension of the best arm: U relaxation 0.7, 100 settle iterations and
 /// then 2000 samples, scored as two adjacent 1000-sample gate windows.
 #[test]

@@ -24,6 +24,22 @@ pub const GATE_SPEC: ConvSpec = ConvSpec { window: 1000, tol_pct: 0.2, drift_lim
 pub const OPEN_PATCHES: [&str; 4] = ["inlet", "outlet", "top", "side"];
 /// Fields every rank must hold at the checkpoint time.
 pub const CHECKPOINT_FIELDS: [&str; 6] = ["U", "p", "k", "omega", "nut", "phi"];
+/// The same for the one-equation Spalart-Allmaras model, whose only
+/// transported turbulence field is its working variable.
+pub const SA_CHECKPOINT_FIELDS: [&str; 5] = ["U", "p", "nuTilda", "nut", "phi"];
+/// Every field a restart may carry, for either model.
+pub const RESTART_FIELDS: [&str; 7] = ["U", "p", "k", "omega", "nuTilda", "nut", "phi"];
+
+/// The fields a written time directory must hold to restart from it: the
+/// one-equation model's when its working variable is there, else the
+/// two-equation model's.
+pub fn restart_fields(time_dir: &Path) -> &'static [&'static str] {
+    if time_dir.join("nuTilda").is_file() {
+        &SA_CHECKPOINT_FIELDS
+    } else {
+        &CHECKPOINT_FIELDS
+    }
+}
 pub const CHECKPOINT_FILE: &str = "vernon_checkpoint.json";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -589,7 +605,7 @@ pub fn checkpoint_files_in(case: &Path, time: &str, spec: &CheckpointSpec) -> Re
             }
             walk_checkpoint(case, &d, &mut out)?;
         }
-        for f in CHECKPOINT_FIELDS {
+        for f in restart_fields(&rank.join(time)) {
             if !rank.join(time).join(f).is_file() {
                 return Err(format!("processor{n}/{time} has no {f}"));
             }

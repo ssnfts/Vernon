@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::diagnostic::arms::{preserve_checkpoint_in, verify_checkpoint_in, CheckpointSpec, CHECKPOINT_FIELDS};
+use crate::diagnostic::arms::{preserve_checkpoint_in, verify_checkpoint_in, CheckpointSpec, RESTART_FIELDS};
 use crate::diagnostic::fnv1a_file;
 
 fn fnv1a(bytes: &[u8]) -> u64 {
@@ -272,7 +272,7 @@ impl Seed {
         let mut installed = Vec::new();
         for n in 0..self.record.identity.np {
             let rank = format!("processor{n}/");
-            let restart: Vec<String> = CHECKPOINT_FIELDS.iter().map(|f| format!("{rank}{}/{f}", self.time_name)).chain([format!("{rank}{}/uniform/time", self.time_name)]).collect();
+            let restart: Vec<String> = RESTART_FIELDS.iter().map(|f| format!("{rank}{}/{f}", self.time_name)).chain([format!("{rank}{}/uniform/time", self.time_name)]).collect();
             for rel in self.files.keys() {
                 if rel.starts_with(&format!("{rank}constant/polyMesh/")) {
                     self.copy_checked(rel, case)?;
@@ -305,7 +305,7 @@ mod tests {
             for f in ["points", "faces", "owner", "neighbour", "boundary"] {
                 write(&rank.join("constant/polyMesh").join(f), &format!("{n} {f}"));
             }
-            for f in CHECKPOINT_FIELDS.iter().chain(&["UMean", "pPrime2Mean"]) {
+            for f in crate::diagnostic::arms::CHECKPOINT_FIELDS.iter().chain(&["UMean", "pPrime2Mean"]) {
                 write(&rank.join(T).join(f), &format!("{n} {f} at {T}"));
             }
             write(&rank.join(T).join("uniform/time"), "deltaT 0.000261");
@@ -380,7 +380,7 @@ mod tests {
         assert_eq!(std::fs::read_to_string(mesh_case.join("constant/polyMesh/points")).unwrap(), "reconstructed points");
         assert!(!mesh_case.join("processor0").exists() && !mesh_case.join("logs").exists());
         let installed = seed.install(&mesh_case).unwrap();
-        assert_eq!(installed.len(), 2 * (CHECKPOINT_FIELDS.len() + 1));
+        assert_eq!(installed.len(), 2 * (crate::diagnostic::arms::CHECKPOINT_FIELDS.len() + 1));
         assert!(mesh_case.join("processor1/0.4176/phi").is_file() && mesh_case.join("processor1/constant/polyMesh/owner").is_file());
         assert!(!mesh_case.join("processor0/0.4176/UMean").exists(), "averages are not carried over");
         assert!(!mesh_case.join("processor0/0.4176/uniform/functionObjects").exists(), "nor the averaging state");

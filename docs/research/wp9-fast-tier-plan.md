@@ -561,6 +561,38 @@ been varied: the turbulence model (our SST-DDES with wall functions at y+ ≈
 check keeps failing by small margins in both directions with a 1 CTU window;
 it needs a longer window before it can judge the step.
 
+**2026-11-16, user decision: "SA-DDES model".** The case writer gains a
+transient turbulence-model choice (`les_model`: kOmegaSSTDDES, default, or
+SpalartAllmarasDDES, the dataset's model). The one-equation case writes
+`0/nuTilda` (free stream 10ν, the dataset's ratio; zero gradient on walls,
+the wall function acting on nut as before), adds its gradient and
+convection schemes and its solver entries; the two-equation files are
+byte-identical when the option is off (test). Checkpoints require nuTilda in
+place of k and omega when nuTilda is present; the per-step rule reads the
+nuTilda solve and does not apply a rule to a field the model does not solve
+(tests). The harness (`VERNON_FAST_LES_MODEL`) starts nuTilda from the
+steady nut (spliced as bytes: the steady fields are written in binary).
+Same grid as the SST 0.251 run: 450,224 cells, half model, 0.95 mm first
+layer (body y+ mean 52), wake Courant 1 (91 steps/CTU).
+
+| Run | Window (CTU) | Cd ± s.e. | Outcome |
+|---|---|---|---|
+| `sa-…-a` (fresh) | 2–8 | 0.290 ± 0.009 | window passed; half-step 0.021 against 0.020 allowed |
+| `sa-…-b` | 8–16 | 0.261 ± 0.004 | window passed; half-step 0.012 against 0.009 allowed |
+| `sa-…-c` | 16–25 | **0.264 ± 0.004** | **PASS** (half-step 0.0065 against 0.0100; nuTilda, U and p rules met on all 819 + 183 steps); −5.4%, interval overlaps the ±5% band |
+
+**What the model change does.** On the same grid and wall layer, SA-DDES
+settles at 0.261–0.264 against SST-DDES's 0.251 (half) and 0.246–0.252
+(full): about +5%, half of the 10–12% gap to 0.279. The fresh hour reads
+high (0.290) for the same reason the SST full-body fresh hour read 0.295:
+the steady start's wake washes out over the first ~8 CTU. The remaining
+5% sits where the dataset's own grid trend says a coarse grid would not
+put it (their 3.6M-cell run reads 0.300, above the fine value); our
+0.45M-cell grid reads below. Untested still: resolution (0.45M against
+3.6–35M) and the wall treatment at y+ ≈ 1. A WSL start that raced an idle
+stop of the distribution (`WSL_E_USER_NOT_FOUND`) cost one attempt; the run
+queue now holds the distribution up with a sleeping process for its length.
+
 What this adds: the honest fast-tier statement for this body is a trend,
 not a value: the wash-out needed is longer than the budget allows at 0.5M
 cells and 16 ranks. Any pass within the hour would need either a converged

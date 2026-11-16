@@ -11,6 +11,7 @@
     "mesh": "snappyHexMesh half model with symmetry plane, about 0.5M cells (dx0 0.092 m on the classic body), 5 prism layers",
     "start": "steady k-omega SST, 500..2000 iterations, used as the initial field and as a labelled trend only",
     "solver": "pimpleFoam, kOmegaSSTDDES, delta maxDeltaxyz, DEShybrid linear/linearUpwind momentum convection, limited k/omega gradients, turbulence on every outer loop, outer residual control, fixed time step, running averages of U and p from the wash-out end",
+    "turbulence_model_option": "les_model: kOmegaSSTDDES (default) or SpalartAllmarasDDES (the slant-body dataset's model; nuTilda free stream 10 nu, started from the steady nut). Each row records its model; on the 0.45M validation grid SA-DDES read Cd 0.264 against SST-DDES 0.251 (2026-11-16).",
     "time_step": "fixed, an integer number of steps per convective unit (default 100), requested from the wake Courant number, never from Cd; checked by the half-step segment",
     "limitations": [
       "half model: the symmetry plane suppresses side-to-side wake motion; the open datasets ran full bodies",

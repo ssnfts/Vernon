@@ -667,9 +667,16 @@ pub struct TransientControls {
     /// Physical time at which the running averages of U and p start (the end
     /// of the wash-out); 0 averages from the start.
     pub average_from_s: f64,
+    /// Spalart-Allmaras DDES (one transported field, nuTilda) instead of the
+    /// k-omega SST DDES. The SST files stay byte-identical when false.
+    pub spalart_allmaras: bool,
 }
 
 impl TransientControls {
+    pub fn les_model(&self) -> &'static str {
+        if self.spalart_allmaras { "SpalartAllmarasDDES" } else { "kOmegaSSTDDES" }
+    }
+
     pub fn validate(&self) -> Result<(), String> {
         for (name, v) in [("end time", self.end_time_s), ("time step", self.delta_t_s), ("largest time step", self.max_delta_t_s), ("Courant limit", self.max_co), ("write interval", self.write_interval_s)] {
             if !v.is_finite() || v <= 0.0 {
@@ -696,18 +703,26 @@ impl TransientControls {
     }
 }
 
-pub fn ddes_turbulence(c: &CaseSpec) -> String {
+pub fn ddes_turbulence(c: &CaseSpec, t: &TransientControls) -> String {
     let mut o = header("dictionary", "constant", c.flavour.momentum_transport());
-    o += "simulationType  LES;\n\nLES\n{\n    LESModel        kOmegaSSTDDES;\n    turbulence      on;\n    printCoeffs     on;\n    delta           maxDeltaxyz;\n}\n";
+    o += &format!("simulationType  LES;\n\nLES\n{{\n    LESModel        {};\n    turbulence      on;\n    printCoeffs     on;\n    delta           maxDeltaxyz;\n}}\n", t.les_model());
     o
 }
 
-pub fn ddes_fv_schemes(c: &CaseSpec) -> String {
+/// The Spalart-Allmaras working variable: free stream at ten times the
+/// kinematic viscosity (the open slant-body dataset's ratio), zero gradient on
+/// walls (the wall function acts on nut).
+pub fn nu_tilda_field(c: &CaseSpec) -> String {
+    turb_field(c, "nuTilda", "[0 2 -1 0 0 0 0]", 10.0 * c.nu, "zeroGradient")
+}
+
+pub fn ddes_fv_schemes(c: &CaseSpec, t: &TransientControls) -> String {
     let lap = if c.nonortho_over_70 { "limited corrected 0.5" } else { "corrected" };
     let mut o = header("dictionary", "system", "fvSchemes");
     o += "ddtSchemes\n{\n    default         backward;\n}\n\n";
     // grad(k) and grad(omega) limited as in the steady recipe (WP9 D5).
-    o += "gradSchemes\n{\n    default         Gauss linear;\n    grad(U)         cellLimited Gauss linear 1;\n    grad(k)         cellLimited Gauss linear 1;\n    grad(omega)     cellLimited Gauss linear 1;\n}\n\n";
+    let sa_grad = if t.spalart_allmaras { "    grad(nuTilda)   cellLimited Gauss linear 1;\n" } else { "" };
+    o += &format!("gradSchemes\n{{\n    default         Gauss linear;\n    grad(U)         cellLimited Gauss linear 1;\n    grad(k)         cellLimited Gauss linear 1;\n    grad(omega)     cellLimited Gauss linear 1;\n{sa_grad}}}\n\n");
     // Momentum convection blends central differencing in the resolved (LES)
     // region with second-order upwind in the modelled (RANS) region, using the
     // model's own `delta`; the arguments are the DES constant 0.65, the
@@ -715,9 +730,10 @@ pub fn ddes_fv_schemes(c: &CaseSpec) -> String {
     // sigma limits 0..1 and the vorticity limit 1. This is the form the open
     // slant-body dataset ran in the same solver family.
     o += &format!(
-        "divSchemes\n{{\n    default         none;\n    div(phi,U)      Gauss DEShybrid linear linearUpwind grad(U) delta 0.65 {} {} 0 1 1;\n    div(phi,k)      Gauss linearUpwind grad(k);\n    div(phi,omega)  Gauss linearUpwind grad(omega);\n    div((nuEff*dev2(T(grad(U))))) Gauss linear;\n}}\n\n",
+        "divSchemes\n{{\n    default         none;\n    div(phi,U)      Gauss DEShybrid linear linearUpwind grad(U) delta 0.65 {} {} 0 1 1;\n    div(phi,k)      Gauss linearUpwind grad(k);\n    div(phi,omega)  Gauss linearUpwind grad(omega);\n{}    div((nuEff*dev2(T(grad(U))))) Gauss linear;\n}}\n\n",
         num(c.u),
-        num(c.rf.length_m)
+        num(c.rf.length_m),
+        if t.spalart_allmaras { "    div(phi,nuTilda) Gauss linearUpwind grad(nuTilda);\n" } else { "" }
     );
     o += &format!("laplacianSchemes\n{{\n    default         Gauss linear {lap};\n}}\n\n");
     o += &format!("interpolationSchemes\n{{\n    default         linear;\n}}\n\nsnGradSchemes\n{{\n    default         {lap};\n}}\n\nwallDist\n{{\n    method          meshWave;\n}}\n");
@@ -732,12 +748,13 @@ pub fn ddes_fv_solution(c: &CaseSpec, t: &TransientControls) -> String {
     // solve of the time-resolved run on a layered 0.5M-cell mesh (2026-11-11,
     // serial and parallel, with every convection and delta variant); the
     // preconditioned solver ran the same case.
-    o += "solvers\n{\n    p\n    {\n        solver          GAMG;\n        smoother        GaussSeidel;\n        tolerance       1e-8;\n        relTol          0.1;\n    }\n\n    pFinal\n    {\n        $p;\n        relTol          0;\n    }\n\n    \"(U|k|omega)\"\n    {\n        solver          PBiCGStab;\n        preconditioner  DILU;\n        tolerance       1e-8;\n        relTol          0.1;\n    }\n\n    \"(U|k|omega)Final\"\n    {\n        solver          PBiCGStab;\n        preconditioner  DILU;\n        tolerance       1e-8;\n        relTol          0;\n    }\n}\n\n";
+    let fields = if t.spalart_allmaras { "U|k|omega|nuTilda" } else { "U|k|omega" };
+    o += &format!("solvers\n{{\n    p\n    {{\n        solver          GAMG;\n        smoother        GaussSeidel;\n        tolerance       1e-8;\n        relTol          0.1;\n    }}\n\n    pFinal\n    {{\n        $p;\n        relTol          0;\n    }}\n\n    \"({fields})\"\n    {{\n        solver          PBiCGStab;\n        preconditioner  DILU;\n        tolerance       1e-8;\n        relTol          0.1;\n    }}\n\n    \"({fields})Final\"\n    {{\n        solver          PBiCGStab;\n        preconditioner  DILU;\n        tolerance       1e-8;\n        relTol          0;\n    }}\n}}\n\n");
     // Turbulence is solved on every outer loop, so the per-step convergence
     // rule can read a residual drop for k and omega; the outer loops stop
     // early once p reaches 1e-4 and U, k, omega have dropped an order.
     o += &format!(
-        "PIMPLE\n{{\n    momentumPredictor yes;\n    nOuterCorrectors {};\n    nCorrectors     {};\n    nNonOrthogonalCorrectors {};\n    turbOnFinalIterOnly false;\n    outerCorrectorResidualControl\n    {{\n        p\n        {{\n            tolerance       1e-04;\n            relTol          0;\n        }}\n        \"(U|k|omega)\"\n        {{\n            tolerance       1e-06;\n            relTol          0.1;\n        }}\n    }}\n}}\n",
+        "PIMPLE\n{{\n    momentumPredictor yes;\n    nOuterCorrectors {};\n    nCorrectors     {};\n    nNonOrthogonalCorrectors {};\n    turbOnFinalIterOnly false;\n    outerCorrectorResidualControl\n    {{\n        p\n        {{\n            tolerance       1e-04;\n            relTol          0;\n        }}\n        \"({fields})\"\n        {{\n            tolerance       1e-06;\n            relTol          0.1;\n        }}\n    }}\n}}\n",
         t.outer_correctors,
         t.correctors,
         u32::from(c.nonortho_over_70)
