@@ -78,6 +78,48 @@ unexpected failing gates and the 5 documented expected gates (AGENTS.md). `E.pip
 the last node of each stage. `E.app.start_probe` launches the desktop binary and requires it to
 stay up for 6 s; it is SKIPPED unless the app was built (`bench\run.ps1 -WithApp`).
 
+### Real-file checks
+
+Files live in `scratch/real-files/` (git-ignored, never committed). The
+`#[ignore = "needs real sample files"]` tests in
+`crates/vernon-io/tests/real_files.rs` and `capture.import_scan` (in
+`vernon-nodes-capture`, `real_scan_files_import_through_the_node`) read them
+when present.
+
+| File | Source | Licence | SHA-256 |
+|---|---|---|---|
+| `pump.e57` (52,496,384 B) | `http://sourceforge.net/projects/e57-3d-imgfmt/files/E57Example-data/pump.e57/download` (libE57 example data; Leica ScanStation, 2008) | E57 "Test Data License" (modified MIT: free use and copying, keep copyright notices; Carnahan-Proctor and Cross, Inc.) | `5b582e9247979a29ac7cccb6afa942e632d84f91867130f094fa488629e3c124` |
+| `vegetation_1_3.las` (299,359 B) | `https://raw.githubusercontent.com/laspy/laspy/master/tests/data/vegetation_1_3.las` | laspy BSD 3-clause | `c3e882a096b12cecd1c7b803ba8e69d7bc1d327bbc1df05c02375654e097dfcb` |
+| `simple1_4.las` (814,388 B) | `https://raw.githubusercontent.com/laspy/laspy/master/tests/data/simple1_4.las` | laspy BSD 3-clause | `1162a745e71e9eedddf453062e01c476e791ea09a75190f68f52050dad4a0330` |
+
+Results against each file's own header (no reader bug found, nothing changed
+in the readers):
+- **`pump.e57`**: every page CRC-32C passed, so the big-endian checksum
+  layout is right for a real vendor file. 5 scans, 2,878,964 records; 1,213,990
+  valid points kept (`cartesianInvalidState` drops the rest, including the
+  -2147.48 m sentinels of the 1.44 M-record scan). World xMin -3034.4 mm
+  matches scan 1's header bound plus its pose translation (-0.005631 m +
+  -3.028748 m). Intensity stays in 0..1 (header limits 0..1), `Cd` present.
+  Through `capture.import_scan` the count is identical, unit scale 1, metric.
+- **`vegetation_1_3.las`** (LAS 1.3, format 1): 10,683 points and all six
+  header bounds match to under 0.5 mm after the metre to mm conversion. No
+  coordinate-system record, so `las_unit_source` is `assumed_metres` and the
+  node warns, as designed.
+- **`simple1_4.las`** (LAS 1.4, format 7): the file carries EPSG:4326 with
+  angular units, so reading it without a unit is refused. With a unit named it
+  reads 22,600 points and the z range 44..254 matches the header.
+
+fTetWild on a scanned panel: `examples/bodykit_pipeline.vrn` nodes 0 to 11
+(car panel, scan noise 0.05 mm, ICP align, fitted patch, 3 mm thickened shell)
+into `fea.tet_mesh` with `run` on, `edge_len_mm` 12, order 2 (fTetWild commit
+`8118f81` in the `Vernon-Ubuntu-24.04` WSL distro): 28,043 elements, 57,359
+nodes, volume error 1.14 % (mesh 1.6675e6 against surface 1.6488e6 mm3), min
+dihedral 12.0 deg, `placeholder` 0. The default 1e-3 envelope gives a volume
+error just above the 1 % the synthetic shapes reach. The wrapper needs an
+absolute work folder (`--work` with a relative path made the WSL launcher look
+for a path it could not translate). The panel is a synthetic scan, not a
+photogrammetry file; there is no public real car-panel mesh in this set.
+
 ## What is NOT validated
 
 - **No physical-accuracy claim.** There is no wind-tunnel, strain-gauge, scanner-certificate or

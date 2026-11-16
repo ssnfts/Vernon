@@ -534,4 +534,26 @@ mod tests {
         let e = cook_import("tile.laz", &las(&POINTS, None), "mm").unwrap_err();
         assert!(e.contains("unsupported file type '.laz'"), "{e}");
     }
+
+    /// The real-file checks of `docs/VALIDATION.md` ("Real-file checks"): the
+    /// sample files are never committed, so this is skipped when absent.
+    #[test]
+    #[ignore = "needs real sample files"]
+    fn real_scan_files_import_through_the_node() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scratch/real-files");
+        let read = |n: &str| std::fs::read(dir.join(n)).ok();
+        if let Some(b) = read("pump.e57") {
+            let (g, r) = cook_import("pump.e57", &b, "in").unwrap();
+            assert_eq!(g.point_count(), vernon_io::read_bytes(Format::E57, &b, &ReadOptions::default()).unwrap().point_count());
+            assert!(g.point_count() > 1_000_000);
+            assert_eq!(metric_flag(&g), Some(true));
+            assert_eq!(r.metrics["unit_scale"].value, 1.0);
+        }
+        if let Some(b) = read("vegetation_1_3.las") {
+            let (g, r) = cook_import("vegetation_1_3.las", &b, "mm").unwrap();
+            assert_eq!(g.point_count(), 10_683);
+            assert_eq!(metric_flag(&g), Some(false), "no unit in the file: assumed metres");
+            assert!(warnings(&r).iter().any(|t| t.contains("metres were assumed")), "{:?}", warnings(&r));
+        }
+    }
 }

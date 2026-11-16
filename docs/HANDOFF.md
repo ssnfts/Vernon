@@ -544,7 +544,7 @@ then the external solvers, then UI polish, then release.
     the repo, translates Windows paths. Run the `needs fTetWild` tests with that
     folder on PATH. They mesh a box, a curved prism and a non-convex prism at
     order 2, all within 1% volume. The node is implemented; its voxel fallback
-    stays flagged. This has not been tried on a scanned car panel.
+    stays flagged. Tried on a scanned, fitted and thickened panel: see "Real-file checks" in `docs/VALIDATION.md`.
 - **`solve_linear`:** DONE, including the external cross-check. Native reference
   solver for C3D4 and C3D10.
   - Element stiffness from linear/quadratic tet shape functions; orthotropic
@@ -698,7 +698,8 @@ refused with a clear error; no decoder was added and no dependency changed.
 - **Formats:** `Format::E57` and `Format::Las` in `from_path`, `sniff` and
   `extensions()`; `write_extensions()` and `can_write()` keep them out of
   writing, and the writers refuse them before touching any file.
-- **Not proven against real files:** the tests build small E57 and LAS files
+- **Real files (checked later):** see "Real-file checks" in `docs/VALIDATION.md`: a real E57 and two real LAS files match their headers.
+- **Previously not proven against real files:** the tests build small E57 and LAS files
   inside the test from the public format descriptions (the CRC-32C matches the
   standard check value `0xE3069283`), so the page-checksum byte order (big
   endian) and field layouts are only checked against our own builder. Try a
