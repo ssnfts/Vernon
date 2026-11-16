@@ -740,6 +740,8 @@ struct FastTier {
     /// `first_layer_yplus` mode), so it stays the same height on every grid.
     /// Unset keeps the mesher's default: the final layer at half the local cell.
     yplus_target: Option<f64>,
+    /// Mesh and solve the whole body (no symmetry plane). Twice the cells.
+    full_body: bool,
 }
 
 impl FastTier {
@@ -768,6 +770,7 @@ impl FastTier {
             keep_clearance: get("VERNON_FAST_KEEP_CLEARANCE").as_deref() == Some("1"),
             wake_co: get("VERNON_FAST_WAKE_CO").map(|v| v.trim().parse().expect("VERNON_FAST_WAKE_CO must be a number")),
             yplus_target: get("VERNON_FAST_YPLUS").map(|v| v.trim().parse().expect("VERNON_FAST_YPLUS must be a number")),
+            full_body: get("VERNON_FAST_FULL_BODY").as_deref() == Some("1"),
         };
         assert!(cfg.preserve_case.is_none() || (cfg.checkpoint_dir.is_some() && cfg.seed_dir.is_none()), "preserving needs VERNON_FAST_CHECKPOINT_DIR and no seed");
         assert!(cfg.budget_min > 0.0 && cfg.budget_min <= 60.0, "the fast tier is bounded at one hour");
@@ -944,6 +947,46 @@ Time = 0.3
     assert_eq!(last_yplus_by_patch("no y+ here"), serde_json::json!({}));
 }
 
+/// The step log of a WSL start that timed out before anything ran (the
+/// message is written in UTF-16, so NUL bytes are dropped first).
+fn wsl_start_timed_out(log: &str) -> bool {
+    let text: String = log.chars().filter(|c| *c != ' ').collect();
+    text.contains("Wsl/Service/CreateInstance/ERROR_TIMEOUT") && !text.lines().any(|l| l.starts_with("Time = "))
+}
+
+#[test]
+fn fast_tier_retries_only_a_wsl_start_that_ran_nothing() {
+    let utf16ish: String = "Error code: Wsl/Service/CreateInstance/ERROR_TIMEOUT".chars().flat_map(|c| [c, ' ']).collect();
+    assert!(wsl_start_timed_out(&utf16ish));
+    assert!(!wsl_start_timed_out("Time = 0.1
+Error code: Wsl/Service/CreateInstance/ERROR_TIMEOUT"), "a solver that ran is not retried");
+    assert!(!wsl_start_timed_out("Floating point exception"));
+}
+
+/// The reference area the force coefficients use: half the frontal area on a
+/// half model (forces integrate one side only), all of it on a full body.
+fn fast_aref(a_front_m2: f64, full_body: bool) -> f64 {
+    if full_body { a_front_m2 } else { 0.5 * a_front_m2 }
+}
+
+#[test]
+fn fast_tier_full_body_meshes_both_sides_and_keeps_cd_comparable() {
+    assert_eq!(fast_aref(0.112032, false), 0.056016);
+    assert_eq!(fast_aref(0.112032, true), 0.112032);
+    // The tunnel spans both sides of the centre line for a full body.
+    let reg = registry();
+    let reference = Some(Data::json(crate::types::RefGeom::reference_car().to_json()));
+    let domain = |half: bool| {
+        let out = cook(&reg, "cfd.tunnel_domain", vec![reference.clone()], &[("half_model", ParamValue::Bool(half)), ("blockage_pct", ParamValue::Float(2.0))]);
+        out[0].as_json().unwrap().as_ref().clone()
+    };
+    let (half, full) = (domain(true), domain(false));
+    assert_eq!(half["half_model"], true);
+    assert_eq!(full["half_model"], false);
+    let ymin = |d: &Value| d["min_m"][1].as_f64().unwrap();
+    assert!(ymin(&half).abs() < 1e-12 && ymin(&full) < -0.1, "{half} / {full}");
+}
+
 /// A per-run work directory for files the harness writes itself.
 fn case_root_for(label: &str) -> std::path::PathBuf {
     let dir = std::env::temp_dir().join(format!("vernon-fast-{label}"));
@@ -1009,7 +1052,7 @@ fn real_openfoam_fast_tier_run() {
     // names; the October runs were not rotated.
     let prep = cook(&reg, "cfd.vehicle_prep", vec![Some(g(body.clone())), None, None], &[
         ("nose_direction", ParamValue::Str("-x".into())),
-        ("half_model", ParamValue::Bool(true)),
+        ("half_model", ParamValue::Bool(!cfg.full_body)),
         ("align_origin", ParamValue::Bool(true)),
     ]);
     print_report("vehicle", &prep[2]);
@@ -1045,6 +1088,7 @@ fn real_openfoam_fast_tier_run() {
         ("blockage_pct", ParamValue::Float(2.0)),
         ("up_l", ParamValue::Float(3.0)),
         ("down_l", ParamValue::Float(5.0)),
+        ("half_model", ParamValue::Bool(!cfg.full_body)),
     ]);
     let bc = cook(&reg, "cfd.ground_wheels", vec![j(&domain[0]), reference.clone(), j(&air)], &[
         ("ground_mode", ParamValue::Str("stationary".into())),
@@ -1294,7 +1338,17 @@ fn real_openfoam_fast_tier_run() {
     std::fs::create_dir_all(&control).unwrap();
     let run_steps = |steps: Vec<(String, Vec<String>)>, minutes: u64| {
         let opts = crate::extproc::RunOpts { runner: "wsl".into(), image: String::new(), bin_dir: String::new(), timeout_min: minutes.max(1) };
-        crate::extproc::run_chain_with_wsl(&opts, &wsl, &case, &control, &steps)
+        let res = crate::extproc::run_chain_with_wsl(&opts, &wsl, &case, &control, &steps);
+        // WSL can refuse a new start while the previous step's process is
+        // still exiting (run full-c of 2026-11-16 lost its half-step this
+        // way). Retry once when the first step started nothing.
+        let first_log = steps.first().map(|(name, _)| std::fs::read_to_string(case.join(format!("logs/{name}.log"))).unwrap_or_default()).unwrap_or_default();
+        if res.failed.is_some() && res.completed.is_empty() && wsl_start_timed_out(&first_log) {
+            println!("WSL did not start ({}); retrying once in 30 s", steps.first().map_or("", |(n, _)| n.as_str()));
+            std::thread::sleep(std::time::Duration::from_secs(30));
+            return crate::extproc::run_chain_with_wsl(&opts, &wsl, &case, &control, &steps);
+        }
+        res
     };
     let solver_step = |name: &str| (name.to_string(), vec!["mpirun".into(), "-np".into(), cfg.np.to_string(), "pimpleFoam".into(), "-parallel".into()]);
     let control_dict = case.join("system/controlDict");
@@ -1473,7 +1527,7 @@ fn real_openfoam_fast_tier_run() {
         "label": cfg.label, "tier": "fast", "contract": "wp9-fast-tier-v1 (draft; not the road-car contract)",
         "geometry": cfg.geometry, "angle_deg": if is_slant { Some(cfg.angle_deg) } else { None },
         "u_ms": cfg.u_ms, "nu": cfg.nu, "rho": rho, "reynolds_length": cfg.u_ms * length / cfg.nu,
-        "length_m": length, "a_front_m2": a_front, "aref_m2": 0.5 * a_front, "half_model": true,
+        "length_m": length, "a_front_m2": a_front, "aref_m2": fast_aref(a_front, cfg.full_body), "half_model": !cfg.full_body,
         "dx0_m": cfg.dx0_m, "np": cfg.np,
     });
     let transient_row = serde_json::json!({

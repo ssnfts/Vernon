@@ -528,6 +528,39 @@ half-step check on its own hour (to settle the step), a full body (removes
 the symmetry plane, doubles the cells), and a y+ ≈ 1 layer study (needs the
 1.5M+ cells the spec gives for low-Re, beyond one hour per window here).
 
+**2026-11-16, full body (user: "Full body").** Harness option
+`VERNON_FAST_FULL_BODY` meshes and solves both sides (vehicle preparation and
+tunnel without the symmetry plane; reference area the whole frontal area;
+test). Same settings as the 0.45M half chain otherwise: dx0 0.092, first
+layer 0.95 mm (y+ estimate 100), near-wake Courant 1 (91 steps per CTU).
+Mesh 871,747 cells (1.93× the half model), non-orthogonality 63.0°, skewness
+2.72, layers 99.95%; body y+ mean 50.5–50.8, as on the half model.
+
+| Run | Window (CTU) | Cd ± s.e. | Outcome |
+|---|---|---|---|
+| `full-…-a` (fresh) | 2–8 | 0.295 ± 0.007 | budget; trend 2.4%/CTU |
+| `full-…-b` | 8–17 | 0.255 ± 0.006 | budget; trend 1.5%/CTU |
+| `full-…-c` | 17–25 | **0.252 ± 0.002** | window passed; half-step got no samples (WSL start timed out while the previous step's process was exiting) |
+| `full-…-d` | 25–31 | **0.246 ± 0.002** | window passed; half-step 0.241, difference 0.005 against 0.0042 allowed |
+
+**Half model against full body, same grid and wall model:** half 0.251 ±
+0.005 (14–21 CTU), full 0.252 ± 0.002 (17–25) and 0.246 ± 0.002 (25–31). The
+symmetry plane is not the cause of the gap to the reference; the full body
+also settles near Cd 0.245–0.25, 10–12% under the dataset's 0.279. A harness
+fix on the way: a step whose WSL start timed out before any time step ran is
+retried once after 30 s (test).
+
+**Where the gap now points.** Grid (0.45M vs 0.88M), time step (CTU/100 vs
+Courant 1), wall-layer sizing (relative vs fixed) and the symmetry plane have
+each been varied; none moves the result toward 0.279 by more than about 2%
+once the wall layer is held. What differs from the reference and has not
+been varied: the turbulence model (our SST-DDES with wall functions at y+ ≈
+50 against the dataset's SA-DDES), the resolution (0.45–0.9M cells against
+3.6–35M), and the reference's own grid trend (0.300 at 3.6M to 0.279 at
+35M: coarse meshes over-predict there, ours under-predict). The half-step
+check keeps failing by small margins in both directions with a 1 CTU window;
+it needs a longer window before it can judge the step.
+
 What this adds: the honest fast-tier statement for this body is a trend,
 not a value: the wash-out needed is longer than the budget allows at 0.5M
 cells and 16 ranks. Any pass within the hour would need either a converged

@@ -125,6 +125,15 @@ evidence. For current commands use docs/SETUP.md and docs/CFD-RUNBOOK.md.
   half-step segment is dominated by slow wake swings (±0.02) and needs a
   longer window to test the step. Next candidates: a longer half-step check,
   a full body, a y+ ≈ 1 study.
+- **Full body (2026-11-16).** Harness option `VERNON_FAST_FULL_BODY`; 871,747
+  cells at the 0.45M-half settings. Windows: 0.252 ± 0.002 (17–25 CTU) and
+  0.246 ± 0.002 (25–31), half-step checks lost or narrowly failed. Same as
+  the half model's 0.251: the symmetry plane is not the cause. Grid, step,
+  layer sizing and symmetry have now each been varied without closing the
+  10–12% gap to 0.279; untested differences are the turbulence model (SST-
+  DDES with wall functions vs the dataset's SA-DDES) and the resolution
+  (0.45–0.9M vs 3.6–35M cells). Also: a WSL start that timed out before any
+  step ran is retried once (test).
 - Nothing was launched through the runner; no gate was lowered; no run was
   relabelled.
 
