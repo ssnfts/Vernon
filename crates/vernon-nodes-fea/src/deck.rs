@@ -33,8 +33,9 @@ pub struct DeckOptions {
     pub ip_stress_print: bool,
     /// Uniform temperature (degC) used when the mesh has no `temp_c` attribute.
     pub temperature_c: f64,
-    /// `(alpha per K, reference degC)`; `None` omits the expansion card.
-    pub thermal_strain: Option<(f64, f64)>,
+    /// `(alpha per K along material axes 1, 2, 3, reference degC)`; `None`
+    /// omits the expansion card. Unequal values write an orthotropic card.
+    pub thermal_strain: Option<([f64; 3], f64)>,
     pub allow_linear_tet: bool,
     pub unit_check: bool,
 }
@@ -77,7 +78,15 @@ pub fn fmt_val(v: f64) -> String {
     }
     let a = v.abs();
     if !(1e-3..1e7).contains(&a) {
-        return format!("{v:E}");
+        // The solver reads at most 20 characters per field: round a long
+        // shortest representation (1.5000000000000001E-4) to 12 decimals.
+        let short = format!("{v:E}");
+        if short.len() <= 20 {
+            return short;
+        }
+        let long = format!("{v:.12E}");
+        let (m, e) = long.split_once('E').unwrap_or((&long, "0"));
+        return format!("{}E{e}", m.trim_end_matches('0'));
     }
     if v.fract() == 0.0 {
         return format!("{v:.0}.");
@@ -297,10 +306,14 @@ pub fn write_deck(inp: &DeckInput) -> Result<DeckOutput, String> {
     elastic_block(&mut s, inp.card, opts);
     s.push_str("*DENSITY\n");
     let _ = writeln!(s, "{},", fmt_val(inp.card.density_t_mm3));
-    if let Some((alpha, tref)) = opts.thermal_strain {
-        s.push_str("*EXPANSION\n");
-        let _ = writeln!(s, "{},", fmt_val(alpha));
-        let _ = tref;
+    if let Some((alpha, _)) = opts.thermal_strain {
+        if alpha[0] == alpha[1] && alpha[1] == alpha[2] {
+            s.push_str("*EXPANSION\n");
+            let _ = writeln!(s, "{},", fmt_val(alpha[0]));
+        } else {
+            s.push_str("*EXPANSION,TYPE=ORTHO\n");
+            let _ = writeln!(s, "{},{},{},", fmt_val(alpha[0]), fmt_val(alpha[1]), fmt_val(alpha[2]));
+        }
     }
     if iso {
         s.push_str("*SOLID SECTION,ELSET=EALL,MATERIAL=PRINT\n");

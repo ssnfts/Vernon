@@ -74,7 +74,7 @@ impl NodeOp for ResultRead {
         }
         let needed: Vec<bool> = (0..n).map(|i| used.contains(&i)).collect();
         let mut out = (*mesh).clone();
-        let mut set = ResultSet { source: man.solver.clone(), frame: if material_frame { "material".into() } else { "global".into() }, cases: vec![] };
+        let mut set = ResultSet { source: man.solver.clone(), frame: if material_frame { "material".into() } else { "global".into() }, cases: vec![], thermal_strain: man.thermal_strain };
         let mut r = Report::new("Structural results");
         let mut env_disp = vec![DVec3::ZERO; n];
         let mut env_vm = vec![0.0f64; n];
@@ -401,10 +401,10 @@ impl NodeOp for SafetyFactor {
         let wp = mesh.points[worst_node];
         r.note(Severity::Info, format!("governing case: {}; lowest raw safety factor at ({:.1}, {:.1}, {:.1}) mm", governing.0, wp.x, wp.y, wp.z));
         r.note(Severity::Info, format!("criterion {}; target {target}; the von Mises value overstates the safety of printed parts because it ignores the weak stacking direction", crit.name()));
-        // Stiff elements read low stresses and the built-in solver has no
-        // thermal strain: both flatter a safety factor.
+        // Stiff elements read low stresses, and a temperature field without
+        // thermal strain misses the restraint stress: both flatter a safety factor.
         let stiff = rs.source == "reference_linear" && mesh.prims.first().is_some_and(|p| p.vertices.len() == 4);
-        let no_thermal = rs.source == "reference_linear" && mesh.point_attribs.contains("temp_c");
+        let no_thermal = rs.source == "reference_linear" && mesh.point_attribs.contains("temp_c") && !rs.thermal_strain;
         let estimate_only = stiff || no_thermal;
         if estimate_only {
             r.metric("estimate_only", Metric::new(1.0, "flag").with_limit(0.0, true));
@@ -413,7 +413,7 @@ impl NodeOp for SafetyFactor {
             r.note(Severity::Warning, "the stresses come from four-node tetrahedra, which read low, so this safety factor cannot pass a gate");
         }
         if no_thermal {
-            r.note(Severity::Warning, "the built-in solver does not model thermal expansion, so this safety factor on a model with temperatures cannot pass a gate");
+            r.note(Severity::Warning, "the material card has no expansion coefficients, so the built-in solver left thermal strain out and this safety factor on a model with temperatures cannot pass a gate");
         }
         if card.retention.as_ref().is_some_and(|t| t.uncalibrated) {
             r.note(Severity::Warning, "the temperature retention curve is uncalibrated");
@@ -834,7 +834,7 @@ mod tests {
         let mut g = mesh.clone();
         g.point_attribs.set("sig_n_aero", AttribArray::Vec3(vec![DVec3::new(10.0, 0.0, 5.0); n]));
         g.point_attribs.set("sig_s_aero", AttribArray::Vec3(vec![DVec3::new(0.0, 0.0, 3.0); n]));
-        let rs = ResultSet { source: "external".into(), frame: "material".into(), cases: vec![CaseResult { name: "aero".into(), speed_factor: 1.0, summary: ResultSummary::default() }] };
+        let rs = ResultSet { source: "external".into(), frame: "material".into(), cases: vec![CaseResult { name: "aero".into(), speed_factor: 1.0, summary: ResultSummary::default() }], thermal_strain: false };
         let run = |crit: &str| {
             let mut p = defaults(&SafetyFactor);
             p.set("criterion", ParamValue::Str(crit.into()));
@@ -866,7 +866,7 @@ mod tests {
 
     #[test]
     fn mount_report_flags_a_missing_reaction() {
-        let rs = ResultSet { source: "external".into(), frame: "global".into(), cases: vec![CaseResult { name: "aero".into(), speed_factor: 1.0, summary: ResultSummary::default() }] };
+        let rs = ResultSet { source: "external".into(), frame: "global".into(), cases: vec![CaseResult { name: "aero".into(), speed_factor: 1.0, summary: ResultSummary::default() }], thermal_strain: false };
         let mut ls = crate::types::LoadSet { name: "aero".into(), ..Default::default() };
         ls.resultant_n = [0.0, 0.0, -100.0];
         let cs = CaseSet { cases: vec![crate::types::LoadCase { name: "aero".into(), speed_factor: 1.0, loads: ls }] };

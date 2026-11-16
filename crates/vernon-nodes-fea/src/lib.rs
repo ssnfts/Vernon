@@ -55,3 +55,5 @@ pub fn register(reg: &mut Registry) {
 mod cantilever;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod thermal_check;

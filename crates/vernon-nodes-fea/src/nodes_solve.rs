@@ -81,7 +81,7 @@ impl NodeOp for DeckWrite {
                 pressure_as_cload: params.bool("pressure_as_cload")?,
                 ip_stress_print: params.bool("ip_stress")?,
                 temperature_c: params.float("temperature_c")?,
-                thermal_strain: params.bool("thermal_strain")?.then(|| (params.float("alpha_per_k").unwrap_or(7.0e-5), params.float("t_ref_c").unwrap_or(23.0))),
+                thermal_strain: params.bool("thermal_strain")?.then(|| ([params.float("alpha_per_k").unwrap_or(7.0e-5); 3], params.float("t_ref_c").unwrap_or(23.0))),
                 allow_linear_tet: params.bool("allow_linear_tet")?,
                 unit_check: params.bool("unit_check")?,
             };
@@ -148,7 +148,7 @@ impl NodeOp for SolveExternal {
         let want_run = params.bool("run")?;
         let exe = find_executable(params.str("exe_path")?, &CCX_NAMES);
         let mut r = Report::new("Structural solver");
-        let mut sm = SolveManifest { dir: runs_dir.to_string_lossy().into_owned(), solver: "external".into(), element_type: man.element_type.clone(), mount_sets: man.mount_sets.clone(), runs: vec![] };
+        let mut sm = SolveManifest { dir: runs_dir.to_string_lossy().into_owned(), solver: "external".into(), element_type: man.element_type.clone(), mount_sets: man.mount_sets.clone(), runs: vec![], thermal_strain: false };
         let threads = params.int("threads")?;
         let envs: Vec<(String, String)> = if threads > 0 { vec![("OMP_NUM_THREADS".into(), threads.to_string()), ("CCX_NPROC_EQUATION_SOLVER".into(), threads.to_string())] } else { vec![] };
         if let (true, Some(e)) = (want_run, &exe) {
@@ -248,7 +248,7 @@ impl NodeOp for SolveLinear {
             .output(PortSpec::new("fields", DataKind::Geometry))
             .param(ParamSpec::float("tol", "Tolerance", 1.0e-10, 1.0e-14, 1.0e-4).help("Relative residual of the conjugate-gradient solve"))
             .param(ParamSpec::int("max_dof", "Largest model", 60000, 1000, 300000).help("Largest number of unknowns this solver accepts"))
-            .help("Built-in linear static solver for four-node and ten-node tetrahedra with orthotropic printed material, used to run the chain without the external solver and to check it. Writes the same result files as the external solver, plus the mesh with disp_<case> on the points and vm_mpa_<case> on the elements. Four-node tetrahedra are stiff in bending and need a fine mesh, so safety factors from them stay estimates that cannot pass a gate. Thermal expansion is not modelled, and the temperature comes only from a temp_c point attribute (23 degC without one), so safety factors on a model with temp_c stay estimates too; use the external solver for those.")
+            .help("Built-in linear static solver for four-node and ten-node tetrahedra with orthotropic printed material, used to run the chain without the external solver and to check it. Writes the same result files as the external solver, plus the mesh with disp_<case> on the points and vm_mpa_<case> on the elements. Four-node tetrahedra are stiff in bending and need a fine mesh, so safety factors from them stay estimates that cannot pass a gate. The temperature comes only from a temp_c point attribute (23 degC without one); it softens the material and, when the material card has expansion coefficients, adds thermal strain against the card's stress-free temperature along the material axes. A model with temp_c and no expansion coefficients stays an estimate.")
             .emulates("linear static solution of a tetrahedral model")
             .implemented()
     }
@@ -265,7 +265,9 @@ impl NodeOp for SolveLinear {
         let mut r = Report::new("Reference linear solution");
         let element_type = if mesh.prims.first().is_some_and(|p| p.vertices.len() == 10) { "C3D10" } else { "C3D4" };
         let mut fields = (*mesh).clone();
-        let mut sm = SolveManifest { dir: root.to_string_lossy().into_owned(), solver: "reference_linear".into(), element_type: element_type.into(), mount_sets: (1..=mounts.sites.len()).map(|k| format!("MOUNT{k}")).collect(), runs: vec![] };
+        let mut sm = SolveManifest { dir: root.to_string_lossy().into_owned(), solver: "reference_linear".into(), element_type: element_type.into(), mount_sets: (1..=mounts.sites.len()).map(|k| format!("MOUNT{k}")).collect(), runs: vec![], thermal_strain: false };
+        let has_temps = mesh.point_attribs.contains("temp_c");
+        sm.thermal_strain = has_temps && card.alpha.is_some();
         for case in &cases.cases {
             let name = sanitize(&case.name).to_lowercase();
             // Same refusal as the deck writer: a wrong-unit model must not reach a gate.
@@ -296,8 +298,10 @@ impl NodeOp for SolveLinear {
             sm.runs.push(RunEntry { case: name.clone(), job: job.clone(), status: "solved".into(), frd: format!("{name}/{job}.frd"), dat: format!("{name}/{job}.dat"), log: String::new(), hash: fnv_hex(dat.as_bytes()), speed_factor: case.speed_factor });
         }
         r.note(Severity::Info, format!("{} load cases solved with {element_type} elements", sm.runs.len()));
-        if mesh.point_attribs.contains("temp_c") {
-            r.note(Severity::Warning, "temperatures soften the material here but thermal expansion is not modelled, so restrained parts miss their thermal stress");
+        if let (true, Some(a)) = (has_temps, card.alpha) {
+            r.note(Severity::Info, format!("thermal strain from temp_c against {} degC, expansion {:.1}/{:.1}/{:.1}e-6 per K along the material axes", card.t_ref_c, a[0] * 1e6, a[1] * 1e6, a[2] * 1e6));
+        } else if has_temps {
+            r.note(Severity::Warning, "temperatures soften the material here but the material card has no expansion coefficients, so restrained parts miss their thermal stress");
         }
         if element_type == "C3D4" {
             r.note(Severity::Warning, "four-node tetrahedra are stiff in bending: deflections and stresses come out low unless the mesh is fine");

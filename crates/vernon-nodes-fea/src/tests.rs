@@ -232,6 +232,32 @@ fn full_chain_on_the_reference_solver_gates_by_element_order() {
 }
 
 #[test]
+fn a_heated_ten_node_model_gates_only_when_the_card_has_expansion_coefficients() {
+    let reg = registry();
+    let m = model(&reg);
+    let s = |d: &Data| Some(d.clone());
+    let mut hot = (**m.mesh.as_geometry().unwrap()).clone();
+    let t: Vec<f64> = hot.points.iter().map(|p| 23.0 + 0.5 * (p.x + 30.0)).collect();
+    hot.point_attribs.set("temp_c", vernon_core::AttribArray::Float(t));
+    let hot = Data::geometry(hot);
+    let sf_of = |card: &Data| {
+        let lin = cook(&reg, "fea.solve_linear", vec![s(&hot), s(card), s(&m.mounts), s(&m.cases)], &[]);
+        let fields = cook(&reg, "fea.result_read", vec![s(&lin[0]), s(&hot)], &[]);
+        let sf = cook(&reg, "fea.safety_factor", vec![s(&fields[0]), s(&fields[1]), s(card), None, s(&m.mounts)], &[]);
+        (lin[1].as_report().unwrap().clone(), sf[1].as_report().unwrap().clone())
+    };
+    // the preset card carries the shared table's expansion: thermal strain is modelled
+    let (solve, rep) = sf_of(&m.card);
+    assert!(solve.notes.iter().any(|(_, t)| t.starts_with("thermal strain from temp_c")), "{:?}", solve.notes);
+    assert!(!rep.metrics.contains_key("estimate_only"), "{:?}", rep.metrics);
+    // a card without coefficients leaves it out and stays an estimate
+    let mut bare: crate::material::MaterialCard = serde_json::from_value((**m.card.as_json().unwrap()).clone()).unwrap();
+    bare.alpha = None;
+    let (_, rep) = sf_of(&crate::types::to_data(&bare));
+    assert_eq!(rep.metrics["estimate_only"].value, 1.0);
+}
+
+#[test]
 fn speed_sweep_without_a_new_solve_scales_with_the_inverse_square() {
     // G9: SF at 250 km/h = SF at 200 km/h * 0.64 for an aero-only load
     let reg = registry();

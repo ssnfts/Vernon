@@ -128,6 +128,12 @@ pub struct PrintMaterial {
     /// Weathering evidence, when the note quotes some. A material without it
     /// has no UV figure at all: its protection has to come from a coating.
     pub uv: Option<UvData>,
+    /// Linear thermal expansion in the print plane (material axes 1 and 2), per kelvin.
+    pub cte_xy_per_k: f64,
+    /// Linear thermal expansion along the layer stacking (axis 3), per kelvin.
+    pub cte_z_per_k: f64,
+    pub cte_source: Source,
+    pub cte_basis: &'static str,
 }
 
 impl PrintMaterial {
@@ -169,6 +175,10 @@ pub const PLA: PrintMaterial = PrintMaterial {
     water_abs_pct: None,
     water_source: Source::Assumed,
     uv: None,
+    cte_xy_per_k: 68.0e-6,
+    cte_z_per_k: 68.0e-6,
+    cte_source: Source::Assumed,
+    cte_basis: "typical order of magnitude for the unfilled polymer, the same in every direction; measure on coupons",
 };
 
 pub const PETG: PrintMaterial = PrintMaterial {
@@ -190,6 +200,10 @@ pub const PETG: PrintMaterial = PrintMaterial {
     water_abs_pct: None,
     water_source: Source::Assumed,
     uv: None,
+    cte_xy_per_k: 68.0e-6,
+    cte_z_per_k: 68.0e-6,
+    cte_source: Source::Assumed,
+    cte_basis: "typical order of magnitude for the unfilled polymer, the same in every direction; measure on coupons",
 };
 
 pub const ASA: PrintMaterial = PrintMaterial {
@@ -211,6 +225,10 @@ pub const ASA: PrintMaterial = PrintMaterial {
     water_abs_pct: None,
     water_source: Source::Assumed,
     uv: Some(ASA_UV),
+    cte_xy_per_k: 95.0e-6,
+    cte_z_per_k: 95.0e-6,
+    cte_source: Source::Assumed,
+    cte_basis: "typical order of magnitude for the unfilled polymer, the same in every direction; measure on coupons",
 };
 
 pub const PET_CF: PrintMaterial = PrintMaterial {
@@ -232,6 +250,10 @@ pub const PET_CF: PrintMaterial = PrintMaterial {
     water_abs_pct: Some(0.37),
     water_source: Source::Report,
     uv: None,
+    cte_xy_per_k: 30.0e-6,
+    cte_z_per_k: 70.0e-6,
+    cte_source: Source::Assumed,
+    cte_basis: "fibres lie along the print path, so in-plane expansion is taken low and stacking-direction expansion high; order-of-magnitude placeholder, measure on coupons",
 };
 
 pub const PAHT_CF: PrintMaterial = PrintMaterial {
@@ -253,6 +275,10 @@ pub const PAHT_CF: PrintMaterial = PrintMaterial {
     water_abs_pct: Some(2.35),
     water_source: Source::Assumed,
     uv: None,
+    cte_xy_per_k: 25.0e-6,
+    cte_z_per_k: 80.0e-6,
+    cte_source: Source::Assumed,
+    cte_basis: "fibres lie along the print path, so in-plane expansion is taken low and stacking-direction expansion high; order-of-magnitude placeholder, measure on coupons",
 };
 
 pub const PPA_CF: PrintMaterial = PrintMaterial {
@@ -274,6 +300,10 @@ pub const PPA_CF: PrintMaterial = PrintMaterial {
     water_abs_pct: None,
     water_source: Source::Assumed,
     uv: None,
+    cte_xy_per_k: 20.0e-6,
+    cte_z_per_k: 60.0e-6,
+    cte_source: Source::Assumed,
+    cte_basis: "fibres lie along the print path, so in-plane expansion is taken low and stacking-direction expansion high; order-of-magnitude placeholder, measure on coupons",
 };
 
 /// Every printable material, in menu order.
@@ -347,6 +377,17 @@ mod tests {
         assert!(PET_CF.z_ratio_assumed() && PAHT_CF.z_ratio_assumed());
         assert!(!PPA_CF.z_ratio_assumed());
         assert!(PET_CF.z_ratio_note().contains("assumed"));
+    }
+
+    #[test]
+    fn every_material_has_a_tagged_expansion_coefficient() {
+        for m in PRINT_MATERIALS {
+            for a in [m.cte_xy_per_k, m.cte_z_per_k] {
+                assert!(a > 5e-6 && a < 2e-4, "{} {a}", m.name);
+            }
+            assert_eq!(m.cte_source, Source::Assumed);
+            assert!(m.cte_basis.contains("coupons"));
+        }
     }
 
     #[test]

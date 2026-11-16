@@ -93,6 +93,10 @@ pub fn build_card(params: &Params, table: &HashMap<String, f64>) -> Result<(Mate
     c.hdt_18_c = table.get("hdt_18").copied().or(p.hdt_18_c);
     c.dma = p.dma;
     c.water_abs_pct = table.get("water_abs_pct").copied().or(p.water_abs_pct);
+    let measured_cte = table.contains_key("cte_xy") || table.contains_key("cte_z");
+    let cte_xy = table.get("cte_xy").copied().unwrap_or(p.shared.cte_xy_per_k);
+    let cte_z = table.get("cte_z").copied().unwrap_or(p.shared.cte_z_per_k);
+    c.alpha = Some([cte_xy, cte_xy, cte_z]);
     if params.str("mode").map_err(|e| e.to_string())? == "isotropic_z" {
         c.mode = "isotropic_z".into();
         c.e1 = e_z;
@@ -108,6 +112,7 @@ pub fn build_card(params: &Params, table: &HashMap<String, f64>) -> Result<(Mate
         c.xt = zt;
         c.xc = zc;
         c.s12 = s13;
+        c.alpha = Some([cte_z; 3]);
         notes.push("isotropic_z: the stacking-direction values are used in every direction (conservative bound)".into());
     }
     if infill < 1.0 {
@@ -123,6 +128,9 @@ pub fn build_card(params: &Params, table: &HashMap<String, f64>) -> Result<(Mate
     notes.push(format!("strength ratio basis ({}): {}", p.shared.z_ratio_source.label(), p.z_ratio_basis));
     if !custom && !table.contains_key("water_abs_pct") && p.water_abs_pct.is_some() && p.shared.water_source == vernon_core::materials::Source::Assumed {
         notes.push(format!("water uptake {}% is assumed, not measured for {}", p.water_abs_pct.unwrap_or_default(), p.name));
+    }
+    if !measured_cte {
+        notes.push(format!("expansion {:.0}e-6/K in plane, {:.0}e-6/K stacking ({}: {})", cte_xy * 1e6, cte_z * 1e6, p.shared.cte_source.label(), p.shared.cte_basis));
     }
     c.notes = notes;
     c.check_stability().map_err(|e| format!("material constants rejected: {e}"))?;
@@ -152,7 +160,7 @@ impl NodeOp for MaterialFdm {
             .param(ParamSpec::float("s13", "Interlayer shear strength", 0.0, 0.0, 2000.0).unit("MPa").help("0 assumes 0.5 x the stacking tensile strength"))
             .param(ParamSpec::float("density_g_cm3", "Density", 0.0, 0.0, 10.0).unit("g/cm3").help("0 takes the preset or table value"))
             .param(ParamSpec::float("infill_eff", "Infill weighting", 1.0, 0.05, 1.0).help("Scales density, stiffness and strength for partial infill"))
-            .help("Printed-material constants for the structural solver: transversely isotropic stiffness, directional strengths, density and heat-deflection data. Absolute values in the preset table are placeholders until replaced by datasheet or coupon data.")
+            .help("Printed-material constants for the structural solver: transversely isotropic stiffness, directional strengths, density, thermal expansion and heat-deflection data. A material table may give the expansion as cte_xy and cte_z columns, per kelvin. Absolute values in the preset table are placeholders until replaced by datasheet or coupon data.")
             .emulates("orthotropic elastic cards of finite-element solvers and the printed-material anisotropy table of the project report")
             .implemented()
     }

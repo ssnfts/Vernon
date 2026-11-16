@@ -207,6 +207,9 @@ pub struct SolveManifest {
     pub element_type: String,
     pub mount_sets: Vec<String>,
     pub runs: Vec<RunEntry>,
+    /// The built-in solver applied thermal strain from a `temp_c` field.
+    #[serde(default)]
+    pub thermal_strain: bool,
 }
 
 /// Totals of one load case read from the result files.
@@ -226,6 +229,9 @@ pub struct ResultSet {
     /// Frame of the stored stresses: `global` or `material`.
     pub frame: String,
     pub cases: Vec<CaseResult>,
+    /// Copied from the solve manifest: thermal strain was applied.
+    #[serde(default)]
+    pub thermal_strain: bool,
 }
 
 /// Totals read back from the solver text output.

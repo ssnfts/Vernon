@@ -8,6 +8,12 @@
 //! four-point rule, so a straight-sided element is integrated exactly.
 //!
 //! Stress components are `[xx, yy, zz, xy, yz, zx]`, strain is engineering.
+//!
+//! Thermal strain is an initial strain: with expansion `alpha_k` along the
+//! material axes `a_k`, `eps_th = sum_k alpha_k (T - T_ref) a_k a_k^T` at
+//! every integration point, the element load is `int B^T D eps_th dV` and the
+//! stress is `D (B u - eps_th)` (Zienkiewicz & Taylor, The Finite Element
+//! Method, vol. 1, ch. 6, initial strains).
 
 #![allow(clippy::needless_range_loop)]
 
@@ -144,7 +150,23 @@ struct Elem {
     n: Vec<usize>,
     /// Stress of unit nodal displacements, `D B`, per integration point (6 rows of `3 nen`).
     sb: Vec<Vec<f64>>,
+    /// Stress the thermal strain would cause if fully restrained, `D eps_th`, per integration point.
+    s0: Vec<[f64; 6]>,
     vol: f64,
+}
+
+/// Engineering thermal strain in the model frame for expansion `alpha` along
+/// the material axes (rows of `q`) and a temperature change `dt`.
+fn thermal_strain(alpha: &[f64; 3], q: &crate::linalg::M3, dt: f64) -> [f64; 6] {
+    let mut e = [[0.0; 3]; 3];
+    for k in 0..3 {
+        for i in 0..3 {
+            for j in 0..3 {
+                e[i][j] += alpha[k] * dt * q[k][i] * q[k][j];
+            }
+        }
+    }
+    [e[0][0], e[1][1], e[2][2], 2.0 * e[0][1], 2.0 * e[1][2], 2.0 * e[2][0]]
 }
 
 /// Solve one load case.
@@ -173,6 +195,8 @@ pub fn solve(inp: &RefInput) -> Result<RefOutput, String> {
     let d_mat: M6 = inp.card.stiffness().ok_or("the material stiffness is singular")?;
     let d_glob = rotate_stiffness_to_global(&d_mat, &q).ok_or("cannot rotate the stiffness into the model frame")?;
     let temps = mesh.point_attribs.floats("temp_c").ok();
+    // thermal strain needs both a temperature field and expansion coefficients
+    let alpha = inp.card.alpha.filter(|_| temps.is_some());
     let accel = inp.load.gravity.map(|g| DVec3::from(g.dir) * g.accel_mm_s2);
 
     // element stiffness, assembled into CSR; loads from the body force on the way
@@ -203,6 +227,7 @@ pub fn solve(inp: &RefInput) -> Result<RefOutput, String> {
         let c = corners(mesh, e);
         ke.iter_mut().for_each(|v| *v = 0.0);
         let mut sb_all = Vec::with_capacity(ips.len());
+        let mut s0_all = Vec::with_capacity(ips.len());
         let mut vol = 0.0;
         let n = &elem_nodes[e];
         for (l, (sf, dl)) in ips.iter().zip(&shapes) {
@@ -222,6 +247,18 @@ pub fn solve(inp: &RefInput) -> Result<RefOutput, String> {
                     ke[nd * i + j] += dv * (0..6).map(|m| b[m * nd + i] * sb[m * nd + j]).sum::<f64>();
                 }
             }
+            let mut s0 = [0.0; 6];
+            if let Some(al) = &alpha {
+                let eps = thermal_strain(al, &q, t - inp.card.t_ref_c);
+                for i in 0..6 {
+                    s0[i] = r * (0..6).map(|m| d_glob[i][m] * eps[m]).sum::<f64>();
+                }
+                // equivalent nodal load int B^T D eps_th dV
+                for j in 0..nd {
+                    f[3 * n[j / 3] + j % 3] += dv * (0..6).map(|m| b[m * nd + j] * s0[m]).sum::<f64>();
+                }
+            }
+            s0_all.push(s0);
             if let Some(a) = accel {
                 for (&node, s) in n.iter().zip(sf) {
                     let fe = a * (inp.card.density_t_mm3 * dv * s);
@@ -237,7 +274,7 @@ pub fn solve(inp: &RefInput) -> Result<RefOutput, String> {
                 k.add(3 * n[i / 3] + i % 3, 3 * n[j / 3] + j % 3, ke[nd * i + j]);
             }
         }
-        elems.push(Elem { n: n.clone(), sb: sb_all, vol });
+        elems.push(Elem { n: n.clone(), sb: sb_all, s0: s0_all, vol });
     }
 
     // constraints and springs; a rigid washer whose reference node is held is a fixed patch
@@ -333,7 +370,8 @@ pub fn solve(inp: &RefInput) -> Result<RefOutput, String> {
         let at_ips: Vec<[f64; 6]> = el
             .sb
             .iter()
-            .map(|sb| std::array::from_fn(|i| sb[i * nd..(i + 1) * nd].iter().zip(&ue).map(|(a, b)| a * b).sum()))
+            .zip(&el.s0)
+            .map(|(sb, s0)| std::array::from_fn(|i| sb[i * nd..(i + 1) * nd].iter().zip(&ue).map(|(a, b)| a * b).sum::<f64>() - s0[i]))
             .collect();
         // linear field through the four points: corner j = sum (delta_ij - a) / (b - a) s_i
         let at_corner = |j: usize| -> [f64; 6] {

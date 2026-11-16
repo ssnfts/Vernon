@@ -265,6 +265,17 @@ pub struct MaterialCard {
     pub creep_factor: f64,
     pub water_abs_pct: Option<f64>,
     pub notes: Vec<String>,
+    /// Linear thermal expansion along material axes 1, 2 and 3, per kelvin;
+    /// `None` leaves thermal strain out of the built-in solver.
+    #[serde(default)]
+    pub alpha: Option<[f64; 3]>,
+    /// Temperature at which the part is free of thermal strain (degC).
+    #[serde(default = "room_c")]
+    pub t_ref_c: f64,
+}
+
+fn room_c() -> f64 {
+    ROOM_C
 }
 
 impl MaterialCard {
@@ -298,6 +309,8 @@ impl MaterialCard {
             creep_factor: 1.0,
             water_abs_pct: None,
             notes: vec![],
+            alpha: None,
+            t_ref_c: ROOM_C,
         }
     }
 

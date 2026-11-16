@@ -26,7 +26,7 @@ A **lead** is opened for its phase and closed at the end of it.
 | 1 | | Shipped CFD claim in `docs/VALIDATION.md` (validated against reported-only) | `reliability-lead` | Owner signs off the wording |
 | 1 | | WP15 golden cases under `tests/golden/` | `validation-engineer` | each case has a test at the spec tolerance |
 | 1 | | Real E57, real LAS, fTetWild on a scanned panel | `validation-engineer` | results recorded; readers fixed if wrong |
-| 1 | | **Done 2026-11-13** (`1bb0cc7`, `fe6bf59`): flatten F2 (b)(c)(d) met at the spec bounds and un-ignored; FEA pressure, spring-pad and temperature-dependent stiffness agree with CalculiX. Open: thermal-strain comparison (so `estimate_only` stays), stretch/compress factors in the constrained solver | `numerics-engineer` | the `#[ignore]`d spec tests pass un-ignored |
+| 1 | | **Done 2026-11-13** (`1bb0cc7`, `fe6bf59`): flatten F2 (b)(c)(d) met at the spec bounds and un-ignored; FEA pressure, spring-pad and temperature-dependent stiffness agree with CalculiX. Thermal strain done 2026-11-15, `estimate_only` lifted for heated ten-node models; constrained-solver stretch/compress factors done except with stretch_only/compress_only, where they stay off with a warning (WP10 and WP11 notes) | `numerics-engineer` | the `#[ignore]`d spec tests pass un-ignored |
 | 2 Product | `product-lead` | Wire `docs/ROADMAP.md` items 1–7 and the three extra modules into nodes. **Partly done 2026-11-14** (`fd4ee1b`, `099b203`, `a537e60`): items 5 (snap forces), 1 (dialect table) and 2 (tuft photos, PGM/PPM) wired. Found: only 3 white-box nodes remain (`print.script_bridge`, `cfd.mesh_build`, `cfd.solve_steady`); the cut, partition and island nodes are already implemented, so item 6 adds capability rather than removing a placeholder. Round 2 (`037c949`, `4645718`, `117faa6`, `f6a85bd`): `ball_pivot` wired as a native mesher on `capture.mvs_mesh`; `island_select` wired into `print.cut_region_select` (largest island, area threshold); `qem_simplify`, `polyline_project` and `partition_search` measured against the existing nodes and not adopted (numbers in ROADMAP). Open: items 3–4 (slicer profile keys, script bridge: need the external slicer), `convergence.rs` comparison (CFD crate, other session) | `node-wiring-engineer` | white-box warning gone, metrics checked end to end, `docs/NODES.md` regenerated |
 | 2 | | First run, sample scenes, failure messages, chords, in-app agent. **Partly done 2026-11-14** (`486fbce`, `957ec73`): start panel on an empty scene (demo / import / open), import size and unit-mix-up check, "Next:" lines under node errors and in the Gate Dashboard. Round 2 (`75e2a05`, `58fa30e`): every hint rule is tested against a real cooked error (found and fixed a hint that never matched the untrusted-write hold); start panel kept inside the viewport and narrowed in small windows (checked by tests only, not by screenshot). Open: none of the 22 reserved chords has its feature yet, so none is bound; trust prompt text unchanged | `app-ux-engineer` | a new user cooks the demo and imports a file without the docs |
 | 3 Release (WP16) | `release-lead` | CI, `deny.toml`, package and self-test, `CHANGELOG.md`, stale-branch list. **Done 2026-11-14** (`adf225d`, `f0eb528`, `544eacc`, `fe6a5ee`): cargo-deny and `scripts/release/check-deps.ps1` pass; `dist/Vernon-0.1.0-win64.zip` 18.6 MB, self-test 56/56, no MinGW DLLs needed; CHANGELOG v0.1.0-alpha. Unverified: the CI workflow has never run on GitHub. Merged branches the Owner may delete: `claude/ai-models`, `claude/wp14-consistency`, `qwen/t07-flatten-constraints` (the last two need `git worktree remove` first) | `release-engineer` | package self-test passes on a clean machine |
@@ -572,10 +572,27 @@ then the external solvers, then UI polish, then release.
     retention table halving the stiffness at 80 degC (11.6666 mm both);
     all agree to the printed four decimals. The temperature case covers
     temperature-dependent stiffness only: neither solver gets an expansion
-    card, so thermal strain is still not compared.
+    card; thermal strain is compared separately (below).
+  - Thermal strain (2026-11-15): the built-in solver applies
+    `alpha_k (T - T_ref)` along the material axes as an initial strain at
+    every integration point (load `int B^T D eps_th dV`, stress
+    `D (B u - eps_th)`). Expansion comes from the shared table
+    (`vernon_core::materials`, `cte_xy_per_k` / `cte_z_per_k`, tagged
+    assumed until measured; a material table may give `cte_xy`, `cte_z`),
+    `T_ref` = 23 degC on the card. The deck writes `*EXPANSION,TYPE=ORTHO`
+    for unequal coefficients. Closed form (`thermal_check.rs`, E 2 GPa,
+    alpha 1e-4/K, dT 50 K): free bar grows 0.70000 mm over 140 mm (0.70000
+    closed form), mid stress below 1e-6 MPa; held bar 400x10x10 mid
+    -10.111 MPa (-10.000, +1.1 %); printed card held along axis 1 -5.068
+    (-5.000) and along axis 3 -9.036 (-9.000); a through-thickness gradient
+    gives curvature 2.5000e-4/mm (exact). A stubby 200x20x20 held bar reads
+    +3.3 % because the clamps also stop the ends widening. CalculiX 2.21:
+    heated printed cantilever (gradient, rotated axes, retention) displacement
+    2.63716 mm both, held printed bar (axis 3) mid von Mises 9.0363 / 9.0362
+    MPa, C3D4 held bar -10.4236 MPa both; every displacement within 0.001 %.
   - Ten-node results can pass gates. Safety factors keep `estimate_only` (also on
     `fea.mount_report`) for four-node reference results, which read low, and for
-    models with `temp_c`, because the built-in solver has no thermal strain.
+    models with `temp_c` whose material card has no expansion coefficients.
 
 ### WP11 — Flatten and performance white-box nodes
 **Done:** both nodes now run their real algorithm and are no longer white-box
