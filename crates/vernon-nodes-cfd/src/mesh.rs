@@ -463,6 +463,15 @@ fn setup_cook(ctx: &CookContext, ins: &[Option<Data>], p: &Params) -> CookResult
     if n_layers > 0 {
         let total = first_layer * (expansion.powi(n_layers as i32) - 1.0) / (expansion - 1.0).max(1e-9);
         report.metric("layer_total_over_cell", Metric::new(total / body_cell, "-"));
+        // Relative sizing ignores the y+ target and shrinks the first layer
+        // with the cell, so a grid study also changes the wall treatment.
+        let target = p.float("yplus_target")?;
+        let estimate = first_layer * u_tau / nu;
+        if !first_mode && (estimate / target > 2.0 || target / estimate > 2.0) {
+            report.note(Severity::Warning, format!(
+                "layer sizing is relative to the local cell: the first layer gives y+ about {estimate:.0}, not the target {target:.0}, and it changes with the cell size; set layer sizing to the first-layer y+ mode to hold it"
+            ));
+        }
     }
     Ok(vec![Data::File(case), Data::report(report)])
 }
@@ -1309,6 +1318,15 @@ mod tests {
         assert!(t.contains("relativeSizes false;"));
         // y+ 30 at 30 m/s over 4.6 m: 0.414 mm
         assert!((out[1].as_report().unwrap().metrics["first_layer_mm"].value / 0.414 - 1.0).abs() < 0.02);
+        assert!(!out[1].as_report().unwrap().notes.iter().any(|(_, t)| t.contains("relative to the local cell")));
+        // The default relative mode does not use the target; the report says so
+        // when the layers it writes land far from it.
+        let mut rel = Params::from_specs(&setup_info().params);
+        rel.set("layer_mode", ParamValue::Str("relative_final".into()));
+        let r = setup_cook(&ctx, &[], &rel).unwrap()[1].as_report().unwrap().as_ref().clone();
+        let estimate = r.metrics["first_layer_yplus_estimate"].value;
+        assert!(estimate > 60.0, "relative layers on the default plan sit far above y+ 30: {estimate}");
+        assert!(r.notes.iter().any(|(s, t)| *s == Severity::Warning && t.contains("relative to the local cell") && t.contains("target 30")), "{r:?}");
         p.set("n_layers", ParamValue::Int(0));
         let out = setup_cook(&ctx, &[], &p).unwrap();
         let t = std::fs::read_to_string(out[0].as_file().unwrap().join("system/snappyHexMeshDict")).unwrap();

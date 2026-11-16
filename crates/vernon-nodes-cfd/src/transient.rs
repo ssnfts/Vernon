@@ -24,9 +24,12 @@ use serde::{Deserialize, Serialize};
 use crate::convergence::{effective_sample_size, two_sided_z};
 
 /// Rounding allowance on averaging lengths, in convective units. Solver times
-/// are written to a fixed precision, so a window that ends exactly on a check
-/// boundary can come out about 1e-7 CTU short of it.
-pub const BOUNDARY_CTU: f64 = 1e-6;
+/// are accumulated step by step and written to a fixed precision, so a window
+/// that ends exactly on a check boundary comes out short of it: about 4e-7
+/// CTU at 100 steps per CTU, and more with a step that is not a short decimal
+/// (91 steps per CTU, 2026-11-16). 1e-3 CTU stays under half a step for any
+/// step count up to 500 per CTU.
+pub const BOUNDARY_CTU: f64 = 1e-3;
 
 /// Tunables of the transient gate. Times are seconds; lengths are CTU.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -761,7 +764,7 @@ mod tests {
         // CTU short of the boundary. It must be assessed, and if it were not,
         // the next segment must still end after the current one.
         let mut short = t.clone();
-        *short.last_mut().unwrap() -= 4e-7 * 0.0261;
+        *short.last_mut().unwrap() -= 4e-4 * 0.0261;
         let r = assess(&short, &v, switch, &p).unwrap();
         assert!(!r.reasons.iter().any(|s| s.starts_with("averaging")), "{:?}", r.reasons);
         let mut cont = r.clone();

@@ -736,6 +736,10 @@ struct FastTier {
     /// Courant number to hold in the near-wake cells (free-stream speed over
     /// the near-wake cell size); sets the fixed time step when given.
     wake_co: Option<f64>,
+    /// Size the first prism layer from this y+ estimate (the mesher's
+    /// `first_layer_yplus` mode), so it stays the same height on every grid.
+    /// Unset keeps the mesher's default: the final layer at half the local cell.
+    yplus_target: Option<f64>,
 }
 
 impl FastTier {
@@ -763,11 +767,13 @@ impl FastTier {
             preserve_case: get("VERNON_FAST_PRESERVE_CASE"),
             keep_clearance: get("VERNON_FAST_KEEP_CLEARANCE").as_deref() == Some("1"),
             wake_co: get("VERNON_FAST_WAKE_CO").map(|v| v.trim().parse().expect("VERNON_FAST_WAKE_CO must be a number")),
+            yplus_target: get("VERNON_FAST_YPLUS").map(|v| v.trim().parse().expect("VERNON_FAST_YPLUS must be a number")),
         };
         assert!(cfg.preserve_case.is_none() || (cfg.checkpoint_dir.is_some() && cfg.seed_dir.is_none()), "preserving needs VERNON_FAST_CHECKPOINT_DIR and no seed");
         assert!(cfg.budget_min > 0.0 && cfg.budget_min <= 60.0, "the fast tier is bounded at one hour");
         assert!(cfg.wake_co.is_none() || cfg.delta_t_s.is_none(), "give a wake Courant target or a time step, not both");
         assert!(cfg.wake_co.is_none_or(|c| c > 0.0 && c <= 4.0), "the wake Courant target must lie in (0, 4]");
+        assert!(cfg.yplus_target.is_none_or(|y| (1.0..=300.0).contains(&y)), "the y+ target must lie in 1..=300 (the mesher's range)");
         assert!((500..=2000).contains(&cfg.steady_iter), "the steady start runs 500..=2000 iterations");
         cfg
     }
@@ -906,6 +912,36 @@ fn fast_tier_checkpoint_skips_a_write_cut_short() {
     std::fs::remove_file(case.join("processor1/0.3/uniform/time")).unwrap();
     assert_eq!(latest_complete_time(&case, 2), Some((0.2, "0.2".to_string())));
     assert_eq!(latest_complete_time(&tmp("fast-complete-none"), 2), None);
+}
+
+/// The last y+ line the solver printed for each patch:
+/// `patch <name> y+ : min = a, max = b, average = c` -> {name: {min, max, mean}}.
+fn last_yplus_by_patch(log: &str) -> Value {
+    let mut out = serde_json::Map::new();
+    for line in log.lines() {
+        let Some(rest) = line.trim().strip_prefix("patch ") else { continue };
+        let Some((name, values)) = rest.split_once(" y+ :") else { continue };
+        let num = |key: &str| values.split(key).nth(1).and_then(|v| v.trim().split(|c: char| c == ',' || c.is_whitespace()).next()).and_then(|v| v.parse::<f64>().ok());
+        if let (Some(min), Some(max), Some(mean)) = (num("min ="), num("max ="), num("average =")) {
+            out.insert(name.trim().to_string(), serde_json::json!({"min": min, "max": max, "mean": mean}));
+        }
+    }
+    Value::Object(out)
+}
+
+#[test]
+fn fast_tier_reads_the_last_yplus_per_patch() {
+    let log = "yPlus yPlus1 write:
+    patch ground y+ : min = 7.3, max = 4770.9, average = 1069.1
+    patch body y+ : min = 1.77, max = 622.4, average = 71.8
+Time = 0.3
+    patch body y+ : min = 2.33, max = 622.36, average = 71.88
+";
+    let y = last_yplus_by_patch(log);
+    assert_eq!(y["body"]["mean"], 71.88);
+    assert_eq!(y["body"]["min"], 2.33);
+    assert_eq!(y["ground"]["max"], 4770.9);
+    assert_eq!(last_yplus_by_patch("no y+ here"), serde_json::json!({}));
 }
 
 /// A per-run work directory for files the harness writes itself.
@@ -1058,6 +1094,9 @@ fn real_openfoam_fast_tier_run() {
     if cfg.keep_clearance {
         mesh_inputs["keep_clearance"] = serde_json::json!(true);
     }
+    if let Some(yplus) = cfg.yplus_target {
+        mesh_inputs["layer_mode"] = serde_json::json!({"first_layer_yplus": yplus});
+    }
     let mesh_inputs_fnv1a64 = crate::fast_seed::mesh_inputs_fingerprint(&mesh_inputs);
     let identity_at = |recipe: &str, step: f64| crate::fast_seed::SeedIdentity {
         body: body_key.clone(), angle_deg: if is_slant { Some(cfg.angle_deg) } else { None }, np: cfg.np,
@@ -1133,11 +1172,16 @@ fn real_openfoam_fast_tier_run() {
             (Data::File(restored), s.record.mesh.clone(), start, None)
         }
         None => {
-            let dicts = cook(&reg, "cfd.mesh_setup", vec![j(&plan[0]), j(&domain[0]), Some(mesh_geometry)], &[
+            let mut layer_settings = vec![
                 ("flavour", ParamValue::Str("opencfd2606".into())),
                 ("n_layers", ParamValue::Int(5)),
                 ("np", ParamValue::Int(cfg.np)),
-            ]);
+            ];
+            if let Some(yplus) = cfg.yplus_target {
+                layer_settings.push(("layer_mode", ParamValue::Str("first_layer_yplus".into())));
+                layer_settings.push(("yplus_target", ParamValue::Float(yplus)));
+            }
+            let dicts = cook(&reg, "cfd.mesh_setup", vec![j(&plan[0]), j(&domain[0]), Some(mesh_geometry)], &layer_settings);
             print_report("mesh setup", &dicts[1]);
             let mesh_started = Instant::now();
             let built = cook(&reg, "cfd.mesh_build", vec![Some(dicts[0].clone())], &bounded(cfg.np, 12));
@@ -1147,10 +1191,15 @@ fn real_openfoam_fast_tier_run() {
             let quality = cook(&reg, "cfd.mesh_quality", vec![Some(built[0].clone())], &[]);
             print_report("mesh quality", &quality[0]);
             let q = quality[0].as_report().unwrap().as_ref().clone();
+            let setup = dicts[1].as_report().unwrap();
             let mesh = serde_json::json!({
                 "cells": q.metrics["cells"].value, "max_non_ortho_deg": q.metrics["max_non_ortho_deg"].value,
                 "max_skewness": q.metrics["max_skewness"].value, "layer_coverage_pct": q.metrics.get("layer_coverage_pct").map(|m| m.value),
                 "mesh_wall_s": mesh_wall_s,
+                "first_layer_mm": setup.metrics.get("first_layer_mm").map(|m| m.value),
+                "first_layer_yplus_estimate": setup.metrics.get("first_layer_yplus_estimate").map(|m| m.value),
+                "layer_total_over_cell": setup.metrics.get("layer_total_over_cell").map(|m| m.value),
+                "layer_mode": if cfg.yplus_target.is_some() { "first_layer_yplus" } else { "relative_final" },
             });
             // Steady start: a short SST run whose end state seeds the time-resolved run.
             let steady_window = (cfg.steady_iter / 3).max(100);
@@ -1358,6 +1407,8 @@ fn real_openfoam_fast_tier_run() {
         }
     }
     let step_records = crate::transient::parse_pimple_log(&solver_log);
+    let wall_yplus = last_yplus_by_patch(&solver_log);
+    println!("wall y+ (last write): {wall_yplus}");
     let step_rule = crate::transient::StepRule::default();
     let step_report = crate::transient::step_convergence(&step_records, washout_s, &step_rule).ok();
     println!("per-step: {step_report:?}");
@@ -1438,7 +1489,7 @@ fn real_openfoam_fast_tier_run() {
         "stop_reason": stop_reason, "gate_passed": gate_passed,
         "cd": report.mean, "cd_std_err": report.std_err, "cd_interval_95": 1.96 * report.std_err,
         "reference_cd": cfg.reference_cd, "reference_label": cfg.reference_label, "error_pct": error_pct, "band_pct": 5.0, "within_band": within_band,
-        "interval_overlaps_band": interval_overlaps_band, "deliverable": "mean with 95% interval; ESS and standard error reported, not gated (fast tier, 2026-11-12)",
+        "interval_overlaps_band": interval_overlaps_band, "wall_yplus_last_write": wall_yplus, "deliverable": "mean with 95% interval; ESS and standard error reported, not gated (fast tier, 2026-11-12)",
         "reconstructed": reconstructed, "wall_s": started.elapsed().as_secs_f64(), "budget_min": cfg.budget_min,
         "case": case.display().to_string(),
     });
