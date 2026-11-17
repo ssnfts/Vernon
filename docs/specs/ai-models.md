@@ -222,8 +222,11 @@ The print watchdog takes the newest picture in a camera folder and asks the
 vision model whether the print looks failed. Checked on 2026-11-16 with the real
 model on drawn pictures and a stand-in question: it picked the newer of two
 pictures both times and turned a yes and a no into the right verdicts. Peak GPU
-8.3 GB, peak RAM 9.1 GB. **It has not been run on a photograph of a real
-print**, so how well it spots a failure is unknown. It is labelled **"AI print
+8.3 GB, peak RAM 9.1 GB. On 2026-11-17 it was run on 20 photographs (10 failed
+prints, 10 good): the first question flagged 6 of 10 failures and 0 of 10 good
+ones; the reworded current question flagged 10 of 10 and 0 of 10, but it was
+reworded on those same photos, so that number is optimistic and no fresh photos
+were tried. It is labelled **"AI print
 check: a hint, not a measurement; it never stops a print"**, it does not talk
 to a printer, and no acceptance gate reads it.
 

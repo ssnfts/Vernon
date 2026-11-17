@@ -25,10 +25,9 @@ The label "AI print check: a hint, not a measurement; it never stops a print"
 is the first line of the report and a field of the verdict.
 
 ## What it does not do
-- **It has not been tested on a photograph of a real print.** The real-model
-  check below only shows that the node picks the newest picture and reads a yes
-  or a no correctly. How often the default question spots a failed print, and
-  how often it raises a false alarm, is unknown.
+- **Its hit rate is known from 20 photos only** (see "Measured on photos"
+  below), mostly pictures of finished or abandoned prints rather than frames
+  from a printer camera. How it does on a real camera feed is unknown.
 - It does not stop, pause or talk to a printer. It only writes a verdict.
 - It does not run on a timer. It checks once each time it is cooked with
   `run` on; repeating it during a print is a later app change.
@@ -46,7 +45,7 @@ Model Qwen/Qwen3-VL-4B-Instruct: Apache-2.0, not gated. See
 | `ai_root` | AI-3D folder; blank uses `VERNON_AI3D_ROOT`. Must contain `Vision`. |
 | `wsl_distro` | Default `AI-3D`. Blank runs Python directly (Linux). |
 | `frames_folder` | Folder of camera pictures (png, jpg, jpeg, webp, ppm). Sub-folders are ignored. |
-| `question` | The yes/no question. The default asks about loose strands, a part off the bed, or a collapsed part. |
+| `question` | The yes/no question. The default names tangled or loose strands, a part off the bed, a collapsed or misshapen part, and shifted layers. |
 | `max_tokens` | 16 to 256, default 64. |
 | `timeout_s` | Process is stopped after this long (default 900). |
 | `run` | Action switch. Without it the node only reloads an earlier answer. |
@@ -79,6 +78,38 @@ one coloured circle. The question was a stand-in the model is known to handle
   was not measured.
 - The weights were read from a copy on the internal drive whose two weight
   files match the SHA-256 hashes the model repository publishes.
+
+## Measured on photos (2026-11-17, not a benchmark)
+Ignored test `real_watchdog_on_print_photos`, fresh work folder each run, same
+PC. 20 photographs from Wikimedia Commons (CC0, CC BY 2.0, CC BY-SA 3.0 and
+4.0): 10 of failed prints (strings and tangles, parts that came off the bed, a
+layer shift) and 10 of good prints or printers at work. The photos are not in
+the repository; the test reads them from the folder in
+`VERNON_WATCHDOG_PHOTOS_DIR`. The pass bar, set before the first run: at least
+8 of 10 failures flagged and at most 1 of 10 good photos flagged.
+
+| Question | Failures flagged | Good photos flagged | Unclear | Result |
+|---|---|---|---|---|
+| First default (strands, part off the bed, collapsed part) | 6 of 10 | 0 of 10 | 0 | failed the bar |
+| Current default (adds tangles, misshapen parts, shifted layers) | 10 of 10 | 0 of 10 | 0 | passed the bar |
+
+Read the second row with care:
+- **The question was reworded after seeing the first run's misses, on the same
+  20 photos**, so its 10 of 10 is an in-sample result and is optimistic. No
+  fresh photos were tried with it.
+- Its "yes" answers mostly repeat the question's own words ("tangled or loose
+  strands"), including for the layer-shift photo, which has no strands. The
+  verdicts were right, but the reasons given are not to be trusted.
+- Three of the failure photos show one print from three angles, so the 10
+  failures are 8 distinct prints.
+- The failed/good labels were set by the tester, not by the photos' authors.
+  One failure photo (a two-colour boat with a ragged outer
+  wall) may be a normal shield wall rather than a failure.
+- With the first question the model missed a stringy collapsed print, a
+  spaghetti-style failure (it said "tangled mass of filament" but answered NO)
+  and the layer shift.
+- One photo took 150 s to 765 s (model loaded each time; the slow ones ran
+  beside an install).
 
 ## Limits
 - Every check starts the model again, so one check takes minutes even on a

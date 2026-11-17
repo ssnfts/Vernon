@@ -1,6 +1,6 @@
 # More local AI in Vernon: ordered plan and agent assignments, 2026-11-14
 
-Status: wave 1 (items 1 to 3) built and verified with the real models on 2026-11-14; wave 2 (items 4 to 6) built and verified with the real models on 2026-11-15; wave 3: item 7 built and verified with the real model on 2026-11-16, item 8 built and its mechanism verified with the real model on 2026-11-16 but untested on real print photos, item 9 blocked (see "Wave 3" below). This adds to the
+Status: wave 1 (items 1 to 3) built and verified with the real models on 2026-11-14; wave 2 (items 4 to 6) built and verified with the real models on 2026-11-15; wave 3: item 7 built and verified with the real model on 2026-11-16, item 8 built and verified with the real model on 2026-11-16, then run on 20 real print photos on 2026-11-17, item 9 in progress (see "Wave 3" below). This adds to the
 [2026-11-04 AI plan](2026-11-04-ai-assistant-and-machine-split.md) and to
 section 5 of [docs/PLAN.md](../../PLAN.md#5-local-ai-what-to-add). The rules
 there don't change: models run out of process, nothing downloads without the
@@ -89,8 +89,10 @@ done.
   newest picture in a camera folder and puts a yes/no question to the vision
   model of #6. The real model was run on drawn pictures with a stand-in
   question, which shows the node picks the newest picture and reads a yes or a
-  no correctly. It was not run on a photograph of a real print, because none
-  exists here yet, so its skill at spotting a failed print is unknown. It checks
+  no correctly. On 2026-11-17 it was run on 20 photographs from Wikimedia
+  Commons: 6 of 10 failures and 0 of 10 good prints flagged with the first
+  question; 10 of 10 and 0 of 10 after the question was reworded on the same
+  photos (in-sample, so optimistic). It checks
   once per cook; running it on a timer is a later app change. The lead built it.
 * **Body fit from a photo (#9)** is not started. The model is gated: the user
   has to accept its licence on Hugging Face first, and it would be opt-in.

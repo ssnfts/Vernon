@@ -19,7 +19,7 @@ use crate::vision::{self, image_extension};
 
 /// First line of the report and the `label` field of the verdict.
 pub const WATCHDOG_LABEL: &str = "AI print check: a hint, not a measurement; it never stops a print";
-pub const DEFAULT_QUESTION: &str = "This is a camera picture of a 3D printer while it prints. Does the print look failed, for example loose strands of plastic, a part that has come off the bed, or a collapsed part? Answer with the single word YES or NO first, then one short sentence saying what you see.";
+pub const DEFAULT_QUESTION: &str = "This is a picture of a 3D print, or of a 3D printer while it prints. Signs of a failed print are tangled or loose strands of plastic, a part that has come off the bed, a collapsed or misshapen part, and layers that have shifted sideways. Do you see any sign of a failed print? Answer with the single word YES or NO first, then one short sentence saying what you see.";
 pub const VERDICT_FAILURE: &str = "possible_failure";
 pub const VERDICT_OK: &str = "looks_ok";
 pub const VERDICT_UNCLEAR: &str = "unclear";
