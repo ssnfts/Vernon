@@ -140,9 +140,15 @@ evidence. For current commands use docs/SETUP.md and docs/CFD-RUNBOOK.md.
   `VERNON_FAST_LES_MODEL` (nuTilda started from the steady nut). Same 0.45M
   half grid: fresh 0.290 (2–8 CTU, wash-out), seeded 0.261 (8–16), then
   **`sa-…-c` PASS, Cd 0.264 ± 0.004 (16–25 CTU), −5.4%**, half-step agrees.
-  The model accounts for about half of the gap (SST 0.251 → SA 0.264); the
-  rest is still unexplained (candidates: resolution, y+ ≈ 1 walls). Details
-  in the plan's section 6.
+  On that grid SA read about 5% above SST (0.251 → 0.264).
+- **SA-DDES on the 0.88M grid (2026-11-17): the model gain was a coarse-grid
+  effect.** `sa-…dx0708-…-c` **PASS, Cd 0.244 ± 0.003 (16–22 CTU),
+  −12.5%**, half-step agrees to 0.0001. SST on the same grid read
+  0.243–0.247, so the models agree once refined; the turbulence model does
+  not explain the gap. Grid, step, layer sizing, symmetry and model are now
+  all ruled out; untested: wall treatment (y+ ≈ 1), domain/blockage against
+  the dataset's, resolution beyond 0.9M cells. Details in the plan's
+  section 6.
 - Nothing was launched through the runner; no gate was lowered; no run was
   relabelled.
 

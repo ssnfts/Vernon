@@ -583,7 +583,8 @@ layer (body y+ mean 52), wake Courant 1 (91 steps/CTU).
 
 **What the model change does.** On the same grid and wall layer, SA-DDES
 settles at 0.261–0.264 against SST-DDES's 0.251 (half) and 0.246–0.252
-(full): about +5%, half of the 10–12% gap to 0.279. The fresh hour reads
+(full): about +5%, half of the 10–12% gap to 0.279 on this grid. (Not
+confirmed on the finer grid: see the 0.88M entry below.) The fresh hour reads
 high (0.290) for the same reason the SST full-body fresh hour read 0.295:
 the steady start's wake washes out over the first ~8 CTU. The remaining
 5% sits where the dataset's own grid trend says a coarse grid would not
@@ -592,6 +593,31 @@ put it (their 3.6M-cell run reads 0.300, above the fine value); our
 3.6–35M) and the wall treatment at y+ ≈ 1. A WSL start that raced an idle
 stop of the distribution (`WSL_E_USER_NOT_FOUND`) cost one attempt; the run
 queue now holds the distribution up with a sleeping process for its length.
+
+**2026-11-17, user decision: "Finer grid with SA".** SA-DDES on the 0.88M
+half grid (877,255 cells, dx0 0.0708; same 0.95 mm first layer, body y+
+mean 52; wake Courant 1 → 118 steps/CTU, 2.5–3.0 s/step, about 6 CTU per
+hour).
+
+| Run | Window (CTU) | Cd ± s.e. | Outcome |
+|---|---|---|---|
+| `sa-…dx0708-…-a` (fresh) | 2–8 | 0.290 ± 0.011 | budget; trend 3.6%/CTU (wash-out) |
+| `sa-…dx0708-…-b` | 8–16 | 0.266 ± 0.011 | budget; trend 3.1%/CTU |
+| `sa-…dx0708-…-c` | 16–22 | **0.244 ± 0.003** | **PASS** (half-step 0.2444 against 0.2442, difference 0.0001 against 0.0061 allowed; nuTilda, U and p rules met on every step); −12.5% |
+
+**Correction to the 0.45M finding.** On the finer grid the two models agree:
+SA 0.244 against SST 0.243–0.247 (`yp100-dx0708-…-c/d`). The +5% SA gave
+on the 0.45M grid was a coarse-grid effect, not a model effect: refining
+lowers SA by 7.5% (0.264 → 0.244) and SST by 2–3% (0.251 → 0.245). The
+turbulence model does not explain the gap to 0.279. Both of our grid
+trends fall with refinement, as the dataset's does (0.300 at 3.6M to 0.279
+at 35M), but from below the reference, so refining moves us away from it.
+Varied without closing the gap, with the half-step check agreeing: grid,
+time step, wall-layer sizing, symmetry plane, turbulence model. Not varied:
+the wall treatment (y+ ≈ 50 with wall functions here; the dataset's
+near-wall resolution is not in the material we hold), the domain and
+blockage against the dataset's, and resolution beyond 0.9M cells (outside
+the one-hour budget at 16 ranks).
 
 What this adds: the honest fast-tier statement for this body is a trend,
 not a value: the wash-out needed is longer than the budget allows at 0.5M
