@@ -168,6 +168,14 @@ evidence. For current commands use docs/SETUP.md and docs/CFD-RUNBOOK.md.
   and quality variants did not reduce the squeeze. Half the step runs but
   leaves no room for averaging in the hour. The dataset itself steps at
   1/1,300–1/2,600 CTU (ours 1/91). Details in the plan's section 6.
+- **Long tier (2026-11-18): finer body cells at half the step, no pass.**
+  `VERNON_LONG_TIER=1` allows up to twelve hours with the same rules and
+  gates; rows record `tier`. Level-5 body (913k cells), 3 layers, tet check,
+  CTU/182: it runs (peak Courant 12.7). Three links, 4 h 46 min: fresh link
+  hit the 15-CTU cap at 0.260; seeded windows passed at 0.244 (CTU 17–23)
+  and 0.256 (23–29) but both failed the half-step check by 0.016 (wake
+  swings longer than the windows). The finer surface does not raise Cd
+  (level 4: 0.244–0.264); the gap to 0.279 stays 8–12%. Plan section 7.
 - Nothing was launched through the runner; no gate was lowered; no run was
   relabelled.
 

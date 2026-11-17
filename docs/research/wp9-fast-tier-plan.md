@@ -716,3 +716,43 @@ the averaging and half-step check cannot complete in the hour. The fast
 tier's honest value for this body stays 0.244–0.264 against 0.279 (5–12%
 low), with resolution as the remaining difference. The face-tet option is
 kept as a mesh-quality control; it is not a fix for this.
+
+## 7. Long tier: the finer body surface at half the step (2026-11-18)
+
+**User decision: "go for longer run".** New harness switch
+`VERNON_LONG_TIER=1`: the same mesh, rules and gates with a budget of up to
+twelve hours (the fast tier stays bounded at one); every row now records
+`"tier": "fast"` or `"long"`. Chain: four-hour links, a fresh link then
+seeded links until one passes, at most three. Setup: the SA-DDES 0.45M half
+grid with level-5 body cells (2.875 mm), 3 layers and the face-tet check
+(913,005 cells; body y+ mean 51.5), at half the fast-tier step (wake
+Courant 0.5, CTU/182, Δt 1.434e-4 s). It runs: peak Courant 12.7 from the
+steady start, 2.5–2.7 s/step (about 7.8 minutes per CTU).
+
+| Run | CTU averaged | Cd | Outcome |
+|---|---|---|---|
+| `long-…-a` (fresh, 2 h 26 min) | 2–17 | 0.260 ± 0.015 | fail: 15-CTU cap, still drifting (2.1% per CTU against 0.5%) |
+| `long-…-b` (1 h 12 min) | 17–23 | 0.244 ± 0.003 | window passed; half-step 0.260, difference 0.016 against 0.0075 allowed: fail; −12.4% |
+| `long-…-c` (1 h 8 min) | 23–29 | 0.256 ± 0.005 | window passed; half-step 0.240, difference 0.016 against 0.014 allowed: fail; −8.4% |
+
+The chain stopped after its three links (4 h 46 min in all); no link
+passed, and none used its four hours because each seeded link's window
+passed at 6 CTU and then failed the half-step check.
+
+What it shows:
+
+- **The finer surface does not raise Cd.** Level 5 reads 0.244–0.256,
+  inside the level-4 range on the same grid and model (0.244–0.264). Body
+  surface resolution down to 2.9 mm is not the gap to 0.279.
+- **The half-step check fails because the windows swing.** Consecutive
+  6-CTU windows differ by 0.011, and each 1-CTU half-step window moved the
+  opposite way by 0.016. That is low-frequency wake motion longer than the
+  windows, not a time-step error; the half-step window is too short to
+  average it out. The gate stays as it is.
+- **The remaining candidates are the wake grid and window length.** Near-wake
+  cells are 11.5 mm. The dataset's coarse grid reads high (0.300 at 3.6M) and
+  ours reads low, and both fall with refinement, so a finer wake alone is not
+  shown to close the gap either.
+
+No gate was lowered and no run relabelled; the road-car v1 contract is
+unchanged and unmet.
