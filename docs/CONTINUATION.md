@@ -156,6 +156,18 @@ evidence. For current commands use docs/SETUP.md and docs/CFD-RUNBOOK.md.
   also uses Spalding wall functions with a first layer near 2.3 mm (y+ of
   order 100), so y+ ≈ 1 would not reproduce it; the remaining difference is
   resolution (their ~2 mm body cells against our 4.4–5.8 mm).
+- **Finer body cells (2026-11-17): do not fit the hour.** Options
+  `VERNON_FAST_BODY_LEVEL`, `VERNON_FAST_LAYERS` (now in the seed
+  identity) and `VERNON_FAST_TET_CHECK` (new mesh option
+  `tet_quality_check`, off by default, test). Level-5 body cells (2.9 mm),
+  SA 0.45M setup: 5 layers, 3 layers, and 3 layers with the tet check all
+  fail in the first pressure solve at the full step (exit 136, no row).
+  The start field peaks at Courant 28 in body and layer cells that snapping
+  squeezes on the nose, lower-side and tail radii (13–17 at level 4). The
+  tet check cleared all 66 bad tet faces but not the crash; five snapping
+  and quality variants did not reduce the squeeze. Half the step runs but
+  leaves no room for averaging in the hour. The dataset itself steps at
+  1/1,300–1/2,600 CTU (ours 1/91). Details in the plan's section 6.
 - Nothing was launched through the runner; no gate was lowered; no run was
   relabelled.
 

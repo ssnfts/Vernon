@@ -170,10 +170,14 @@ struct MeshingRecipe {
     snap_iter: u32,
     location: [f64; 3],
     max_non_ortho: f64,
+    /// Absent in manifests written before the option existed, and when off, so
+    /// existing case manifests stay byte-identical.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    tet_quality_check: bool,
 }
 
 impl MeshingRecipe {
-    fn from_spec(spec: &SnappySpec<'_>, max_non_ortho: f64) -> Self {
+    fn from_spec(spec: &SnappySpec<'_>, max_non_ortho: f64, tet_quality_check: bool) -> Self {
         Self {
             version: 1,
             patches: spec.patches.clone(),
@@ -190,6 +194,7 @@ impl MeshingRecipe {
             snap_iter: spec.snap_iter,
             location: spec.location,
             max_non_ortho,
+            tet_quality_check,
         }
     }
 
@@ -305,7 +310,7 @@ pub(crate) fn reference_meshing_recipe_matches(_ctx: &CookContext, case: &Path, 
     let (features, feature_path) = foam::surface_features_dict(flavour, &recipe.patches);
     for (relative, expected) in [
         ("system/snappyHexMeshDict", foam::snappy_dict(&recipe.spec(&manifest["plan"]))),
-        ("system/meshQualityDict", foam::mesh_quality_dict(recipe.max_non_ortho)),
+        ("system/meshQualityDict", foam::mesh_quality_dict(recipe.max_non_ortho, recipe.tet_quality_check)),
         (feature_path, features),
     ] {
         if !mesh_text(case, relative, 1024 * 1024).is_ok_and(|actual| actual == expected) {
@@ -332,6 +337,7 @@ fn setup_info() -> NodeTypeInfo {
         .param(ParamSpec::int("n_cells_between_levels", "Cells between levels", 3, 1, 5).help("Buffer cells kept between refinement levels. More gives a smoother size transition and a larger mesh."))
         .param(ParamSpec::float("feature_angle", "Resolve feature angle", 30.0, 0.0, 180.0).unit("deg").help("Edges sharper than this angle are captured as features of the surface mesh, in degrees."))
         .param(ParamSpec::float("max_non_ortho", "Max non-orthogonality", 65.0, 40.0, 75.0).unit("deg").help("Largest face non-orthogonality the mesh quality dictionary tolerates, in degrees. The mesher backs the snap off where it would exceed it."))
+        .param(ParamSpec::bool("tet_quality_check", "Face tet check", false).help("Rejects snapped and layered faces that would split into degenerate or inverted tets. Fine surface cells on doubly curved corners can otherwise leave a cell that makes the transient solver diverge."))
         .param(ParamSpec::float("max_global_cells_m", "Max cells", 30.0, 0.1, 500.0).unit("million").help("Upper bound on the total cell count handed to the mesher, in millions. Memory use follows it, see the estimate in the report."))
         .param(ParamSpec::float("ram_gb", "Available memory", 0.0, 0.0, 4096.0).unit("GB").help("Memory of the machine that will mesh and solve. When the high estimate (2 GB per million cells at the cell limit) exceeds it the report warns; 0 skips the check."))
         .param(ParamSpec::int("snap_iterations", "Snap iterations", 50, 10, 200).help("Number of snapping iterations. More pulls the mesh closer to the surface and takes longer."))
@@ -436,12 +442,13 @@ fn setup_cook(ctx: &CookContext, ins: &[Option<Data>], p: &Params) -> CookResult
     write_file(&case.join("system/blockMeshDict"), &foam::block_mesh_dict(&domain, dx0))?;
     write_file(&case.join("system/snappyHexMeshDict"), &foam::snappy_dict(&spec))?;
     let max_non_ortho = p.float("max_non_ortho")?;
-    write_file(&case.join("system/meshQualityDict"), &foam::mesh_quality_dict(max_non_ortho))?;
+    let tet_check = p.bool("tet_quality_check")?;
+    write_file(&case.join("system/meshQualityDict"), &foam::mesh_quality_dict(max_non_ortho, tet_check))?;
     write_file(&case.join("system/decomposeParDict"), &foam::decompose_par_dict(np))?;
     let (feat, feat_path) = foam::surface_features_dict(flavour, &patches);
     write_file(&case.join(feat_path), &feat)?;
     write_file(&case.join("Allrun.mesh"), &script_text(&mesh_steps(flavour, np, written > 0)))?;
-    let meshing_recipe = MeshingRecipe::from_spec(&spec, max_non_ortho);
+    let meshing_recipe = MeshingRecipe::from_spec(&spec, max_non_ortho, tet_check);
     let manifest = json!({
         "flavour": flavour.name(), "np": np, "dx0_m": dx0, "patches": patches,
         "domain": domain.to_json(), "reference": rf.to_json(), "plan": plan,
@@ -1093,7 +1100,7 @@ mod tests {
             location: std::array::from_fn(|i| r["location"][i].as_f64().unwrap_or(f64::NAN)),
         };
         write_file(&case.join("system/snappyHexMeshDict"), &foam::snappy_dict(&spec)).unwrap();
-        write_file(&case.join("system/meshQualityDict"), &foam::mesh_quality_dict(f("max_non_ortho"))).unwrap();
+        write_file(&case.join("system/meshQualityDict"), &foam::mesh_quality_dict(f("max_non_ortho"), false)).unwrap();
         let flavour = Flavour::parse(manifest["flavour"].as_str().unwrap()).unwrap();
         let (features, path) = foam::surface_features_dict(flavour, &patches);
         write_file(&case.join(path), &features).unwrap();
@@ -1128,6 +1135,26 @@ mod tests {
         assert_eq!(manifest["meshing_recipe"]["feature_angle"], 42.0);
         assert_eq!(manifest["meshing_recipe"]["max_non_ortho"], 62.0);
         assert!(reference_meshing_recipe_matches(&consumer, case, &manifest).unwrap());
+    }
+
+    #[test]
+    fn tet_quality_check_is_opt_in_and_bound_to_the_recipe() {
+        let consumer = ctx("tet-quality-check");
+        let mut p = Params::from_specs(&setup_info().params);
+        let out = setup_cook(&consumer, &[None, None, Some(Data::geometry(tagged_vehicle()))], &p).unwrap();
+        let case = out[0].as_file().unwrap();
+        let off = manifest(case).unwrap();
+        assert!(off["meshing_recipe"].get("tet_quality_check").is_none(), "off leaves earlier manifests unchanged");
+        assert!(std::fs::read_to_string(case.join("system/meshQualityDict")).unwrap().contains("minTetQuality -1e30;"));
+        p.set("tet_quality_check", ParamValue::Bool(true));
+        let out = setup_cook(&consumer, &[None, None, Some(Data::geometry(tagged_vehicle()))], &p).unwrap();
+        let case = out[0].as_file().unwrap();
+        let mut on = manifest(case).unwrap();
+        assert_eq!(on["meshing_recipe"]["tet_quality_check"], true);
+        assert!(std::fs::read_to_string(case.join("system/meshQualityDict")).unwrap().contains("minTetQuality 1e-15;"));
+        assert!(reference_meshing_recipe_matches(&consumer, case, &on).unwrap());
+        on["meshing_recipe"]["tet_quality_check"] = json!(false);
+        assert!(!reference_meshing_recipe_matches(&consumer, case, &on).unwrap(), "the dictionary must match the recorded option");
     }
 
     #[test]

@@ -748,6 +748,16 @@ struct FastTier {
     /// An explicit tunnel in place of the blockage-sized one: upstream of the
     /// nose, downstream of the tail, full width and height, in metres.
     domain_box: Option<[f64; 4]>,
+    /// Refinement level of the body surface (a level-k cell is dx0 / 2^k);
+    /// 4 by default. The wake and underbody levels do not change with it.
+    body_level: i64,
+    /// Prism layers on the body (5 by default). With a fixed first layer
+    /// the stack's depth does not shrink with the surface cell, so a finer
+    /// surface needs fewer layers to keep the stack near the cell size.
+    n_layers: i64,
+    /// Face-tet test in the mesher's quality controls (VERNON_FAST_TET_CHECK=1);
+    /// off by default, which keeps earlier meshes and checkpoints valid.
+    tet_check: bool,
 }
 
 impl FastTier {
@@ -783,7 +793,12 @@ impl FastTier {
                 assert!(n.len() == 4 && n.iter().all(|x| x.is_finite() && *x > 0.0), "VERNON_FAST_DOMAIN_BOX is upstream,downstream,width,height in metres, all positive");
                 [n[0], n[1], n[2], n[3]]
             }),
+            body_level: num("VERNON_FAST_BODY_LEVEL", 4.0) as i64,
+            n_layers: num("VERNON_FAST_LAYERS", 5.0) as i64,
+            tet_check: get("VERNON_FAST_TET_CHECK").as_deref() == Some("1"),
         };
+        assert!((1..=15).contains(&cfg.n_layers), "VERNON_FAST_LAYERS must lie in 1..=15");
+        assert!((3..=7).contains(&cfg.body_level), "VERNON_FAST_BODY_LEVEL must lie in 3..=7 (the refinement plan's range)");
         assert!(["kOmegaSSTDDES", "SpalartAllmarasDDES"].contains(&cfg.les_model.as_str()), "VERNON_FAST_LES_MODEL is kOmegaSSTDDES or SpalartAllmarasDDES");
         assert!(cfg.preserve_case.is_none() || (cfg.checkpoint_dir.is_some() && cfg.seed_dir.is_none()), "preserving needs VERNON_FAST_CHECKPOINT_DIR and no seed");
         assert!(cfg.budget_min > 0.0 && cfg.budget_min <= 60.0, "the fast tier is bounded at one hour");
@@ -1208,8 +1223,8 @@ fn real_openfoam_fast_tier_run() {
     ]);
     let plan = cook(&reg, "cfd.refinement_plan", vec![reference.clone(), j(&domain[0]), None, j(&air)], &[
         ("dx0_m", ParamValue::Float(cfg.dx0_m)),
-        ("body_min", ParamValue::Int(4)),
-        ("body_max", ParamValue::Int(4)),
+        ("body_min", ParamValue::Int(cfg.body_level)),
+        ("body_max", ParamValue::Int(cfg.body_level)),
         ("underbody_level", ParamValue::Int(3)),
         ("near_wake_level", ParamValue::Int(i64::from(NEAR_WAKE_LEVEL))),
         ("far_wake_level", ParamValue::Int(2)),
@@ -1243,11 +1258,14 @@ fn real_openfoam_fast_tier_run() {
     let mut mesh_inputs = serde_json::json!({
         "body": body_key, "angle_deg": if is_slant { Some(cfg.angle_deg) } else { None },
         "plan": plan[0].as_json().unwrap().as_ref(), "domain": domain[0].as_json().unwrap().as_ref(),
-        "reference": reference_value, "flavour": "opencfd2606", "n_layers": 5, "np": cfg.np,
+        "reference": reference_value, "flavour": "opencfd2606", "n_layers": cfg.n_layers, "np": cfg.np,
     });
     // Only when set, so the identities of earlier checkpoints stay valid.
     if cfg.keep_clearance {
         mesh_inputs["keep_clearance"] = serde_json::json!(true);
+    }
+    if cfg.tet_check {
+        mesh_inputs["tet_quality_check"] = serde_json::json!(true);
     }
     if let Some(yplus) = cfg.yplus_target {
         mesh_inputs["layer_mode"] = serde_json::json!({"first_layer_yplus": yplus});
@@ -1329,8 +1347,9 @@ fn real_openfoam_fast_tier_run() {
         None => {
             let mut layer_settings = vec![
                 ("flavour", ParamValue::Str("opencfd2606".into())),
-                ("n_layers", ParamValue::Int(5)),
+                ("n_layers", ParamValue::Int(cfg.n_layers)),
                 ("np", ParamValue::Int(cfg.np)),
+                ("tet_quality_check", ParamValue::Bool(cfg.tet_check)),
             ];
             if let Some(yplus) = cfg.yplus_target {
                 layer_settings.push(("layer_mode", ParamValue::Str("first_layer_yplus".into())));
@@ -1649,7 +1668,7 @@ fn real_openfoam_fast_tier_run() {
         "label": cfg.label, "tier": "fast", "contract": "wp9-fast-tier-v1 (draft; not the road-car contract)",
         "geometry": cfg.geometry, "angle_deg": if is_slant { Some(cfg.angle_deg) } else { None },
         "u_ms": cfg.u_ms, "nu": cfg.nu, "rho": rho, "reynolds_length": cfg.u_ms * length / cfg.nu,
-        "length_m": length, "a_front_m2": a_front, "aref_m2": fast_aref(a_front, cfg.full_body), "half_model": !cfg.full_body, "les_model": cfg.les_model, "domain_box_m": cfg.domain_box,
+        "length_m": length, "a_front_m2": a_front, "aref_m2": fast_aref(a_front, cfg.full_body), "half_model": !cfg.full_body, "les_model": cfg.les_model, "domain_box_m": cfg.domain_box, "body_level": cfg.body_level, "n_layers": cfg.n_layers, "tet_quality_check": cfg.tet_check, "body_cell_m": cfg.dx0_m / f64::powi(2.0, cfg.body_level as i32),
         "dx0_m": cfg.dx0_m, "np": cfg.np,
     });
     let transient_row = serde_json::json!({

@@ -658,3 +658,61 @@ not a value: the wash-out needed is longer than the budget allows at 0.5M
 cells and 16 ranks. Any pass within the hour would need either a converged
 seed carried over between runs (a preserved checkpoint, as the road-car
 Stage 2 did) or a coarser, cheaper body.
+
+**2026-11-17, user decisions: "Finer body cells", then "Repair the corner
+cells".** Harness options `VERNON_FAST_BODY_LEVEL` (body surface level,
+default 4) and `VERNON_FAST_LAYERS` (default 5; now part of the seed
+identity, which held a fixed 5 before). Level 5 is 2.875 mm body cells
+against the dataset's ~1.95 mm. Same SA 0.45M setup otherwise, full step
+CTU/91 (2.87e-4 s):
+
+| Run | Cells | Outcome |
+|---|---|---|
+| `sa-body5-…-a` (5 layers) | 1.10M | floating-point exception (exit 136) in the first pressure solve |
+| `sa-body5-l3-…-a` (3 layers) | 913k | same, first step |
+| `sa-body5-tet-…-a` (3 layers, face-tet check) | 913k | same, first step |
+
+No row, no Cd. Diagnosis on copies of the cases:
+
+- At half the step the 5-layer case runs (about 4 s/step, so 12 minutes
+  per CTU and about 36 minutes for the half-step check alone: no hour can
+  pass); switched back to the full step it fails after 12 steps, so this is
+  a step-size limit, not a start-up transient. A different pressure solver
+  (PCG) and GAMG without scale correction also failed.
+- The starting field (the steady solution) already peaks at Courant 28 at
+  the full step (54 and 40 in the 5- and 3-layer cases after a few half
+  steps), against 13–17
+  in the level-4 runs that work. The hot cells are body-surface and layer
+  cells on the nose and lower side radii and the tail corner, which
+  snapping has squeezed to about 0.5 mm along the flow (volume ~2e-9 m³,
+  flow up to 61 m/s at the nose).
+- checkMesh with all geometry checks found 66 faces with low-quality or
+  inverted tet decompositions at those radii, because our quality
+  dictionary disabled the tet test (`minTetQuality -1e30`). New mesh option
+  `tet_quality_check` (off by default; existing dictionaries and manifests
+  are unchanged; recorded in the meshing recipe; test) writes OpenFOAM's
+  default 1e-15 and, via `VERNON_FAST_TET_CHECK=1`, the harness. It removed
+  every tet error, but the run still failed at the first step with Courant
+  28: the faces were not the cause.
+- Mesh variants, each built by hand from the level-5 dictionaries (~75 s)
+  and scored by a geometric Courant number (40 m/s along each axis, the
+  full step; a proxy that overstates thin layer cells): more snap smoothing
+  (patch 6, 150 solve, 10 relax iterations) 167 cells above 20; snap
+  tolerance 1.0 119; implicit feature snapping 151; minimum volume ratio
+  0.1 and determinant 0.02 1,324 (layers pulled back); no layers 69;
+  the unchanged level-5 dictionaries 110–134; the level-4 mesh that runs
+  5. None brings level 5 near level 4, and none of these changes the
+  squeeze: it comes from snapping 2.9 mm cells onto the radii.
+- The dataset does not run its finer surface at a step like ours. Its
+  controlDicts (free stream 1 m/s, CTU 1.044 s) use Δt 0.0004–0.0008 s,
+  i.e. 1/1,300 to 1/2,600 of a CTU, 14–29 times smaller than our CTU/91:
+  a surface-cell Courant number near 0.3 on 1.95 mm cells, against 4 (peak
+  28) for ours at level 5.
+
+**Result: a finer body surface does not fit the one-hour tier on this
+machine.** It needs a time step of about half or less, which no
+mesh-quality or snapping setting tried here removes, and at half the step
+the averaging and half-step check cannot complete in the hour. The fast
+tier's honest value for this body stays 0.244–0.264 against 0.279 (5–12%
+low), with resolution as the remaining difference. The face-tet option is
+kept as a mesh-quality control; it is not a fix for this.

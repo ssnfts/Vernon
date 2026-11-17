@@ -373,11 +373,15 @@ pub fn snappy_dict(s: &SnappySpec) -> String {
     o
 }
 
-pub fn mesh_quality_dict(max_non_ortho: f64) -> String {
+/// `tet_check` turns on the face-tet test at OpenFOAM's own default threshold, so the
+/// mesher backs the snap and layers off where a face would decompose into a
+/// degenerate or inverted tet. Off keeps the long-standing permissive dictionary.
+pub fn mesh_quality_dict(max_non_ortho: f64, tet_check: bool) -> String {
     let mut o = header("dictionary", "system", "meshQualityDict");
     o += &format!(
-        "maxNonOrtho {};\nmaxBoundarySkewness 3.5;\nmaxInternalSkewness 3.5;\nmaxConcave 80;\nminVol 1e-13;\nminTetQuality -1e30;\nminArea -1;\nminTwist 0.05;\nminDeterminant 0.001;\nminFaceWeight 0.05;\nminVolRatio 0.01;\nminTriangleTwist -1;\nnSmoothScale 4;\nerrorReduction 0.75;\n",
-        num(max_non_ortho)
+        "maxNonOrtho {};\nmaxBoundarySkewness 3.5;\nmaxInternalSkewness 3.5;\nmaxConcave 80;\nminVol 1e-13;\nminTetQuality {};\nminArea -1;\nminTwist 0.05;\nminDeterminant 0.001;\nminFaceWeight 0.05;\nminVolRatio 0.01;\nminTriangleTwist -1;\nnSmoothScale 4;\nerrorReduction 0.75;\n",
+        num(max_non_ortho),
+        if tet_check { "1e-15" } else { "-1e30" }
     );
     o
 }
