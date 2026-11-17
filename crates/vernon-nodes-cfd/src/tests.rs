@@ -758,6 +758,10 @@ struct FastTier {
     /// Face-tet test in the mesher's quality controls (VERNON_FAST_TET_CHECK=1);
     /// off by default, which keeps earlier meshes and checkpoints valid.
     tet_check: bool,
+    /// The long tier (VERNON_LONG_TIER=1, 2026-11-18): the same run, rules and
+    /// gates with a budget of up to twelve hours, for settings that cannot fit
+    /// the hour (a finer body surface at a smaller step). The row says which.
+    long_tier: bool,
 }
 
 impl FastTier {
@@ -796,12 +800,17 @@ impl FastTier {
             body_level: num("VERNON_FAST_BODY_LEVEL", 4.0) as i64,
             n_layers: num("VERNON_FAST_LAYERS", 5.0) as i64,
             tet_check: get("VERNON_FAST_TET_CHECK").as_deref() == Some("1"),
+            long_tier: get("VERNON_LONG_TIER").as_deref() == Some("1"),
         };
         assert!((1..=15).contains(&cfg.n_layers), "VERNON_FAST_LAYERS must lie in 1..=15");
         assert!((3..=7).contains(&cfg.body_level), "VERNON_FAST_BODY_LEVEL must lie in 3..=7 (the refinement plan's range)");
         assert!(["kOmegaSSTDDES", "SpalartAllmarasDDES"].contains(&cfg.les_model.as_str()), "VERNON_FAST_LES_MODEL is kOmegaSSTDDES or SpalartAllmarasDDES");
         assert!(cfg.preserve_case.is_none() || (cfg.checkpoint_dir.is_some() && cfg.seed_dir.is_none()), "preserving needs VERNON_FAST_CHECKPOINT_DIR and no seed");
-        assert!(cfg.budget_min > 0.0 && cfg.budget_min <= 60.0, "the fast tier is bounded at one hour");
+        if cfg.long_tier {
+            assert!(cfg.budget_min > 0.0 && cfg.budget_min <= 720.0, "the long tier is bounded at twelve hours");
+        } else {
+            assert!(cfg.budget_min > 0.0 && cfg.budget_min <= 60.0, "the fast tier is bounded at one hour; VERNON_LONG_TIER=1 allows up to twelve");
+        }
         assert!(cfg.wake_co.is_none() || cfg.delta_t_s.is_none(), "give a wake Courant target or a time step, not both");
         assert!(cfg.wake_co.is_none_or(|c| c > 0.0 && c <= 4.0), "the wake Courant target must lie in (0, 4]");
         assert!(cfg.yplus_target.is_none_or(|y| (1.0..=300.0).contains(&y)), "the y+ target must lie in 1..=300 (the mesher's range)");
@@ -1146,7 +1155,7 @@ fn fast_tier_dictionary_edit_touches_only_the_top_level_entry() {
 /// budget. The row names its reference and the reference's method; it is never
 /// a result under the road-car contract (`wp9-replication-baseline-v1.json`).
 #[test]
-#[ignore = "needs WSL, OpenFOAM and up to an hour"]
+#[ignore = "needs WSL, OpenFOAM and up to an hour (twelve on the long tier)"]
 fn real_openfoam_fast_tier_run() {
     use std::time::{Duration, Instant};
     let started = Instant::now();
@@ -1681,6 +1690,7 @@ fn real_openfoam_fast_tier_run() {
             "near_wake_free_stream_courant": cfg.u_ms * dt / wake_cell_m, "changed_at_restart_from_s": step_change}, "checkpoint": checkpoint,
     });
     let verdict_row = serde_json::json!({
+        "tier": if cfg.long_tier { "long" } else { "fast" },
         "stop_reason": stop_reason, "gate_passed": gate_passed,
         "cd": report.mean, "cd_std_err": report.std_err, "cd_interval_95": 1.96 * report.std_err,
         "reference_cd": cfg.reference_cd, "reference_label": cfg.reference_label, "error_pct": error_pct, "band_pct": 5.0, "within_band": within_band,
