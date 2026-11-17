@@ -149,6 +149,13 @@ evidence. For current commands use docs/SETUP.md and docs/CFD-RUNBOOK.md.
   all ruled out; untested: wall treatment (y+ ≈ 1), domain/blockage against
   the dataset's, resolution beyond 0.9M cells. Details in the plan's
   section 6.
+- **Dataset tunnel (2026-11-17).** Harness option `VERNON_FAST_DOMAIN_BOX`
+  (test); the dataset's 10 × 2 × 1.4 m tunnel (4.0% blockage, ours 2.0%).
+  SA, 0.45M: `sa-box-…-c` **PASS, Cd 0.263 ± 0.002 (23–29 CTU)** against
+  0.264 in our tunnel: the domain is not the gap. The dataset's case setup
+  also uses Spalding wall functions with a first layer near 2.3 mm (y+ of
+  order 100), so y+ ≈ 1 would not reproduce it; the remaining difference is
+  resolution (their ~2 mm body cells against our 4.4–5.8 mm).
 - Nothing was launched through the runner; no gate was lowered; no run was
   relabelled.
 

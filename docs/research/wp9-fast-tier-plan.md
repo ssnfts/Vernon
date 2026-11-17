@@ -619,6 +619,40 @@ near-wall resolution is not in the material we hold), the domain and
 blockage against the dataset's, and resolution beyond 0.9M cells (outside
 the one-hour budget at 16 ranks).
 
+**2026-11-17, user decision: "Domain and blockage".** The dataset's
+mesh logs and case setup (`scratch/wp9-data/ahmedml/validation/*/run/log/
+checkMesh.log`, `.../casesetup/`) give its tunnel: x −4 to 6 m with the body
+at −1.044 to 0 (2.956 m ahead of the nose, 6.0 m behind the tail), y ±1 m,
+z 0 to 1.4 m: 2.8 m² section, **4.0% blockage**, against our 3.06 × 1.83 m
+(2.0%). Floor (stationary no-slip), top and sides (slip) are the same as
+ours. Harness option `VERNON_FAST_DOMAIN_BOX` (upstream, downstream, width,
+height in metres) replaces the tunnel node's box, since 4% blockage and a
+4.75 L wake lie outside that node's ranges (test). Same 0.45M SA setup as
+`sa-…dx0920` (443,339 cells):
+
+| Run | Window (CTU) | Cd ± s.e. | Outcome |
+|---|---|---|---|
+| `sa-box-…-a` (fresh) | 2–17 | 0.277 ± 0.016 | cap reached with the wash-out trend in the window |
+| `sa-box-…-b` | 17–23 | 0.252 ± 0.002 | window passed; half-step 0.267 (1 CTU window still trending) |
+| `sa-box-…-c` | 23–29 | **0.263 ± 0.002** | **PASS** (half-step difference 0.0009 against 0.0085 allowed); −5.8% |
+
+**The tunnel is not the gap.** In the dataset's tunnel the result is 0.263
+against 0.264 in ours, same grid and model; the windows of both chains
+swing by ±0.01 between hours. (On this grid SA reads high from a coarse-grid
+effect, see above; the comparison is like for like.)
+
+**The dataset's wall treatment is close to ours.** Its case setup uses
+Spalding wall functions on nut (as ours), 3 layers with the first at 1.2
+times the surface cell (relative sizes), and level-8 body cells from a
+0.5 m background: about 1.95 mm surface cells and a first layer near 2.3 mm,
+so y+ of order 100 at this Reynolds number. Ours: 0.95 mm first layer, body
+y+ mean 52, but 5.75 mm (0.45M) or 4.4 mm (0.88M) surface cells. So a y+ ≈ 1
+study would not reproduce the dataset; the clear remaining difference is
+surface and near-wake resolution (their 3.6M-cell grid reads 0.300, our
+0.9M reads 0.244–0.245, and both trends fall with refinement). The variant
+case setup is the 500-run default; the four validation grids' own settings
+are not in the files we hold beyond their cell counts and controlDict.
+
 What this adds: the honest fast-tier statement for this body is a trend,
 not a value: the wash-out needed is longer than the budget allows at 0.5M
 cells and 16 ranks. Any pass within the hour would need either a converged

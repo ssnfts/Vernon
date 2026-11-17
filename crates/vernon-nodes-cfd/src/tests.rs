@@ -745,6 +745,9 @@ struct FastTier {
     /// The detached-eddy turbulence model: kOmegaSSTDDES (default) or
     /// SpalartAllmarasDDES (the open slant-body dataset's model).
     les_model: String,
+    /// An explicit tunnel in place of the blockage-sized one: upstream of the
+    /// nose, downstream of the tail, full width and height, in metres.
+    domain_box: Option<[f64; 4]>,
 }
 
 impl FastTier {
@@ -775,6 +778,11 @@ impl FastTier {
             yplus_target: get("VERNON_FAST_YPLUS").map(|v| v.trim().parse().expect("VERNON_FAST_YPLUS must be a number")),
             full_body: get("VERNON_FAST_FULL_BODY").as_deref() == Some("1"),
             les_model: get("VERNON_FAST_LES_MODEL").unwrap_or_else(|| "kOmegaSSTDDES".into()),
+            domain_box: get("VERNON_FAST_DOMAIN_BOX").map(|v| {
+                let n: Vec<f64> = v.split(',').map(|x| x.trim().parse().expect("VERNON_FAST_DOMAIN_BOX is four numbers")).collect();
+                assert!(n.len() == 4 && n.iter().all(|x| x.is_finite() && *x > 0.0), "VERNON_FAST_DOMAIN_BOX is upstream,downstream,width,height in metres, all positive");
+                [n[0], n[1], n[2], n[3]]
+            }),
         };
         assert!(["kOmegaSSTDDES", "SpalartAllmarasDDES"].contains(&cfg.les_model.as_str()), "VERNON_FAST_LES_MODEL is kOmegaSSTDDES or SpalartAllmarasDDES");
         assert!(cfg.preserve_case.is_none() || (cfg.checkpoint_dir.is_some() && cfg.seed_dir.is_none()), "preserving needs VERNON_FAST_CHECKPOINT_DIR and no seed");
@@ -846,6 +854,38 @@ boundaryField
     assert!(text.contains("object      nuTilda;") && !text.contains("object      nut;") && text.contains("format      binary;"), "{text}");
     assert!(got.windows(4).any(|w| w == [0xff, 0xfe, 0x00, 0x3b]) && text.contains("type fixedValue; value uniform 0.00015;"), "{text}");
     assert!(!text.contains("calculated") && !text.contains("internalField uniform"), "{text}");
+}
+
+/// The tunnel `d` resized to an explicit box around the body of reference
+/// `r`: `[upstream of the nose, downstream of the tail, full width, height]`
+/// in metres, the floor where it was. Blockage and lengths follow the box.
+fn boxed_domain(d: &serde_json::Value, r: &serde_json::Value, b: [f64; 4]) -> serde_json::Value {
+    let mut d = crate::types::Domain::from_json(d).unwrap();
+    let (nose, tail) = (r["nose_x_m"].as_f64().unwrap(), r["tail_x_m"].as_f64().unwrap());
+    let [up, down, width, height] = b;
+    d.min_m = [nose - up, if d.half_model { 0.0 } else { -width / 2.0 }, d.min_m[2]];
+    d.max_m = [tail + down, width / 2.0, d.min_m[2] + height];
+    d.cross_section_m2 = width * height;
+    d.blockage_pct = 100.0 * r["a_front_m2"].as_f64().unwrap() / d.cross_section_m2;
+    d.up_l = up / d.ref_length_m;
+    d.down_l = down / d.ref_length_m;
+    d.to_json()
+}
+
+#[test]
+fn fast_tier_domain_box_matches_the_dataset_tunnel() {
+    let r = serde_json::json!({"nose_x_m": 0.0, "tail_x_m": 1.044, "a_front_m2": 0.112032, "length_m": 1.044});
+    let half = crate::types::Domain {
+        min_m: [-3.132, 0.0, 0.0], max_m: [6.264, 1.53, 1.83], half_model: true, yaw_deg: 0.0,
+        blockage_pct: 2.0, cross_section_m2: 5.6, ref_length_m: 1.044, up_l: 3.0, down_l: 5.0,
+    };
+    // The open slant-body dataset's tunnel: x -4..6 with the body at
+    // -1.044..0, y -1..1, z 0..1.4.
+    let d = crate::types::Domain::from_json(&boxed_domain(&half.to_json(), &r, [2.956, 6.0, 2.0, 1.4])).unwrap();
+    assert!((d.min_m[0] + 2.956).abs() < 1e-12 && (d.max_m[0] - 7.044).abs() < 1e-12);
+    assert_eq!((d.min_m[1], d.max_m[1], d.min_m[2], d.max_m[2]), (0.0, 1.0, 0.0, 1.4));
+    assert!((d.blockage_pct - 4.0011).abs() < 1e-3 && (d.cross_section_m2 - 2.8).abs() < 1e-12, "{d:?}");
+    assert!(d.half_model && (d.down_l - 6.0 / 1.044).abs() < 1e-12);
 }
 
 /// Replace one unindented `key   value;` entry of an OpenFOAM dictionary.
@@ -1150,12 +1190,17 @@ fn real_openfoam_fast_tier_run() {
     let rho = 1.225;
     let air_value = serde_json::json!({"rho": rho, "nu": cfg.nu, "mu": rho * cfg.nu, "u_ms": cfg.u_ms, "q": 0.5 * rho * cfg.u_ms * cfg.u_ms});
     let air = Data::json(air_value.clone());
-    let domain = cook(&reg, "cfd.tunnel_domain", vec![reference.clone()], &[
+    let mut domain = cook(&reg, "cfd.tunnel_domain", vec![reference.clone()], &[
         ("blockage_pct", ParamValue::Float(2.0)),
         ("up_l", ParamValue::Float(3.0)),
         ("down_l", ParamValue::Float(5.0)),
         ("half_model", ParamValue::Bool(!cfg.full_body)),
     ]);
+    if let Some(b) = cfg.domain_box {
+        let boxed = boxed_domain(domain[0].as_json().unwrap(), &reference_value, b);
+        println!("domain box: {}", boxed);
+        domain[0] = Data::json(boxed);
+    }
     let bc = cook(&reg, "cfd.ground_wheels", vec![j(&domain[0]), reference.clone(), j(&air)], &[
         ("ground_mode", ParamValue::Str("stationary".into())),
         ("wheel_mode", ParamValue::Str("static".into())),
@@ -1604,7 +1649,7 @@ fn real_openfoam_fast_tier_run() {
         "label": cfg.label, "tier": "fast", "contract": "wp9-fast-tier-v1 (draft; not the road-car contract)",
         "geometry": cfg.geometry, "angle_deg": if is_slant { Some(cfg.angle_deg) } else { None },
         "u_ms": cfg.u_ms, "nu": cfg.nu, "rho": rho, "reynolds_length": cfg.u_ms * length / cfg.nu,
-        "length_m": length, "a_front_m2": a_front, "aref_m2": fast_aref(a_front, cfg.full_body), "half_model": !cfg.full_body, "les_model": cfg.les_model,
+        "length_m": length, "a_front_m2": a_front, "aref_m2": fast_aref(a_front, cfg.full_body), "half_model": !cfg.full_body, "les_model": cfg.les_model, "domain_box_m": cfg.domain_box,
         "dx0_m": cfg.dx0_m, "np": cfg.np,
     });
     let transient_row = serde_json::json!({
