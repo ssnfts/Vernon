@@ -11,6 +11,7 @@
 //! * `ai.photo_cutout` masks one part in a photo from a click or a box (SAM 2.1, Apache-2.0).
 //! * `ai.vision_check` answers a question about a picture, as a hint only (Qwen3-VL 4B, Apache-2.0).
 //! * `ai.sketch_from_words` draws one concept picture from a prompt, to look at only (FLUX.2-klein-4B, Apache-2.0).
+//! * `ai.print_watchdog` asks the vision model whether the newest camera picture of a print looks failed, as a hint only.
 //!
 //! Nothing here validates CFD. Every DoMINO output is labelled
 //! [`AERO_LABEL`], carries `cfd_validation = DEFERRED`, and uses `ai_`-prefixed
@@ -31,6 +32,7 @@ pub mod sketch;
 pub mod speak;
 pub mod transcribe;
 pub mod vision;
+pub mod watchdog;
 #[cfg(test)]
 mod roundtrip_tests;
 #[cfg(test)]
@@ -52,6 +54,7 @@ pub fn register(reg: &mut Registry) {
     cutout::register(reg);
     vision::register(reg);
     sketch::register(reg);
+    watchdog::register(reg);
 }
 
 /// Stable 64-bit FNV-1a hash, used to name artifact folders by their inputs.

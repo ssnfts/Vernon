@@ -204,6 +204,7 @@ passage is correct.
 | Node | Id | Model | Contract |
 |---|---|---|---|
 | AI Sketch from Words | `geo.ai_sketch_from_words` | FLUX.2-klein-4B (Apache-2.0) | [ai-local/sketch-from-words.md](ai-local/sketch-from-words.md) |
+| AI Print Watchdog | `print.ai_print_watchdog` | Qwen3-VL 4B (Apache-2.0), shared with the vision check | [ai-local/print-watchdog.md](ai-local/print-watchdog.md) |
 
 Checked on this PC on 2026-11-16 with the real model, one run in a fresh work
 folder: a prompt for a red ball on a white background, 512 x 512, 4 steps. The
@@ -216,6 +217,18 @@ measured. One prompt only: picture quality on design prompts is not assessed.
 
 The picture is labelled **"AI picture: a concept sketch, not a design or a
 measurement"** and no acceptance gate reads it.
+
+The print watchdog takes the newest picture in a camera folder and asks the
+vision model whether the print looks failed. Checked on 2026-11-16 with the real
+model on drawn pictures and a stand-in question: it picked the newer of two
+pictures both times and turned a yes and a no into the right verdicts. Peak GPU
+8.3 GB, peak RAM 9.1 GB. On 2026-11-17 it was run on 20 photographs (10 failed
+prints, 10 good): the first question flagged 6 of 10 failures and 0 of 10 good
+ones; the reworded current question flagged 10 of 10 and 0 of 10, but it was
+reworded on those same photos, so that number is optimistic and no fresh photos
+were tried. It is labelled **"AI print
+check: a hint, not a measurement; it never stops a print"**, it does not talk
+to a printer, and no acceptance gate reads it.
 
 ## Safety behaviour
 
