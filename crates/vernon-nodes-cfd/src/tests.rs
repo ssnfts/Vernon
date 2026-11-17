@@ -762,6 +762,32 @@ struct FastTier {
     /// gates with a budget of up to twelve hours, for settings that cannot fit
     /// the hour (a finer body surface at a smaller step). The row says which.
     long_tier: bool,
+    /// Minimum averaging window of the main run in CTU (6 by default; the
+    /// long tier may lengthen it to 15 with VERNON_LONG_AVG_CTU).
+    min_average_ctu: f64,
+    /// Averaging window of the half-step check in CTU (1 by default; the long
+    /// tier may lengthen it to 6 with VERNON_LONG_HALF_CTU).
+    half_average_ctu: f64,
+}
+
+/// The averaging windows a run may use: the main window's minimum and the
+/// half-step check's window, in CTU. Both default to the fast tier's (6 and
+/// 1); only the long tier may lengthen them, and neither may shorten, so the
+/// gates are never weaker than the fast tier's (user decision 2026-11-18,
+/// "Longer averaging windows").
+fn averaging_windows(long_tier: bool, main: Option<f64>, half: Option<f64>) -> Result<(f64, f64), String> {
+    if !long_tier && (main.is_some() || half.is_some()) {
+        return Err("VERNON_LONG_AVG_CTU and VERNON_LONG_HALF_CTU need VERNON_LONG_TIER=1".into());
+    }
+    let main = main.unwrap_or(6.0);
+    let half = half.unwrap_or(1.0);
+    if !(6.0..=15.0).contains(&main) {
+        return Err(format!("the main averaging window must lie in 6..=15 CTU (the fast tier's minimum to its cap), got {main}"));
+    }
+    if !(1.0..=6.0).contains(&half) {
+        return Err(format!("the half-step averaging window must lie in 1..=6 CTU, got {half}"));
+    }
+    Ok((main, half))
 }
 
 impl FastTier {
@@ -769,6 +795,10 @@ impl FastTier {
         let get = |k: &str| std::env::var(k).ok().filter(|v| !v.trim().is_empty());
         let need = |k: &str| get(k).unwrap_or_else(|| panic!("set {k}"));
         let num = |k: &str, d: f64| get(k).map(|v| v.trim().parse::<f64>().unwrap_or_else(|_| panic!("{k} must be a number"))).unwrap_or(d);
+        let long_tier = get("VERNON_LONG_TIER").as_deref() == Some("1");
+        let ctu_opt = |k: &str| get(k).map(|v| v.trim().parse::<f64>().unwrap_or_else(|_| panic!("{k} must be a number")));
+        let (min_average_ctu, half_average_ctu) =
+            averaging_windows(long_tier, ctu_opt("VERNON_LONG_AVG_CTU"), ctu_opt("VERNON_LONG_HALF_CTU")).unwrap_or_else(|e| panic!("{e}"));
         let cfg = Self {
             geometry: get("VERNON_FAST_GEOMETRY").unwrap_or_else(|| "slant".into()),
             angle_deg: num("VERNON_FAST_ANGLE", 25.0),
@@ -800,7 +830,9 @@ impl FastTier {
             body_level: num("VERNON_FAST_BODY_LEVEL", 4.0) as i64,
             n_layers: num("VERNON_FAST_LAYERS", 5.0) as i64,
             tet_check: get("VERNON_FAST_TET_CHECK").as_deref() == Some("1"),
-            long_tier: get("VERNON_LONG_TIER").as_deref() == Some("1"),
+            long_tier,
+            min_average_ctu,
+            half_average_ctu,
         };
         assert!((1..=15).contains(&cfg.n_layers), "VERNON_FAST_LAYERS must lie in 1..=15");
         assert!((3..=7).contains(&cfg.body_level), "VERNON_FAST_BODY_LEVEL must lie in 3..=7 (the refinement plan's range)");
@@ -1290,6 +1322,7 @@ fn real_openfoam_fast_tier_run() {
     // convergence are gated; ESS and the standard error are reported with
     // the mean as its interval.
     let mut p = crate::transient::TransientParams::fast_tier(ctu);
+    p.min_average_ctu = cfg.min_average_ctu;
 
     // Checkpoint an already finished run (no solver runs): its latest written
     // time, with the identity this harness computes for the same settings.
@@ -1433,7 +1466,7 @@ fn real_openfoam_fast_tier_run() {
     ]);
     print_report("transient case", &ddes[1]);
     // The half-step check: 0.5 CTU of adjustment, then this much averaging.
-    let half_average_ctu = 1.0;
+    let half_average_ctu = cfg.half_average_ctu;
     let half_total_ctu = 0.5 + half_average_ctu;
     let case = ddes[0].as_file().unwrap().clone();
     let seed_recipe = crate::fast_seed::recipe_fingerprint(&case).unwrap();
@@ -1653,7 +1686,7 @@ fn real_openfoam_fast_tier_run() {
                 println!("half step: mean {:.5} ± {:.5}, main {:.5} ± {:.5}, diff {diff:.5}, allowed {allowed:.5}, agree {ok}", hr.mean, hr.std_err, report.mean, report.std_err);
                 half_agreement = Some(serde_json::json!({"agrees": ok, "difference": diff, "allowed": allowed, "confidence": 0.95}));
             }
-            half = Some(serde_json::json!({"chain_failed": res.failed, "delta_t_s": dt / 2.0, "end_s": half_end, "assessment": hr, "per_step": half_steps}));
+            half = Some(serde_json::json!({"chain_failed": res.failed, "delta_t_s": dt / 2.0, "end_s": half_end, "average_ctu": half_average_ctu, "assessment": hr, "per_step": half_steps}));
         } else {
             stop_reason = format!("budget: the half-step segment needs {need:.0} s, {:.0} s left", remaining(started).as_secs_f64());
         }
@@ -2425,4 +2458,17 @@ fn window_percentiles_use_the_shared_nearest_rank_convention() {
     assert_eq!(s.p95, 10.0);
     assert_eq!(s.p05, 1.0);
     assert!((s.sd - vernon_core::stats::sample_std(&v)).abs() < 1e-15);
+}
+
+#[test]
+fn averaging_windows_lengthen_only_on_the_long_tier() {
+    assert_eq!(averaging_windows(false, None, None), Ok((6.0, 1.0)), "fast-tier defaults");
+    assert_eq!(averaging_windows(true, None, None), Ok((6.0, 1.0)), "long tier keeps the defaults unless asked");
+    assert_eq!(averaging_windows(true, Some(12.0), Some(3.0)), Ok((12.0, 3.0)));
+    assert!(averaging_windows(false, Some(12.0), None).is_err(), "the fast tier cannot change its windows");
+    assert!(averaging_windows(false, None, Some(3.0)).is_err());
+    assert!(averaging_windows(true, Some(5.0), None).is_err(), "never shorter than the fast tier's minimum");
+    assert!(averaging_windows(true, None, Some(0.5)).is_err(), "never a shorter half-step window");
+    assert!(averaging_windows(true, Some(16.0), None).is_err(), "not past the averaging cap");
+    assert!(averaging_windows(true, None, Some(7.0)).is_err());
 }
