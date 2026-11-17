@@ -205,6 +205,7 @@ passage is correct.
 |---|---|---|---|
 | AI Sketch from Words | `geo.ai_sketch_from_words` | FLUX.2-klein-4B (Apache-2.0) | [ai-local/sketch-from-words.md](ai-local/sketch-from-words.md) |
 | AI Print Watchdog | `print.ai_print_watchdog` | Qwen3-VL 4B (Apache-2.0), shared with the vision check | [ai-local/print-watchdog.md](ai-local/print-watchdog.md) |
+| AI Body Fit from Photo | `capture.ai_body_fit` | SAM 3D Body, DINOv3-H+ backbone (SAM License, **opt-in, not open source**) | [ai-local/body-fit.md](ai-local/body-fit.md) |
 
 Checked on this PC on 2026-11-16 with the real model, one run in a fresh work
 folder: a prompt for a red ball on a white background, 512 x 512, 4 steps. The
@@ -229,6 +230,19 @@ reworded on those same photos, so that number is optimistic and no fresh photos
 were tried. It is labelled **"AI print
 check: a hint, not a measurement; it never stops a print"**, it does not talk
 to a printer, and no acceptance gate reads it.
+
+The body fit estimates a body surface and 70 key points from one photo of one
+person. It is **opt-in**: the model and its code are under Meta's SAM and
+DINOv3 licences (not open source; no military, weapons, nuclear or espionage
+use), the install script needs `--accept-licence`, and the node will not start
+the model until its licence box is ticked. Checked on 2026-11-17 with the real
+model on two photos of one person: the wrists were below the shoulders with the
+arms down and above the nose with the arms raised, and the model's own height
+guesses were 1783 mm and 2083 mm (raised hands included). Peak GPU 3.4 GB, peak
+RAM 5.0 GB, about 1.5 minutes per photo. It is a sanity check on two photos,
+not an accuracy test, and the side-on body came out too deep along the camera
+axis. It is labelled **"AI body estimate from one photo: a guess at shape and
+pose, not a measurement of the person"** and no acceptance gate reads it.
 
 ## Safety behaviour
 

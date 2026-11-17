@@ -12,6 +12,7 @@
 //! * `ai.vision_check` answers a question about a picture, as a hint only (Qwen3-VL 4B, Apache-2.0).
 //! * `ai.sketch_from_words` draws one concept picture from a prompt, to look at only (FLUX.2-klein-4B, Apache-2.0).
 //! * `ai.print_watchdog` asks the vision model whether the newest camera picture of a print looks failed, as a hint only.
+//! * `ai.body_fit` (opt-in, restrictive licence) estimates a body surface and key points from one photo of a person.
 //!
 //! Nothing here validates CFD. Every DoMINO output is labelled
 //! [`AERO_LABEL`], carries `cfd_validation = DEFERRED`, and uses `ai_`-prefixed
@@ -21,6 +22,7 @@ use glam::DVec3;
 use vernon_graph::Registry;
 
 pub mod aero;
+pub mod bodyfit;
 pub mod bridge;
 pub mod compare;
 pub mod cutout;
@@ -55,6 +57,7 @@ pub fn register(reg: &mut Registry) {
     vision::register(reg);
     sketch::register(reg);
     watchdog::register(reg);
+    bodyfit::register(reg);
 }
 
 /// Stable 64-bit FNV-1a hash, used to name artifact folders by their inputs.
