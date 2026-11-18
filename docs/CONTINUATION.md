@@ -183,6 +183,12 @@ evidence. For current commands use docs/SETUP.md and docs/CFD-RUNBOOK.md.
   together right after the step change (0.23 → 0.29–0.33, Cl(r) 0 → 0.16)
   and held: separated and reattached slant states, either side of 0.279.
   Plan section 7.
+- **40-CTU average (2026-11-18): gate PASS, outside the band.**
+  `VERNON_LONG_MAX_AVG_CTU` (long tier, 15..=60, test). From CTU 53, 40 CTU
+  window: Cd 0.255 ± 0.023 (95%), half-step 0.246 (agrees), per-step rules
+  met; −8.6% against 0.279, interval overlaps the ±5% band. The window
+  mixes 10 CTU of the high-drag state (0.27–0.32, after the restart) and
+  30 CTU of the low one (0.23–0.26); ESS 5. Plan section 7.
 - Nothing was launched through the runner; no gate was lowered; no run was
   relabelled.
 

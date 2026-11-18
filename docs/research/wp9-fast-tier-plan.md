@@ -793,3 +793,40 @@ What it shows:
 
 No gate was lowered and no run relabelled; the road-car v1 contract is
 unchanged and unmet.
+
+**2026-11-18, user decision: "Run a 40-CTU average".** Harness option
+`VERNON_LONG_MAX_AVG_CTU` (the cap at which an unpassed window fails;
+15..=60 CTU, long tier only, default 15; every rule still applies to the
+whole window; test extended). Same level-5 setup, seeded from
+`long-…-avg12h3-…-b` (CTU 53), main window 40 CTU (cap 45), half-step
+window 6 CTU, budget 12 h:
+
+| Run | CTU averaged | Cd | Half-step (6 CTU) | Outcome |
+|---|---|---|---|---|
+| `long-…-avg40-…-a` (6 h 56 min) | 53–93 | **0.255 ± 0.012** (95%: ±0.023) | 0.246 ± 0.005 | **gate PASS** (stationarity, per-step rules on every step, half-step difference 0.009 against 0.025 allowed); −8.6%, outside the ±5% band; interval 0.232–0.278 overlaps it |
+
+This is the first long-tier row that passes its gate, and it is not a
+validation against 0.279: the mean is 8.6% low and only the wide
+interval reaches the band. ESS is 5, because the window holds two
+states. Cd per 2 CTU:
+
+- **CTU 0–10 of the window: 0.27–0.32**, with rear lift up to 0.14 at the
+  start. The restart from the checkpoint put the flow back into the
+  high-drag state seen in the previous half-step segment. The link before
+  restarted from its own checkpoint without this, so the restart does not
+  always trigger it.
+- **CTU 10–40: 0.23–0.26**, rear lift near zero, the low-drag state of
+  every earlier long window. The half-step segment stayed there
+  (0.230–0.259).
+
+So the 40-CTU mean is a mix: 10 CTU of the high-drag state and 30 of the
+low-drag one. A window that started after the high state decayed would
+read about 0.24 (−14%); one with more time in the high state would read
+higher. The value depends on the share of time in each state, which this
+setup cannot fix from one 40-CTU sample. The reference also averaged 40
+CTU (t 40–80); whether its flow switched is not in the files we hold.
+
+**Status.** The long tier now has a gate-passing row for this body,
+0.255 ± 0.023 against 0.279, outside the ±5% band. No gate was lowered
+and no run relabelled; the band is reported, as it always was; the
+road-car v1 contract is unchanged and unmet.
