@@ -189,6 +189,10 @@ evidence. For current commands use docs/SETUP.md and docs/CFD-RUNBOOK.md.
   met; −8.6% against 0.279, interval overlaps the ±5% band. The window
   mixes 10 CTU of the high-drag state (0.27–0.32, after the restart) and
   30 CTU of the low one (0.23–0.26); ESS 5. Plan section 7.
+- **Accepted (2026-11-19, user: "Accept, record as is").** The slant-body
+  long-tier result is Cd 0.255 ± 0.023 (95%) against 0.279, −8.6%, outside
+  the ±5% band; the fast/long-tier validation on this body is closed with
+  that error stated. Not a road-car v1 result; v1 stays unchanged and unmet.
 - Nothing was launched through the runner; no gate was lowered; no run was
   relabelled.
 

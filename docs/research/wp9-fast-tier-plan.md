@@ -830,3 +830,13 @@ CTU (t 40–80); whether its flow switched is not in the files we hold.
 0.255 ± 0.023 against 0.279, outside the ±5% band. No gate was lowered
 and no run relabelled; the band is reported, as it always was; the
 road-car v1 contract is unchanged and unmet.
+
+**2026-11-19, user decision: "Accept, record as is".** The long-tier result
+for the 25° slant body is accepted as recorded: **Cd 0.255 ± 0.023 (95%)**
+from `long-…-avg40-…-a` (level-5 body, 913k cells, SA-DDES, CTU/182,
+40-CTU window, gate passed), against the reference 0.279: −8.6%, outside
+the ±5% band, interval overlapping it, with the window mixing both slant
+states. This closes the fast/long-tier validation work on this body. It
+is accepted as a gate-passing result with its stated error, not as a
+pass inside the band, and it is not a road-car v1 result: that contract
+(`wp9-replication-baseline-v1.json`) stays unchanged and unmet.
