@@ -756,3 +756,40 @@ What it shows:
 
 No gate was lowered and no run relabelled; the road-car v1 contract is
 unchanged and unmet.
+
+**2026-11-18, user decision: "Longer averaging windows".** Harness options
+`VERNON_LONG_AVG_CTU` (main window minimum, 6..=15 CTU) and
+`VERNON_LONG_HALF_CTU` (half-step window, 1..=6 CTU), long tier only and
+lengthen-only, so no gate is weaker than the fast tier's (test
+`averaging_windows_lengthen_only_on_the_long_tier`). Same level-5 setup,
+seeded from `long-…-c` (CTU 29), main window 12 CTU, half-step window 3 CTU:
+
+| Run | CTU averaged | Cd | Half-step (3 CTU) | Outcome |
+|---|---|---|---|---|
+| `long-…-avg12h3-…-a` (2 h 36 min) | 29–41 | 0.247 ± 0.005 | 0.229 ± 0.002 | window passed; difference 0.019 against 0.011 allowed: fail; −11.3% |
+| `long-…-avg12h3-…-b` (2 h 36 min) | 41–53 | 0.234 ± 0.002 | 0.325 ± 0.004 | window passed; difference 0.091 against 0.009 allowed: fail; −16.3% |
+
+What it shows:
+
+- **Longer windows do not settle the value.** The 12-CTU means fall from
+  0.247 to 0.234 over CTU 29–53; the main windows across all long-tier
+  links span 0.234–0.256.
+- **The slant flow switches state.** In link b, Cd per CTU sat at
+  0.225–0.244 for the whole main window with rear lift near zero
+  (Cl(r) −0.05 to 0.00). Within the first CTU after the step was halved it
+  jumped to 0.29–0.33, with rear lift 0.16 then 0.12, and held for the
+  3 CTU. A rise in drag together with rear lift is the signature of the
+  slant flow changing between a separated and a reattached state, which
+  the 25° slant is known for. The jump follows the restart at the new
+  step, so the step change probably kicked the flow; the new state then
+  sustained itself. This is not a time-step error the gate can be argued
+  past: the two states are both solutions on this grid.
+- **What it means for the reference.** Our long windows sit in the
+  low-drag state (0.23–0.26); the other state reads 0.29–0.33, on both sides
+  of 0.279. A mean that represents the reference needs averaging over
+  both states for long enough to sample the switching (the reference
+  averaged 40 CTU), or a grid that settles one state. Neither fits a few
+  hours on this machine with the evidence in hand.
+
+No gate was lowered and no run relabelled; the road-car v1 contract is
+unchanged and unmet.

@@ -176,6 +176,13 @@ evidence. For current commands use docs/SETUP.md and docs/CFD-RUNBOOK.md.
   and 0.256 (23–29) but both failed the half-step check by 0.016 (wake
   swings longer than the windows). The finer surface does not raise Cd
   (level 4: 0.244–0.264); the gap to 0.279 stays 8–12%. Plan section 7.
+- **Longer windows (2026-11-18): no pass; the slant flow switches state.**
+  `VERNON_LONG_AVG_CTU` / `VERNON_LONG_HALF_CTU` (long tier, lengthen only,
+  test). 12-CTU windows from CTU 29: 0.247 and 0.234; half-step (3 CTU)
+  0.229 and 0.325, both fail. In the second, Cd and rear lift jumped
+  together right after the step change (0.23 → 0.29–0.33, Cl(r) 0 → 0.16)
+  and held: separated and reattached slant states, either side of 0.279.
+  Plan section 7.
 - Nothing was launched through the runner; no gate was lowered; no run was
   relabelled.
 
