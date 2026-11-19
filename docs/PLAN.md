@@ -1,6 +1,6 @@
 # Vernon project plan
 
-Written 2026-11-11. This replaces the scattered "what next" notes as the one
+Written 2026-11-11; local AI (sections 2, 5 and 7) updated 2026-11-19. This replaces the scattered "what next" notes as the one
 place that says what Vernon is for, who it is for, what already exists
 elsewhere, where local AI fits and what has to happen before a release.
 Day-to-day progress stays in [CONTINUATION.md](CONTINUATION.md); the per-node
@@ -29,13 +29,13 @@ Three properties separate Vernon from the tools it stands beside:
 
 ## 2. Where the project stands
 
-| Area | State on 2026-11-11 |
+| Area | State (2026-11-11 unless dated) |
 |---|---|
 | Node catalogue | 210 nodes, 207 implemented, 3 white-box ([NODES.md](NODES.md)) |
 | Pipeline demo | `examples/bodykit_pipeline.vrn` cooks all nine stages on a synthetic fender |
 | Desktop app | egui/wgpu, quad viewports, node graph, agent chat panel |
 | Agent | `vernon-agent` (OpenAI-compatible client, so any llama.cpp or Ollama server works) and `vernon-cli mcp` |
-| AI nodes | PartCrafter (image to parts) and DoMINO (aero preview), both out of process, both labelled unvalidated |
+| AI nodes (2026-11-19) | Eleven, all out of process and labelled as AI output: PartCrafter (image to parts), DoMINO (aero preview and compare), and the nine local additions listed in section 5 (speech in and out, convergence forecast, document search, photo cut-out, vision check, sketch from words, print watchdog, body fit). No gate reads any of them. |
 | CFD validation (WP9) | Fine 12.06M-cell Fastback mesh passes its quality gates. Steady runs do not reach the convergence gate; the residual map shows the 1e-5 target is out of reach for this case. A DDES route is planned, starting with a 25° slant-body rehearsal ([plan](research/wp9-ddes-route-plan.md)). No validated Cd exists yet. |
 | DoMINO warm start | Milestone 1 (scaling audit, units, reference parity on one DrivAerML run) is on branch `claude/domino-warmstart-m1`, not merged |
 | Packaging | Windows folder, zip and installer scripts exist; no release has been published |
@@ -118,6 +118,29 @@ record on real parts. Vernon has none of those yet.
 PartCrafter and DoMINO nodes, the agent crate and chat panel, the MCP
 server, and (unmerged) the first milestone of DoMINO warm start.
 
+Added 2026-11-14 to 2026-11-17 through
+[the local AI additions plan](superpowers/plans/2026-11-14-local-ai-additions.md)
+(pull requests 3, 5, 7, 9 and 11), each verified once on the real model on the
+reference PC. Measured state and limits are in each node's spec under
+[specs/ai-local/](specs/ai-local/); the README's Local AI table summarises them.
+
+| Node | Model, licence | Evidence so far |
+|---|---|---|
+| `geo.ai_text_to_speech` | Kokoro-82M, Apache-2.0 | Works on the CPU; speech round trip 15 of 15 words |
+| `geo.ai_speech_to_text` | Whisper large-v3-turbo, MIT | Works; FLAC and WAV only |
+| `cfd.ai_convergence_forecast` | Chronos-2, Apache-2.0 | Synthetic series only; not yet run on a real solver log |
+| `geo.ai_document_search` | bge-m3, MIT | 5 of 6 topic questions over the specs; no PDF through the real model |
+| `capture.ai_photo_cutout` | SAM 2.1 large, Apache-2.0 | Drawn test picture only |
+| `geo.ai_vision_check` | Qwen3-VL 4B, Apache-2.0 | Drawn test pictures only; no rendered mesh yet (item K below) |
+| `geo.ai_sketch_from_words` | FLUX.2 klein 4B, Apache-2.0 | One prompt; needs about 17 GB of RAM |
+| `print.ai_print_watchdog` | Qwen3-VL 4B (shared with the vision check) | 20 print photos, in-sample; no printer camera feed; checks once per cook |
+| `capture.ai_body_fit` | SAM 3D Body, SAM and DINOv3 licences (opt-in, not open source) | Sanity check on two photos of one person, not an accuracy test |
+
+Every one of these needs a second, independent test before it can be called
+reliable: real solver logs for the forecast, real photos for the cut-out,
+rendered meshes for the vision check, a printer camera feed for the watchdog,
+and a measured body for body fit.
+
 ### What to build, in order of value
 
 | # | Addition | What the user gets | Depends on | Size |
@@ -132,12 +155,13 @@ server, and (unmerged) the first milestone of DoMINO warm start.
 | H | **Run-diagnosis assistant** | A local model reads solver logs and residual histories and proposes the next diagnostic; it cannot edit gates or relabel runs | C | Medium |
 | I | **Learned multi-view reconstruction** (Apache-licensed models) beside COLMAP | A dense prior in minutes where COLMAP dense takes many hours; scale still comes from markers and passes the same gate | A, B | Medium |
 | J | **Image-to-3D runners** (TripoSR for small GPUs, a quantised TRELLIS for 16 GB) and a retopology node | Concept parts from a photo, cleaned by the existing nodes | A, B | Medium |
-| K | **Vision check of the viewport** | A local vision model describes what a render shows (holes, flipped normals, a part off the car) as a hint next to the numeric report | C | Small |
+| K | **Vision check of the viewport** | A local vision model describes what a render shows (holes, flipped normals, a part off the car) as a hint next to the numeric report | C | Node built (`geo.ai_vision_check`); still to do: feed it viewport renders and test on mesh defects |
 | L | **Fine-tuning a surrogate on Vernon's validated runs** | Predictions for kit shapes outside the stock training set | E, many solved cases | Research; feasibility on 16 GB unverified |
 
 Local model candidates for C, D and K, from the 2026-11-11 search: a 20B
 open-weight text model that fits 16 GB for tool calling, an 8B vision model
-for K, and 7 to 9B models at 4-bit for the 11 GB machine. The sources are
+for K (the node was built on the 4B model in half precision instead), and 7 to
+9B models at 4-bit for the 11 GB machine. The sources are
 blog roundups, so D exists to replace their claims with measurements.
 
 Items A to D make Vernon usable offline by a non-expert. Items E to G are the
@@ -162,18 +186,22 @@ while this one runs CFD for M3.
 
 ## 7. Repository state and housekeeping
 
-Checked on 2026-11-11 against `origin` (`github.com/ssnfts/Vernon`).
+Checked on 2026-11-19 against `origin` (`github.com/ssnfts/Vernon`). Pull
+request 2 brought `main` up to date on 2026-11-12, and the local AI work landed
+through pull requests 3 to 11.
 
 | Branch | Ahead of `main` | Holds | Action |
 |---|---:|---|---|
-| `claude/wp9-solve-stages` | 31 | AI nodes, WP9 solver stages, diagnostics, DDES plan | Merge to `main` by pull request |
-| `claude/domino-warmstart-m1` | 22 | DoMINO warm start M1, units module, car shell prep | Keep as a branch until M1 is accepted |
-| `claude/wp9-stage2-diagnostics`, `claude/ai-models`, `claude/domino-scaling-semantics` | contained in the two above | | Delete after the merge |
-| `qwen/t02` to `qwen/t06` | 1 each | Attempts that failed their own checks; the same modules later landed through other batches | Keep local or delete; not for the public repository |
-| 30 other local branches | 0 | Already in `main` | Delete, and remove their worktrees |
+| `claude/wp9-solve-stages` | 67 | WP9 solver stages and DDES work since 2026-11-11 | Merge to `main` by pull request when the CFD work reaches a stopping point |
+| `claude/domino-warmstart-m1` | 10 | DoMINO warm start M1, units module, car shell prep | Keep as a branch until M1 is accepted |
+| `claude/local-ai-*`, `docs/readme-local-ai-*` | 0 | Already in `main` | Delete on GitHub |
+| `qwen/t02` to `qwen/t06` (local) | 1 each | Attempts that failed their own checks; the same modules later landed through other batches | Keep local or delete; not for the public repository |
 
-Also missing from the repository: a CI workflow, `CONTRIBUTING.md`,
-`SECURITY.md`, a changelog, any image, and a description or topics on GitHub.
+On 2026-11-12, 20 merged local worktrees and their branches were removed; the
+local AI worktrees (`vernon-wt-ai*`) are next once their session is done.
+
+Done since 2026-11-11: GitHub description and topics. Still missing: a CI
+workflow, `CONTRIBUTING.md`, `SECURITY.md`, a changelog and any image.
 
 ## 8. Decisions needed from the owner
 
@@ -182,3 +210,4 @@ Also missing from the repository: a CI workflow, `CONTRIBUTING.md`,
 3. Cloud chat models with the user's own key: offered as an option, or local only?
 4. Which real part is the M2 demonstration, and can its scan be published?
 5. The WP9 items already waiting: baseline v2, the steady force-based route, and the dataset download list.
+6. Pictures from the printer camera (a folder of frames from real prints, good and failed) so the print watchdog can be tested on what it is meant to watch.
