@@ -1,6 +1,6 @@
 # More local AI in Vernon: ordered plan and agent assignments, 2026-11-14
 
-Status: wave 1 (items 1 to 3) built and verified with the real models on 2026-11-14; wave 2 (items 4 to 6) built and verified with the real models on 2026-11-15; wave 3: item 7 built and verified with the real model on 2026-11-16, item 8 built and its mechanism verified with the real model on 2026-11-16 but untested on real print photos, item 9 blocked (see "Wave 3" below). This adds to the
+Status: wave 1 (items 1 to 3) built and verified with the real models on 2026-11-14; wave 2 (items 4 to 6) built and verified with the real models on 2026-11-15; wave 3: item 7 built and verified with the real model on 2026-11-16, item 8 built and verified with the real model on 2026-11-16, then run on 20 real print photos on 2026-11-17, item 9 built and checked with the real model on 2026-11-17 (opt-in) (see "Wave 3" below). This adds to the
 [2026-11-04 AI plan](2026-11-04-ai-assistant-and-machine-split.md) and to
 section 5 of [docs/PLAN.md](../../PLAN.md#5-local-ai-what-to-add). The rules
 there don't change: models run out of process, nothing downloads without the
@@ -21,7 +21,7 @@ Licences below were read from the Hugging Face API on 2026-11-14.
 | 6 | **Vision check** (item K in PLAN.md) | `Qwen/Qwen3-VL-8B-Instruct`, 4-bit | Apache-2.0 | Larger download and a llama.cpp server to manage | 2 |
 | 7 | **Sketch from words** | `black-forest-labs/FLUX.2-klein-4B` | Apache-2.0 | 15 GB download (24 GB for the whole repository) and a heavy GPU load, so not while CFD runs | 3 |
 | 8 | **Print watchdog** | uses #6 on a timer | — | Depends on #6 and on a camera feed | 3 |
-| 9 | **Body fit from a photo** | `facebook/sam-3d-body-dinov3` | SAM licence, gated | Blocked until the user accepts the licence on Hugging Face; opt-in only | 3 |
+| 9 | **Body fit from a photo** | `facebook/sam-3d-body-dinov3` | SAM licence, gated | Licence accepted by the user 2026-11-17; opt-in only | 3 |
 
 Left out: CoTracker3 and the CadQuery fine-tunes (non-commercial), and
 Hunyuan3D-Part (no licence listed).
@@ -89,11 +89,17 @@ done.
   newest picture in a camera folder and puts a yes/no question to the vision
   model of #6. The real model was run on drawn pictures with a stand-in
   question, which shows the node picks the newest picture and reads a yes or a
-  no correctly. It was not run on a photograph of a real print, because none
-  exists here yet, so its skill at spotting a failed print is unknown. It checks
+  no correctly. On 2026-11-17 it was run on 20 photographs from Wikimedia
+  Commons: 6 of 10 failures and 0 of 10 good prints flagged with the first
+  question; 10 of 10 and 0 of 10 after the question was reworded on the same
+  photos (in-sample, so optimistic). It checks
   once per cook; running it on a timer is a later app change. The lead built it.
-* **Body fit from a photo (#9)** is not started. The model is gated: the user
-  has to accept its licence on Hugging Face first, and it would be opt-in.
+* **Body fit from a photo (#9)** is built as `capture.ai_body_fit` after the
+  user accepted the gated licence on 2026-11-17. It is opt-in: the install
+  needs `--accept-licence` and the node needs its licence box ticked. The real
+  model was run on two photos of one person (arms down, arms up) and the key
+  points followed the pose. Peak GPU 3.4 GB. This is a sanity check, not an
+  accuracy test. The lead built it.
 
 The README's **Local AI** table is updated by the session that maintains the
 README, one row per addition, once that addition is verified.

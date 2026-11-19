@@ -217,3 +217,55 @@ fn real_watchdog_checks_the_newest_picture() {
         assert_eq!(v["verdict"], want, "{name}: {}", v["answer"]);
     }
 }
+
+/// Runs the default question on photographs of real prints. The photos are not in the
+/// repository: `VERNON_WATCHDOG_PHOTOS_DIR` names a folder of pictures whose file names
+/// start with `fail_` (a print that visibly failed) or `good_` (no visible failure). Each
+/// picture is checked on its own. The bar was set before the first run: at least four in
+/// five failures flagged, and at most one good picture in ten flagged.
+#[test]
+#[ignore = "needs the installed Qwen3-VL model, a CUDA GPU, WSL and a folder of labelled print photos (set VERNON_AI3D_ROOT and VERNON_WATCHDOG_PHOTOS_DIR)"]
+fn real_watchdog_on_print_photos() {
+    let root = std::env::var(crate::bridge::ROOT_ENV).expect("VERNON_AI3D_ROOT");
+    let photos = PathBuf::from(std::env::var("VERNON_WATCHDOG_PHOTOS_DIR").expect("VERNON_WATCHDOG_PHOTOS_DIR"));
+    let dir = std::env::var("VERNON_AI_E2E_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| std::env::temp_dir().join("vernon_ai_e2e"))
+        .join("watchdog_photos");
+    let timeout: i64 = std::env::var("VERNON_AI_E2E_TIMEOUT_S").ok().and_then(|v| v.parse().ok()).unwrap_or(1800);
+    let mut files: Vec<PathBuf> = std::fs::read_dir(&photos)
+        .unwrap()
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| image_extension(p).is_some())
+        .filter(|p| p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with("fail_") || n.starts_with("good_")))
+        .collect();
+    files.sort();
+    assert!(!files.is_empty(), "no fail_* or good_* pictures in {}", photos.display());
+    let (mut n_fail, mut n_good, mut flagged, mut alarms, mut unclear) = (0, 0, 0, 0, 0);
+    for f in &files {
+        let name = f.file_name().unwrap().to_string_lossy().to_string();
+        let frames = dir.join(f.file_stem().unwrap());
+        std::fs::create_dir_all(&frames).unwrap();
+        std::fs::copy(f, frames.join(&name)).unwrap();
+        let mut p = params(&frames);
+        p.set("ai_root", ParamValue::Str(root.clone()));
+        p.set("timeout_s", ParamValue::Int(timeout));
+        p.set("run", ParamValue::Bool(true));
+        let t0 = std::time::Instant::now();
+        let (v, _, m) = outputs(&PrintWatchdogNode.cook(&ctx(&dir), &[], &p).unwrap());
+        assert_eq!(m["status"], "complete");
+        let verdict = v["verdict"].as_str().unwrap().to_string();
+        println!("PHOTO {name} | {verdict} | {:.0}s | {}", t0.elapsed().as_secs_f64(), v["answer"].as_str().unwrap().replace('\n', " "));
+        let is_fail = name.starts_with("fail_");
+        if is_fail { n_fail += 1 } else { n_good += 1 }
+        match (is_fail, verdict.as_str()) {
+            (true, VERDICT_FAILURE) => flagged += 1,
+            (false, VERDICT_FAILURE) => alarms += 1,
+            (_, VERDICT_UNCLEAR) => unclear += 1,
+            _ => {}
+        }
+    }
+    println!("SUMMARY failures flagged {flagged} of {n_fail}; good pictures flagged {alarms} of {n_good}; unclear {unclear}");
+    assert!(flagged * 5 >= n_fail * 4, "flagged only {flagged} of {n_fail} failures");
+    assert!(alarms * 10 <= n_good, "{alarms} false alarms in {n_good} good pictures");
+}
