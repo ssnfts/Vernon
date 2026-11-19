@@ -1359,14 +1359,16 @@ mod tests {
     fn wp8_cuda_failure_preserves_preparation_and_reports_sparse_alternative() {
         let work=scratch("wp8-no-cuda");let context=ctx(&work);
         let exe=fake_program(&work,"if \"%~1\"==\"image_undistorter\" (echo prepared>prepared.txt & exit /b 0)\r\nif \"%~1\"==\"patch_match_stereo\" (echo CUDA is not available 1>&2 & exit /b 1)\r\necho unexpected>fusion.txt\r\nexit /b 0");
-        let plan=Plan{ctx:&context,run:true,exe:Some(exe),exe_arg:String::new(),timeout:Duration::from_secs(5)};
+        // This tests diagnostic classification, not deadline enforcement. Allow
+        // process startup under parallel workspace load before the fake CUDA failure.
+        let plan=Plan{ctx:&context,run:true,exe:Some(exe),exe_arg:String::new(),timeout:Duration::from_secs(60)};
         let steps:Vec<_>=["image_undistorter","patch_match_stereo","stereo_fusion"].iter().map(|s|Step{args:vec![s.to_string()]}).collect();
         let mut report=Report::new("test");
         assert!(!plan.execute(&mut report,&steps,true).unwrap());
         assert!(work.join("prepared.txt").is_file());assert!(!work.join("fusion.txt").exists());
         assert_eq!(report.metrics["completed_steps"].value,1.0);
         assert!(!report.passes());
-        assert!(report.notes.iter().any(|(s,t)|*s==Severity::Warning&&t.contains("delaunay_mesher")&&t.contains("input_type=sparse")));
+        assert!(report.notes.iter().any(|(s,t)|*s==Severity::Warning&&t.contains("delaunay_mesher")&&t.contains("input_type=sparse")), "unexpected report: {:?}", report.notes);
     }
 
     #[cfg(windows)]
