@@ -5,9 +5,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Versions follow
 
 ## [0.1.0-alpha] - unreleased
 
-First tagged state. Pre-alpha: the node contract, file format and parameter
+Proposed first release. Pre-alpha: the node contract, file format and parameter
 names may still change. The workspace version in `Cargo.toml` is `0.1.0`; the
-tag is `v0.1.0-alpha`.
+proposed tag is `v0.1.0-alpha`; no publication is implied.
 
 ### What works
 
@@ -17,7 +17,7 @@ tag is `v0.1.0-alpha`.
   `mcp` (stdio MCP server) and `agent-guide`. `cook` exits 0 when every node
   cooked and every gate passed or is listed as expected, 1 when a node failed,
   3 when an unexpected gate failed.
-- **198 node types across nine stages**, 195 implemented
+- **201 node types**, 199 marked implemented in the inspected catalogue
   (`docs/NODES.md`): geometry, capture, clean/align, mesh to surface,
   split/print, airflow (CFD), structure (FEA), solar/heat, flatten,
   performance.
@@ -36,24 +36,29 @@ tag is `v0.1.0-alpha`.
   COLMAP, slicers. Tests never require them.
 - **Windows package** (zip, per-user installer and uninstaller, portable
   mode, SHA-256 file, MANIFEST.json) built by `scripts/release/package.ps1`
-  and tested by `scripts/release/package-selftest.ps1`.
-- **Dependency policy checked.** `deny.toml` (licence allow-list, bans on
+  and exercised by `scripts/release/package-selftest.ps1`. The saved local
+  November 14 log records 56 passed, 0 failed on the development machine;
+  clean-machine acceptance and checks of the current candidate remain unverified.
+- **Dependency policy checks configured.** `deny.toml` (licence allow-list, bans on
   `cc`, `cmake`, `bindgen`) and `scripts/release/check-deps.ps1`;
-  `THIRD_PARTY_LICENSES.md` is generated from the build.
-- **CI** (`.github/workflows/ci.yml`): build, test, clippy `-D warnings`,
+  `THIRD_PARTY_LICENSES.md` is generated from the build. Current-candidate audit results remain unverified.
+- **CI configured** (`.github/workflows/ci.yml`): build, test, clippy `-D warnings`,
   example cook, clean-room test and dependency checks on Windows GNU, Linux
-  and macOS. Not yet run on GitHub.
+  and macOS. Execution on GitHub for the current candidate is unverified; workflow presence is not a passing run.
 
 ### Placeholders
 
-Three nodes are white-box: they cook but run a stand-in and emit a
+Two nodes are marked white-box in the inspected catalogue: they cook but run a stand-in and emit a
 `white-box placeholder:` warning.
 
 | Node | State |
 |---|---|
-| `print.script_bridge` | Needs an external slicer; slicer profile keys not wired |
 | `cfd.mesh_build` | Built-in solid mesher is a placeholder (use the OpenFOAM path) |
 | `cfd.solve_steady` | Case is written, not solved, without OpenFOAM |
+
+`print.script_bridge` is marked implemented in both source and catalogue:
+  it writes a slicer post-processing script and its invocation setting.
+  This source inspection does not establish a newly passed slicer integration test.
 
 The AI nodes (parts from an image, aero preview and variant comparison) call
 external models and are unvalidated.
@@ -65,24 +70,38 @@ Full detail and tolerances are in `docs/VALIDATION.md`. In short:
 - Analytic checks (beam, patch test, sphere, plane/cylinder, ICP, unit
   conversion, file round trips) and comparisons against CloudCompare and
   CalculiX on small cases pass.
-- **CFD claim, signed off by the owner, is one case only:** on the classic
-  slant-body case with a 25 degree slant, the fast CFD tier puts drag within
-  about 7-10% of the published 1984 wind-tunnel value (half model, about 0.5M
-  cells, each run after the first under 35 minutes). Nothing else about CFD is
-  claimed: no road-car drag or downforce prediction, no ranking of two
-  designs, no statement about the 35 degree body, no "validated CFD". The
-  steady-state runs did not converge.
+- **Limited CFD result accepted November 19, 2026:** the owner chose
+  "Accept, record as is" for the 25-degree slant-body long-tier result:
+  Cd **0.255 ± 0.023 (95%)** against reference **0.279**, **−8.6%**.
+  The mean is outside the ±5% band; the interval overlaps that band.
+  The level-5, 913k-cell SA-DDES case used CTU/182 and a 40-CTU window
+  mixing both slant states. Its recorded stationarity, per-step and
+  half-step gates passed. Fast/long-tier validation work on this body is
+  closed with the stated error, not accepted as a pass inside the ±5% band.
+  The road-car v1 contract remains unchanged and unmet. This replaces reliance
+  on the older 7–10% accuracy approval; it establishes no road-car prediction
+  or design-ranking claim. See `docs/CONTINUATION.md` and the November 19
+  acceptance in `docs/research/wp9-fast-tier-plan.md`, section 7.
 - Not validated against measurement: FEA of printed parts (anisotropy,
   creep, thermal expansion, preload), photogrammetry scale, slicer G-code
   against real slicer output, solar, UV, tuft analysis, lap simulation,
   quad remesh and STEP output, and every comparison with a commercial tool.
-- Open items: thermal-strain comparison in FEA (so `estimate_only` stays),
-  stretch/compress factors in the constrained flattener, none of the 22
-  reserved keyboard chords is bound.
+- **Numerics, source-inspected:** the built-in FEA solver applies thermal
+  strain when point temperatures and material expansion coefficients exist.
+  Four-node reference-solver results remain estimate-only; reference-solver
+  models with temperatures but without thermal strain also remain estimate-only.
+  Ten-node results with thermal strain are not subject to those two flags;
+  this is not physical validation or a new comparison-test pass.
+- The constrained flattener implements stretch/compress edge factors; they
+  are not applied with `stretch_only` or `compress_only`, and nonuniform
+  factors in those modes produce a warning. Current-candidate tests remain
+  unverified. See [release readiness](docs/release/READINESS.md) for source evidence.
+- None of the 22 reserved keyboard chords is bound (existing limitation;
+  not re-audited in this documentation-only pass).
 
 ### Known limits
 
 - Windows 10/11 with the Rust GNU toolchain is the supported development and
-  package platform. Linux and macOS are built and tested in CI only.
+  package platform. Linux and macOS have configured CI jobs; executed build/test evidence for the current candidate is pending.
 - The package is unsigned.
 - No log file; messages go to the console.
