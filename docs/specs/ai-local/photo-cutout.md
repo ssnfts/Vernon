@@ -27,8 +27,8 @@ transparent background.
   "everything" mode, no video.
 - The mask is a model guess, not a measurement. Thin parts, shiny or
   transparent surfaces, shadows and clutter can all go wrong. Check the PNG by
-  eye. A synthetic disc on a plain background is an easy case and says little
-  about cluttered workshop photos.
+  eye. It was tested on a synthetic disc and on 11 real pet photos (see
+  below), not on workshop parts or cluttered benches.
 - It does not repair, feather or smooth the edge, and it does not crop.
 - It never downloads anything while running.
 
@@ -84,6 +84,40 @@ while other jobs were loading the same PC and the weights drive.
 
 This is one run on an easy synthetic picture. It says nothing about cluttered
 photos, and it is not a benchmark.
+
+## Measured on real photos (2026-11-20, not a benchmark)
+Ignored test `real_sam2_on_pet_photos`, fresh work folder, same PC. 11 test
+photos from the Oxford-IIIT Pet dataset (one cat or dog each, on carpet, grass,
+sofas and other everyday backgrounds), with the dataset's hand-drawn outlines
+(CC BY-SA 4.0). Each outline marks the pet, the background, and an "unsure"
+band along the edge. The photos are not in the repository; the test reads them
+from `VERNON_CUTOUT_PHOTOS_DIR`. Each click point was fixed beforehand by one
+rule: the pet pixel farthest from its edge, like a click clearly on the animal.
+
+The pass bar, set before the run: overlap (intersection over union) of at
+least 0.75 on 9 of 11 photos and a median of at least 0.85, with the unsure band
+not scored. All 11 photos scored 0.995 to 1.000, so it passed.
+
+That bar turned out looser than intended. The unsure band is wide: 5% to 21%
+of each picture. What the run does show:
+- The mask never went past the outer edge of the band: 0 pixels outside it on
+  10 photos and 1 pixel on the eleventh.
+- It missed at most 143 of the pixels marked as certainly pet; on six photos it
+  missed none.
+
+What it cannot show is how precisely the edge sits inside the band. Counting the
+band as background gives overlaps of 0.68 to 0.90 (median 0.82, 7 of 11 at 0.75
+or above). Counting it as pet gives 0.77 to 0.89 (median 0.84). The true figure
+lies between those, and both medians are under the 0.85 that was meant.
+
+A twelfth photo was dropped before the run: the dataset copy it came from does
+not name its files, and its outline could not be matched to it with certainty.
+
+Timing: the first photo took 134 s (cold load); the rest 8 to 10 s each, with
+loading 4 to 7 s and cutting 0.6 s. Peak GPU memory 1.25 GB.
+
+Not covered: workshop parts, shiny or transparent objects, thin parts, and
+clutter around the object.
 
 ## Limits
 - First load reads about 0.9 GB from the weights drive; a slow USB drive makes
