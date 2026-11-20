@@ -80,7 +80,7 @@ fn table(legs: usize) -> Geometry {
 
 fn write_ppm(path: &std::path::Path, img: &(u32, u32, Vec<u8>)) {
     let mut out = format!("P6\n{} {}\n255\n", img.0, img.1).into_bytes();
-    for px in img.2.chunks_exact(4) {
+    for px in img.2.as_chunks::<4>().0 {
         out.extend_from_slice(&px[..3]);
     }
     std::fs::write(path, out).unwrap();
