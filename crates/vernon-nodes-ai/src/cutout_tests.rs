@@ -278,3 +278,79 @@ fn real_sam2_cuts_out_disc() {
     println!("IoU {iou:.4}");
     assert!(iou >= 0.90, "IoU {iou:.4} is below 0.90");
 }
+
+/// Overlap of a model mask (0 / non-zero) with a reference (0 background, 1 object,
+/// 2 not scored), over the scored pixels only.
+fn scored_iou(mask: &[u8], truth: &[u8]) -> f64 {
+    let (mut inter, mut union) = (0usize, 0usize);
+    for (m, t) in mask.iter().zip(truth) {
+        if *t == 2 {
+            continue;
+        }
+        let (a, b) = (*m != 0, *t == 1);
+        inter += (a && b) as usize;
+        union += (a || b) as usize;
+    }
+    inter as f64 / union.max(1) as f64
+}
+
+#[test]
+fn scored_iou_skips_unscored_pixels() {
+    // object 2 px, one of them hit; one extra px marked; one unscored px marked (ignored)
+    let truth = [1, 1, 0, 0, 2];
+    let mask = [255, 0, 255, 0, 255];
+    assert!((scored_iou(&mask, &truth) - 1.0 / 3.0).abs() < 1e-12);
+    assert_eq!(scored_iou(&[0; 3], &[0; 3]), 0.0);
+}
+
+/// Runs the real SAM 2.1 model on real photos with hand-drawn reference outlines
+/// (Oxford-IIIT Pet test photos; outlines CC BY-SA 4.0). VERNON_CUTOUT_PHOTOS_DIR holds
+/// the photos, `<name>_truth.u8` (width x height bytes: 0 background, 1 pet, 2 the
+/// outline's uncertain border, not scored) and `cases.json` with each photo's click
+/// point, made beforehand by one fixed rule: the pet pixel farthest from its edge.
+/// Pass bar, set before the first run: at least 9 of the 11 photos reach an overlap of
+/// 0.75, and the median overlap is at least 0.85.
+#[test]
+#[ignore = "needs the SAM2 install (VERNON_AI3D_ROOT) and VERNON_CUTOUT_PHOTOS_DIR"]
+fn real_sam2_on_pet_photos() {
+    let root = std::env::var("VERNON_AI3D_ROOT").expect("set VERNON_AI3D_ROOT");
+    let photos = PathBuf::from(std::env::var("VERNON_CUTOUT_PHOTOS_DIR").expect("set VERNON_CUTOUT_PHOTOS_DIR"));
+    let dir = std::env::var("VERNON_AI_E2E_DIR").map(PathBuf::from).unwrap_or_else(|_| std::env::temp_dir().join("vernon_cutout_photos"));
+    std::fs::create_dir_all(&dir).unwrap();
+    let cases: serde_json::Value = serde_json::from_slice(&std::fs::read(photos.join("cases.json")).unwrap()).unwrap();
+    let cases = cases.as_array().unwrap();
+    assert_eq!(cases.len(), 11, "the bar is set for 11 photos");
+    let mut ious = Vec::new();
+    for c in cases {
+        let name = c["name"].as_str().unwrap();
+        let truth = std::fs::read(photos.join(c["truth"].as_str().unwrap())).unwrap();
+        let mut p = params();
+        p.set("ai_root", ParamValue::Str(root.clone()));
+        with_image(&mut p, &photos.join(c["image"].as_str().unwrap()));
+        p.set("point_x", ParamValue::Float(c["point_x"].as_f64().unwrap()));
+        p.set("point_y", ParamValue::Float(c["point_y"].as_f64().unwrap()));
+        p.set("run", ParamValue::Bool(true));
+        if let Some(t) = std::env::var("VERNON_AI_E2E_TIMEOUT_S").ok().and_then(|v| v.parse::<i64>().ok()) {
+            p.set("timeout_s", ParamValue::Int(t));
+        }
+        let t = std::time::Instant::now();
+        let out = cut_out(&ctx(&dir), &p).unwrap();
+        let wall = t.elapsed().as_secs_f64();
+        let Data::Json(j) = &out[3] else { panic!() };
+        let mask = std::fs::read(j["mask_file"].as_str().unwrap()).unwrap();
+        assert_eq!(mask.len(), truth.len(), "{name}: mask size");
+        let iou = scored_iou(&mask, &truth);
+        println!(
+            "PHOTO {name} | {} | iou {iou:.3} | pet {:.3} | model score {} | wall {wall:.0}s | load {} | segment {} | vram {}",
+            c["original"], c["pet_fraction"], j["mask"]["score"], j["seconds_load"], j["seconds_segment"], j["peak_vram_GB"]
+        );
+        ious.push(iou);
+    }
+    let mut sorted = ious.clone();
+    sorted.sort_by(f64::total_cmp);
+    let median = sorted[5];
+    let good = ious.iter().filter(|&&v| v >= 0.75).count();
+    println!("SUMMARY photos {} | iou >= 0.75: {good} | median {median:.3} | min {:.3} | max {:.3}", ious.len(), sorted[0], sorted[10]);
+    assert!(good >= 9, "only {good} of 11 photos reached 0.75");
+    assert!(median >= 0.85, "median overlap {median:.3} is below 0.85");
+}

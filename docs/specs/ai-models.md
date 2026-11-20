@@ -189,11 +189,17 @@ fresh work folder:
   of it loading the model.
 * Photo cut-out: a drawn disc masked from one click overlapped the true disc by
   99.4% (intersection over union). Peak GPU 1.25 GB, peak RAM 1.65 GB; 67 s for
-  the whole call. No real photograph was run.
+  the whole call. On 2026-11-20 it was run on 11 real pet photos with
+  hand-drawn outlines. The masks never spread past the outline's outer edge, but
+  the outlines have a wide "unsure" band, so edge precision is only bounded: a
+  median overlap of 0.82 to 0.84 depending on how the band is counted.
 * Vision check: on two drawn test pictures it counted three squares and named a
   circle's colour. Peak GPU 8.35 GB, peak RAM 9.1 GB; model load took 124 s and
-  382 s from the weights drive, answers 2 s and 19 s. No rendered mesh or real
-  photograph was run, so its use for spotting mesh defects is untested.
+  382 s from the weights drive, answers 2 s and 19 s. On 2026-11-20 it was run on
+  viewport renders of meshes with known defects and **failed** that bar (8 of 12
+  right). It caught a floating part, but missed a see-through hole and counted 4
+  legs on a 3-leg table. It never reported a defect on an intact mesh. It is not
+  a defect finder.
 
 The vision answer is labelled **"AI description: a hint, not a measurement"**
 and no acceptance gate reads it. Search scores are similarity, not proof that a

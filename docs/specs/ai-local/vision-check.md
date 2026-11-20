@@ -19,8 +19,12 @@ all start with `ai_`.
 - It can be confidently wrong, and it can miss things that are plainly there.
 - It measures nothing: no sizes, distances, counts you could rely on, or
   tolerances.
-- Counting simple coloured shapes says little about spotting mesh defects such
-  as holes, flipped faces or missing parts. That use is untested.
+- **It is not reliable at spotting mesh defects in a render** (see "Measured on
+  defect renders" below): it missed a see-through hole and a missing table leg,
+  though it caught a part floating apart and raised no false alarms.
+- It cannot see flipped faces in a viewport render at all: the viewport lights
+  both sides of every face, so a flipped face looks like a correct one. Use the
+  numeric mesh checks for those.
 - It does not edit the image, and it never downloads anything while running.
 
 ## Licence
@@ -80,6 +84,45 @@ is shared), the PC busy with other builds and a congested drive:
   the slow external drive was not timed.
 
 Two simple questions say nothing about accuracy in general.
+
+## Measured on defect renders (2026-11-20, not a benchmark): failed its bar
+Ignored test `real_vision_on_defect_renders`, fresh work folder, same PC. The
+pictures come from the app's own viewport renderer (test `render_defect_set` in
+`vernon-render`, 640 x 640, shaded, grey background): three defects, each next
+to an intact twin and drawn from two camera angles, 12 renders in all.
+- A sphere with a hole cut right through it, so the background shows through.
+- A body with an upright fin standing 60 mm clear of it.
+- A table with three legs instead of four.
+
+Before the model saw anything, every render was checked by eye to make sure the
+defect was plainly visible and the intact twin looked intact. Three first
+attempts failed that check and were redrawn: a hole in the near side only looked
+like a whole ball, one leg of the intact table hid behind another, and a fin
+lifted above the body looked attached from above. The pass bar, also set
+before the run, was at least 10 of 12 right and at most 1 of the 6 intact meshes
+reported as defective.
+
+| Defect | Question | Defective twin | Intact twin |
+|---|---|---|---|
+| Hole | Is there a hole or a missing patch? | **missed** both times ("NO, the surface appears intact") | right |
+| Floating part | Is any part floating apart, not touching? | right both times | right |
+| Missing leg | How many legs does the table have? | **wrong** both times (answered 4 for 3 legs) | right |
+
+Result: 8 of 12 right, so **it failed the bar**; 0 of 6 intact meshes were
+reported as defective. For both spheres, both fin bodies and the intact table,
+the second angle gave a picture byte-for-byte identical to the first (these
+shapes are symmetric, and the fin was moved to the far end for the second
+angle), so the 12 renders are 7 distinct pictures, of
+which 4 were answered right. The question wording was not changed after the
+run, and nothing was re-run.
+
+Each fresh call took 168 s to 494 s; identical pictures reloaded the saved
+answer.
+
+What this means for viewport checking (plan item K): the model leans towards
+"looks fine". It is no use as a defect finder on its own, and its "no defect"
+answers should not reassure anyone. A "yes" was right every time here, but that
+rests on one kind of defect.
 
 ## Limits
 - First load is slow on a slow weights drive; later runs depend on disk cache.

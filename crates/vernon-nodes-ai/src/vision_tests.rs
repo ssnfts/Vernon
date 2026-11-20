@@ -295,3 +295,70 @@ fn real_vision_counts_shapes() {
     println!("ANSWER 2: {colour}");
     assert!(colour.contains("red"), "circle colour answer: {colour}");
 }
+
+/// The first answer token, normalised: "yes"/"no", or a count ("3", "three" -> "3").
+fn first_token(answer: &str) -> String {
+    let words = ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine"];
+    let t: String = answer
+        .trim_start_matches(|c: char| !c.is_alphanumeric())
+        .chars()
+        .take_while(|c| c.is_alphanumeric())
+        .collect::<String>()
+        .to_lowercase();
+    match words.iter().position(|w| *w == t) {
+        Some(i) => i.to_string(),
+        None => t,
+    }
+}
+
+#[test]
+fn first_token_reads_yes_no_and_counts() {
+    assert_eq!(first_token("YES, there is a hole."), "yes");
+    assert_eq!(first_token("**No** - it is intact"), "no");
+    assert_eq!(first_token("4"), "4");
+    assert_eq!(first_token("Three."), "3");
+    assert_eq!(first_token(""), "");
+}
+
+/// Runs the real model on viewport renders of meshes with known defects and their
+/// intact twins: a sphere with a hole, a fin floating clear of a body, a table with
+/// a missing leg, each from two angles (12 pictures). The renders come from
+/// `render_defect_set` in vernon-render (VERNON_VISION_RENDERS_DIR holds them and
+/// their cases.json). Flipped normals are not in the set: the viewport lights both
+/// sides of a face, so a render cannot show them.
+/// Pass bar, set before the first run: at least 10 of 12 answers right, and at most
+/// 1 of the 6 intact meshes wrongly reported as defective.
+#[test]
+#[ignore = "needs the installed Qwen3-VL model, a CUDA GPU and WSL (VERNON_AI3D_ROOT) and VERNON_VISION_RENDERS_DIR"]
+fn real_vision_on_defect_renders() {
+    let root = std::env::var(crate::bridge::ROOT_ENV).expect("VERNON_AI3D_ROOT");
+    let renders = PathBuf::from(std::env::var("VERNON_VISION_RENDERS_DIR").expect("set VERNON_VISION_RENDERS_DIR"));
+    let dir = std::env::var("VERNON_AI_E2E_DIR").map(PathBuf::from).unwrap_or_else(|_| std::env::temp_dir().join("vernon_vision_renders"));
+    std::fs::create_dir_all(&dir).unwrap();
+    let cases: serde_json::Value = serde_json::from_slice(&std::fs::read(renders.join("cases.json")).unwrap()).unwrap();
+    let cases = cases.as_array().unwrap();
+    assert_eq!(cases.len(), 12, "the bar is set for 12 renders");
+    let (mut right, mut false_alarms) = (0, 0);
+    for c in cases {
+        let mut p = params(&renders.join(c["image"].as_str().unwrap()));
+        p.set("ai_root", ParamValue::Str(root.clone()));
+        p.set("question", ParamValue::Str(c["question"].as_str().unwrap().into()));
+        p.set("max_tokens", ParamValue::Int(64));
+        p.set("timeout_s", ParamValue::Int(1800));
+        p.set("run", ParamValue::Bool(true));
+        let t0 = std::time::Instant::now();
+        let out = VisionCheckNode.cook(&ctx(&dir), &[], &p).unwrap();
+        let wall = t0.elapsed().as_secs_f64();
+        let Data::Json(a) = &out[0] else { panic!() };
+        let answer = a["answer"].as_str().unwrap().replace('\n', " ");
+        let ok = first_token(&answer) == c["expected"].as_str().unwrap().to_lowercase();
+        right += ok as usize;
+        if !ok && c["defect"] == false {
+            false_alarms += 1;
+        }
+        println!("RENDER {} | expected {} | {} | {wall:.0}s | {answer}", c["image"], c["expected"], if ok { "right" } else { "WRONG" });
+    }
+    println!("SUMMARY right {right} of 12; intact meshes wrongly reported {false_alarms} of 6");
+    assert!(right >= 10, "only {right} of 12 answers right");
+    assert!(false_alarms <= 1, "{false_alarms} of 6 intact meshes reported as defective");
+}
