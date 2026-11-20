@@ -166,6 +166,14 @@ fresh work folder (`cargo test -p vernon-nodes-ai -- --ignored real_`):
 * Forecast: on a synthetic decaying series the median at step 200 was 1.023
   times the true continuation; peak GPU 0.49 GB, peak RAM 1.42 GB.
 
+A second forecast check on 2026-11-20 used a completed steady-solver log:
+six residual fields, two fixed 200-iteration holdouts, and no active CFD run.
+Operational checks and an independent input/error check passed. The model
+beat a constant last-value baseline on 5 of 12 field/window comparisons;
+its nominal 80% band covered 78.1% of held-out values, with substantial
+variation between windows. This is not an accuracy qualification. Protocol,
+provenance and limits are in [the forecast spec](ai-local/forecast.md).
+
 The forecast is **advice only**. It is trained on general time series, not on
 CFD; a forecast is not evidence of convergence, and no acceptance gate reads
 it. The speech nodes work on files; there is no microphone button in the app
@@ -190,9 +198,10 @@ fresh work folder:
 * Photo cut-out: a drawn disc masked from one click overlapped the true disc by
   99.4% (intersection over union). Peak GPU 1.25 GB, peak RAM 1.65 GB; 67 s for
   the whole call. On 2026-11-20 it was run on 11 real pet photos with
-  hand-drawn outlines. The masks never spread past the outline's outer edge, but
-  the outlines have a wide "unsure" band, so edge precision is only bounded: a
-  median overlap of 0.82 to 0.84 depending on how the band is counted.
+  hand-drawn outlines. On ten photos no mask pixels fell outside the outline's
+  outer edge; on the eleventh one pixel did. Treating the wide "unsure" band
+  entirely as background or pet gave median overlaps of 0.82 and 0.84,
+  respectively. These alternatives do not establish exact edge precision.
 * Vision check: on two drawn test pictures it counted three squares and named a
   circle's colour. Peak GPU 8.35 GB, peak RAM 9.1 GB; model load took 124 s and
   382 s from the weights drive, answers 2 s and 19 s. On 2026-11-20 it was run on

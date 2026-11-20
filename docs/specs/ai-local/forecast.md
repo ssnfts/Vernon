@@ -78,6 +78,52 @@ log transform on (RTX 4090 Laptop, CUDA):
   extend a smooth log-linear decay. It says nothing about real solver residuals, which
   stall, oscillate and restart.
 
+## Measured on a real solver log (2026-11-20)
+
+The actual node's `log_path` route was exercised on a completed 25-degree
+slant-body steady run: 3,000 iterations, an `End` marker, and six fields
+(`Ux`, `Uy`, `Uz`, `p`, `omega`, `k`). Both Linux environments were checked
+for active solvers and meshers immediately before model execution; none was
+running. No CFD solve or model download was started.
+
+Two fixed 200-iteration holdouts were excluded from the node inputs:
+iterations 1â€“1000 predicted 1001â€“1200, and 1â€“2800 predicted 2801â€“3000.
+Settings were the defaults: log10 transform, horizon 200, target 1e-5.
+The comparison was mean absolute log10 error against holding each field's
+last observed value constant; there was no accuracy pass threshold or tuning.
+
+| Context end | Fields beating the last-value baseline | Observations inside q10â€“q90 | Node wall time |
+|---:|---:|---:|---:|
+| 1000 | 4 of 6 | 65.0% | 30.25 s |
+| 2800 | 1 of 6 | 91.25% | 7.06 s |
+
+Overall, the model beat the baseline on **5 of 12 field/window pairs**.
+The nominal 80% band covered 78.1% of the 2,400 held-out residual values,
+but coverage varied substantially between the two windows. These correlated
+samples from one run do not establish calibration or general reliability.
+Neither the median predictions nor the recorded holdouts crossed 1e-5.
+
+Operational checks passed: six complete parsed histories; three outputs;
+finite, positive, ordered quantiles of the requested length; advisory labels;
+`cfd_validation = DEFERRED`; and only `ai_` report metrics. An independent
+Python parser checked all model input values, exclusion of the holdouts,
+and all reported errors and coverage. The source log's SHA-256 was unchanged.
+This completes the real-log execution check, **not an accuracy qualification**.
+The forecast remains advice only and changes no CFD gate or run verdict.
+Transient histories, restarts and other geometries remain untested.
+
+Provenance:
+
+- Node source revision: `3def1e9ba522483177cb674c569b2009863da055`.
+- Model revision: `29ec3766d36d6f73f0696f85560a422f50e8498c`; CUDA.
+- Source log: `scratch/wp9-ahmed/temp-a25-g3/vernon-cfd-232232-cfd.solve_steady-9/native/case/logs/solver.log`
+  in the CFD checkout.
+- Log SHA-256: `4f45687d5b7ee604dd5ff57094145b093c65ccea248b7ccc31b32a8e9e3201e8`.
+- Local evidence bundle: `scratch/forecast-real-20261120/` in that checkout,
+  including `RESULTS.md`, `summary.json`, `receipt.json`, the bounded harness,
+  independent check, exact input prefixes and complete node outputs. The
+  bundle is not committed.
+
 ## Limits
 
 - At most 1024 forecast steps and 8192 points of history (older points are dropped);

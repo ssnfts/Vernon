@@ -128,20 +128,20 @@ reference PC. Measured state and limits are in each node's spec under
 |---|---|---|
 | `geo.ai_text_to_speech` | Kokoro-82M, Apache-2.0 | Works on the CPU; speech round trip 15 of 15 words |
 | `geo.ai_speech_to_text` | Whisper large-v3-turbo, MIT | Works; FLAC and WAV only |
-| `cfd.ai_convergence_forecast` | Chronos-2, Apache-2.0 | Synthetic series only; not yet run on a real solver log |
+| `cfd.ai_convergence_forecast` | Chronos-2, Apache-2.0 | [Real steady-solver log](specs/ai-local/forecast.md): six fields, two 200-step holdouts; operational checks passed, beat a last-value baseline on 5 of 12 comparisons; advice only |
 | `geo.ai_document_search` | bge-m3, MIT | 5 of 6 topic questions over the specs; no PDF through the real model |
-| `capture.ai_photo_cutout` | SAM 2.1 large, Apache-2.0 | Drawn test picture; 11 real pet photos (2026-11-20), masks stay inside the outline; edge precision only bounded |
-| `geo.ai_vision_check` | Qwen3-VL 4B, Apache-2.0 | Drawn test pictures; failed on rendered mesh defects, 8 of 12 right (2026-11-20): caught a floating part, missed a hole and a missing leg, no false alarms (item K below) |
+| `capture.ai_photo_cutout` | SAM 2.1 large, Apache-2.0 | Drawn test picture; [11 real pet photos](specs/ai-local/photo-cutout.md) (2026-11-20): passed with the unsure edge band excluded; precise edge quality unestablished |
+| `geo.ai_vision_check` | Qwen3-VL 4B, Apache-2.0 | Drawn test pictures; [rendered mesh defects](specs/ai-local/vision-check.md) (2026-11-20): failed, 8 of 12 trials right (7 distinct images); caught a floating part, missed a hole and a missing leg, no false alarms (item K below) |
 | `geo.ai_sketch_from_words` | FLUX.2 klein 4B, Apache-2.0 | One prompt; needs about 17 GB of RAM |
 | `print.ai_print_watchdog` | Qwen3-VL 4B (shared with the vision check) | 20 print photos, in-sample; no printer camera feed; checks once per cook |
 | `capture.ai_body_fit` | SAM 3D Body, SAM and DINOv3 licences (opt-in, not open source) | Sanity check on two photos of one person, not an accuracy test |
 
-Each needs a second, independent test before it can be called reliable.
-Done on 2026-11-20: real photos for the cut-out (passed, though the test's
-unsure edge band was wider than intended) and rendered meshes for the vision
-check (failed; flipped normals do not show in a viewport render at all).
-Still to do: real solver logs for the forecast, a printer camera feed for the
-watchdog and a measured body for body fit.
+The forecast, cut-out and vision check received their second tests on
+2026-11-20; the results above do not establish general reliability. The
+forecast was often worse than a simple baseline, the cut-out's uncertain
+edge bands limit its score, and the vision check failed its defect test.
+The watchdog still needs a real printer camera feed, and body fit still
+needs photos of a person with known measurements.
 
 ### What to build, in order of value
 
@@ -157,7 +157,7 @@ watchdog and a measured body for body fit.
 | H | **Run-diagnosis assistant** | A local model reads solver logs and residual histories and proposes the next diagnostic; it cannot edit gates or relabel runs | C | Medium |
 | I | **Learned multi-view reconstruction** (Apache-licensed models) beside COLMAP | A dense prior in minutes where COLMAP dense takes many hours; scale still comes from markers and passes the same gate | A, B | Medium |
 | J | **Image-to-3D runners** (TripoSR for small GPUs, a quantised TRELLIS for 16 GB) and a retopology node | Concept parts from a photo, cleaned by the existing nodes | A, B | Medium |
-| K | **Vision check of the viewport** | A local vision model describes what a render shows (holes, flipped normals, a part off the car) as a hint next to the numeric report | C | Open. Node built (`geo.ai_vision_check`) and tested on viewport renders on 2026-11-20: failed, 8 of 12 right; the model leans towards "looks fine" and cannot see flipped normals in a render. Needs a stronger model or a different input before it helps |
+| K | **Vision check of the viewport** | A local vision model describes visible features as a hint next to numeric reports; numeric checks assess holes and flipped faces | C | Open. Node built (`geo.ai_vision_check`) and tested on viewport renders on 2026-11-20: failed, 8 of 12 right (7 distinct images); the model leans towards "looks fine" and cannot see flipped normals in a render. Use numeric mesh checks; needs a stronger model or a different input before it helps |
 | L | **Fine-tuning a surrogate on Vernon's validated runs** | Predictions for kit shapes outside the stock training set | E, many solved cases | Research; feasibility on 16 GB unverified |
 
 Local model candidates for C, D and K, from the 2026-11-11 search: a 20B
