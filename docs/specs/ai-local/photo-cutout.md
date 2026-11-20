@@ -107,8 +107,10 @@ of each picture. What the run does show:
 
 What it cannot show is how precisely the edge sits inside the band. Counting the
 band as background gives overlaps of 0.68 to 0.90 (median 0.82, 7 of 11 at 0.75
-or above). Counting it as pet gives 0.77 to 0.89 (median 0.84). The true figure
-lies between those, and both medians are under the 0.85 that was meant.
+or above). Counting it as pet gives 0.77 to 0.89 (median 0.84). These are alternative scoring
+conventions, not bounds on the true overlap: the actual boundary may occupy
+only part of the unsure band. Both alternative medians are below the intended
+0.85, and exact edge precision remains unestablished.
 
 A twelfth photo was dropped before the run: the dataset copy it came from does
 not name its files, and its outline could not be matched to it with certainty.
