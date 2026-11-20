@@ -87,12 +87,12 @@ for active solvers and meshers immediately before model execution; none was
 running. No CFD solve or model download was started.
 
 Two fixed 200-iteration holdouts were excluded from the node inputs:
-iterations 1â€“1000 predicted 1001â€“1200, and 1â€“2800 predicted 2801â€“3000.
+iterations 1–1000 predicted 1001–1200, and 1–2800 predicted 2801–3000.
 Settings were the defaults: log10 transform, horizon 200, target 1e-5.
 The comparison was mean absolute log10 error against holding each field's
 last observed value constant; there was no accuracy pass threshold or tuning.
 
-| Context end | Fields beating the last-value baseline | Observations inside q10â€“q90 | Node wall time |
+| Context end | Fields beating the last-value baseline | Observations inside q10–q90 | Node wall time |
 |---:|---:|---:|---:|
 | 1000 | 4 of 6 | 65.0% | 30.25 s |
 | 2800 | 1 of 6 | 91.25% | 7.06 s |
