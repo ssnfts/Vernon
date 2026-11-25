@@ -422,6 +422,41 @@ fn file_read_loads_las_in_millimetres_and_takes_a_unit_parameter() {
     assert!(!target.exists());
 }
 
+#[test]
+fn file_read_loads_gltf_with_an_external_buffer_z_up_by_default() {
+    let dir = std::env::temp_dir().join(format!("vernon-nodes-geo-gltf-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    // One triangle (0,0,0), (1,0,0), (0,1,0) m, under a node moved 2 m along +Y.
+    let bin: Vec<u8> = [0f32, 0., 0., 1., 0., 0., 0., 1., 0.].iter().flat_map(|c| c.to_le_bytes()).collect();
+    std::fs::write(dir.join("tri.bin"), &bin).unwrap();
+    let path = dir.join("tri.gltf");
+    std::fs::write(
+        &path,
+        r#"{"asset":{"version":"2.0"},"scenes":[{"nodes":[0]}],"nodes":[{"mesh":0,"translation":[0,2,0]}],
+            "meshes":[{"primitives":[{"attributes":{"POSITION":0}}]}],
+            "accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3"}],
+            "bufferViews":[{"buffer":0,"byteLength":36}],"buffers":[{"uri":"tri.bin","byteLength":36}]}"#,
+    )
+    .unwrap();
+    let p = s(path.to_str().unwrap());
+    // The unit parameter does not apply: glTF is metres.
+    let out = cook("geo.file_read", &[], &[("path", p.clone()), ("unit", s("in"))]).unwrap();
+    let g = geo_of(&out[0]);
+    assert_eq!((g.points.len(), g.prims.len()), (3, 1));
+    // (0, 3, 0) m Y-up -> (0, 0, 3000) mm Z-up.
+    assert!(close(g.points[2].z, 3000.0, 1e-9) && close(g.points[2].y, 0.0, 1e-9), "{:?}", g.points);
+    let r = out[1].as_report().unwrap();
+    assert!(r.notes.iter().any(|(_, t)| t.contains("glTF") && t.contains("(x, -z, y)")), "{:?}", r.notes);
+    let out = cook("geo.file_read", &[], &[("path", p), ("gltf_axes", s("y_up"))]).unwrap();
+    assert!(close(geo_of(&out[0]).points[2].y, 3000.0, 1e-9));
+    // Reading is fine, writing glTF is refused.
+    let target = dir.join("never.glb");
+    let g = make_box(DVec3::ONE, DVec3::ZERO, 1);
+    assert!(cook("geo.file_write", &[some(&g)], &[("path", s(target.to_str().unwrap()))]).is_err());
+    assert!(!target.exists());
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 /// `tiny_las` with a GeoTIFF key directory holding the given (key, value) pairs.
 fn tiny_las_with_geokeys(points: &[[i32; 3]], keys: &[(u16, u16)]) -> Vec<u8> {
     let mut words = vec![1u16, 1, 0, keys.len() as u16];

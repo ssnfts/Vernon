@@ -7,14 +7,14 @@ use vernon_graph::node::inputs;
 use vernon_graph::{
     CookContext, CookResult, Data, DataKind, NodeOp, NodeTypeInfo, ParamSpec, Params, PortSpec,
 };
-use vernon_io::{FileUnit, Format, ReadOptions};
+use vernon_io::{FileUnit, Format, GltfAxes, ReadOptions};
 
 use crate::tables::{parse_marker_list, DuplicatePolicy};
 use crate::units::{classify_size, parse_unit, unit_name, UnitVerdict};
 use crate::util::{self, base, set_metric_flag};
 
 /// File extensions the importers accept.
-pub const SCAN_EXTENSIONS: &[&str] = &["ply", "obj", "stl", "xyz", "pts", "asc", "3mf", "e57", "las"];
+pub const SCAN_EXTENSIONS: &[&str] = &["ply", "obj", "stl", "xyz", "pts", "asc", "3mf", "e57", "las", "glb", "gltf"];
 
 /// How to interpret the numbers in a file.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -45,6 +45,8 @@ pub struct ImportOptions<'a> {
     pub keep_colors: bool,
     pub unit_check: bool,
     pub title: &'a str,
+    /// glTF only: axis mapping of the Y-up file.
+    pub gltf_axes: GltfAxes,
 }
 
 fn verdict_text(v: &UnitVerdict) -> String {
@@ -79,19 +81,22 @@ pub fn import(opts: &ImportOptions) -> Result<(Geometry, Report), String> {
             SCAN_EXTENSIONS.join(", ")
         ));
     }
-    let format = if ext == "asc" {
+    let bytes = std::fs::read(path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+    let by_ext = if ext == "asc" {
         Format::Xyz
     } else {
         Format::from_path(path).ok_or_else(|| format!("unsupported file type '.{ext}'"))?
     };
-    let bytes = std::fs::read(path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+    let format = by_ext.refine(&bytes);
     let read_opts = ReadOptions {
         unit: FileUnit::Millimetre,
         weld: opts.weld,
         weld_tolerance: 1e-6,
+        gltf_axes: opts.gltf_axes,
     };
-    let mut geo =
-        vernon_io::read_bytes(format, &bytes, &read_opts).map_err(|e| format!("{}: {e}", path.display()))?;
+    let dir = path.parent().unwrap_or(Path::new("."));
+    let mut geo = vernon_io::read_bytes_in(format, &bytes, &read_opts, dir)
+        .map_err(|e| format!("{}: {e}", path.display()))?;
     if geo.points.is_empty() {
         return Err(format!("{} contains no points", path.display()));
     }
@@ -109,7 +114,19 @@ pub fn import(opts: &ImportOptions) -> Result<(Geometry, Report), String> {
             "LAS: the file does not state its length unit, so metres were assumed; the geometry is marked non-metric. If the unit is right, run Set Units (from mm) to mark it metric; if the file uses another unit, fix the scale with Set Units (factor) or a scale node, or read it with File Read and its 'las_unit' parameter",
         );
     }
-    let (factor, metric, declared) = if matches!(format, Format::ThreeMf | Format::E57 | Format::Las) {
+    if let Some(note) = vernon_io::gltf_frame_note(&geo) {
+        report.note(Severity::Info, note);
+    }
+    let (factor, metric, declared) = if format == Format::Gltf && opts.unit == UnitChoice::Unknown {
+        // glTF is metres by definition, but a phone reconstruction's scale is
+        // only as good as the app that made it: keep it non-metric until a
+        // scale node confirms it.
+        report.note(
+            Severity::Warning,
+            "glTF is read as metres, as the format defines, but the scale of a phone or photogrammetry reconstruction is not trusted; the geometry is marked non-metric until a scale node has run, or set the unit to 'm' to accept it",
+        );
+        (1.0, false, None)
+    } else if matches!(format, Format::ThreeMf | Format::E57 | Format::Las | Format::Gltf) {
         (1.0, !las_assumed, Some(FileUnit::Millimetre))
     } else {
         match opts.unit {
@@ -201,11 +218,25 @@ fn geo_report(i: NodeTypeInfo) -> NodeTypeInfo {
         .output(PortSpec::new("report", DataKind::Report))
 }
 
+fn gltf_axes_param() -> ParamSpec {
+    ParamSpec::choice("gltf_axes", "glTF axes", "z_up", &["z_up", "y_up"]).help(
+        "glTF only: glTF files are Y up, right-handed, in metres. 'z_up' rotates the model +90 degrees about X, (x, y, z) -> (x, -z, y), so up is +Z as everywhere else in Vernon; 'y_up' keeps the stored axes. The report states which was used.",
+    )
+}
+
+fn gltf_axes(s: &str) -> GltfAxes {
+    if s == "y_up" {
+        GltfAxes::AsStored
+    } else {
+        GltfAxes::ZUp
+    }
+}
+
 fn path_param() -> ParamSpec {
     ParamSpec::path("path", "File", SCAN_EXTENSIONS, false).help("Scan file to read.")
 }
 
-/// Import a scanner export (PLY, OBJ, STL, XYZ/PTS/ASC, 3MF, E57, LAS).
+/// Import a scanner export (PLY, OBJ, STL, XYZ/PTS/ASC, 3MF, E57, LAS, glTF/GLB).
 pub struct ImportScan;
 
 impl NodeOp for ImportScan {
@@ -215,8 +246,9 @@ impl NodeOp for ImportScan {
                 .param(path_param())
                 .param(
                     ParamSpec::choice("unit", "File unit", "mm", &["mm", "cm", "m", "in", "auto"])
-                        .help("Unit of the numbers in the file. 'auto' uses the vehicle-scale size check and falls back to non-metric when unsure. 3MF, E57 and LAS state their own unit and ignore this; a LAS file that states none is read as metres and marked non-metric."),
+                        .help("Unit of the numbers in the file. 'auto' uses the vehicle-scale size check and falls back to non-metric when unsure. 3MF, E57, LAS and glTF (metres) state their own unit and ignore this; a LAS file that states none is read as metres and marked non-metric."),
                 )
+                .param(gltf_axes_param())
                 .param(ParamSpec::bool("unit_check", "Size check", true).help("Warn when the size does not match the chosen unit."))
                 .param(ParamSpec::bool("weld", "Weld STL vertices", true).help("Merge coincident vertices of STL files."))
                 .param(ParamSpec::bool("keep_normals", "Keep normals", true).help("Keep per-vertex normals from the file. Off drops them so they can be re-estimated."))
@@ -240,6 +272,7 @@ impl NodeOp for ImportScan {
             keep_colors: params.bool("keep_colors")?,
             unit_check: params.bool("unit_check")?,
             title: "Import Scan",
+            gltf_axes: gltf_axes(params.str("gltf_axes")?),
         })
         .map_err(|m| ctx.fail(m))?;
         Ok(vec![Data::geometry(geo), Data::report(rep)])
@@ -262,6 +295,7 @@ impl NodeOp for ImportPhoneScan {
                     ParamSpec::choice("capture_mode", "Capture mode", "photogrammetry", &["photogrammetry", "lidar"])
                         .help("Photogrammetry needs scale correction; depth-sensor capture is too coarse for fitment."),
                 )
+                .param(gltf_axes_param())
                 .param(ParamSpec::bool("weld", "Weld STL vertices", true).help("Merge coincident vertices after reading. Mesh files that store every triangle separately need this to be watertight."))
                 .param(ParamSpec::bool("keep_colors", "Keep colors", true).help("Keep per-vertex colours from the file. Off drops them.")),
         )
@@ -282,6 +316,7 @@ impl NodeOp for ImportPhoneScan {
             keep_colors: params.bool("keep_colors")?,
             unit_check: true,
             title: "Import Phone Scan",
+            gltf_axes: gltf_axes(params.str("gltf_axes")?),
         })
         .map_err(|m| ctx.fail(m))?;
         if mode == "lidar" {
@@ -487,7 +522,7 @@ mod tests {
 
     #[test]
     fn the_scan_extensions_include_e57_and_las() {
-        for ext in ["e57", "las"] {
+        for ext in ["e57", "las", "glb", "gltf"] {
             assert!(SCAN_EXTENSIONS.contains(&ext), "{ext}");
         }
         let info = ImportScan.info();
@@ -523,6 +558,65 @@ mod tests {
             let w = warnings(&r);
             assert!(w.iter().any(|t| t.contains("metres were assumed") && t.contains("non-metric")), "{w:?}");
         }
+    }
+
+    /// A GLB holding one triangle (0,0,0), (1,0,0), (0,1,0) in metres, Y up.
+    fn glb_triangle() -> Vec<u8> {
+        let mut bin = Vec::new();
+        for c in [0f32, 0., 0., 1., 0., 0., 0., 1., 0.] {
+            bin.extend(c.to_le_bytes());
+        }
+        let mut json = br#"{"asset":{"version":"2.0"},"scenes":[{"nodes":[0]}],"nodes":[{"mesh":0}],"meshes":[{"primitives":[{"attributes":{"POSITION":0}}]}],"accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3"}],"bufferViews":[{"buffer":0,"byteLength":36}],"buffers":[{"byteLength":36}]}"#.to_vec();
+        while !json.len().is_multiple_of(4) {
+            json.push(b' ');
+        }
+        let mut out = b"glTF".to_vec();
+        out.extend(2u32.to_le_bytes());
+        out.extend(((12 + 8 + json.len() + 8 + bin.len()) as u32).to_le_bytes());
+        out.extend((json.len() as u32).to_le_bytes());
+        out.extend(b"JSON");
+        out.extend(json);
+        out.extend((bin.len() as u32).to_le_bytes());
+        out.extend(b"BIN\0");
+        out.extend(bin);
+        out
+    }
+
+    #[test]
+    fn a_glb_imports_in_millimetres_z_up_and_says_so() {
+        for unit in ["mm", "auto"] {
+            let (g, r) = cook_import("phone.glb", &glb_triangle(), unit).unwrap();
+            assert_eq!((g.point_count(), g.prim_count()), (3, 1));
+            // Y-up metres (0,1,0) becomes Z-up millimetres (0,0,1000).
+            assert!((g.points[2] - DVec3::new(0.0, 0.0, 1000.0)).abs().max_element() < 1e-9, "{:?}", g.points);
+            assert_eq!(metric_flag(&g), Some(true));
+            assert!(r.notes.iter().any(|(_, t)| t.contains("glTF") && t.contains("Z up")), "{:?}", r.notes);
+        }
+        // Content decides: a GLB saved with a .gltf name still reads.
+        let (g, _) = cook_import("misnamed.gltf", &glb_triangle(), "mm").unwrap();
+        assert_eq!(g.point_count(), 3);
+    }
+
+    #[test]
+    fn a_phone_glb_keeps_its_axes_on_request_and_stays_non_metric() {
+        let dir = std::env::temp_dir().join(format!("vernon-capture-phone-glb-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("scan.glb");
+        std::fs::write(&path, glb_triangle()).unwrap();
+        let node = ImportPhoneScan;
+        let mut params = Params::from_specs(&node.info().params);
+        params.set("path", ParamValue::Str(path.to_str().unwrap().to_string()));
+        params.set("gltf_axes", ParamValue::Str("y_up".into()));
+        let ctx = CookContext { node_name: "import".into(), work_dir: dir.clone(), frame: 0.0 };
+        let out = node.cook(&ctx, &[], &params);
+        std::fs::remove_dir_all(&dir).ok();
+        let out = out.unwrap();
+        let g = out[0].as_geometry().unwrap();
+        let r = out[1].as_report().unwrap();
+        assert!((g.points[2] - DVec3::new(0.0, 1000.0, 0.0)).abs().max_element() < 1e-9);
+        assert_eq!(metric_flag(g), Some(false));
+        assert!(warnings(r).iter().any(|w| w.contains("glTF") && w.contains("non-metric")), "{:?}", r.notes);
+        assert!(r.notes.iter().any(|(_, t)| t.contains("axes kept as stored")));
     }
 
     #[test]

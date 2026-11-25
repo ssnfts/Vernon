@@ -3280,6 +3280,7 @@ version = "0.1.0"
 dependencies = [
  "glam",
  "miniz_oxide 0.8.9",
+ "serde_json",
  "thiserror 2.0.21",
  "vernon-core",
 ]

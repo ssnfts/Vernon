@@ -81,7 +81,7 @@ With an empty scene you see a **Welcome to Vernon** panel with three buttons:
 | Button | Use it to |
 |---|---|
 | **Open the demo (body-kit pipeline)** | Load the example scene. This is the easiest start. |
-| **Import a mesh or scan (OBJ, STL, PLY, 3MF, XYZ, E57, LAS)** | Bring in your own file. |
+| **Import a mesh or scan (OBJ, STL, PLY, 3MF, XYZ, E57, LAS, glTF/GLB)** | Bring in your own file. |
 | **Open a saved scene (.vrn)** | Open a scene you saved earlier. |
 
 Click **Open the demo**. The scene loads and runs by itself. The viewports show a curved car panel, and the scene list on the left
@@ -196,7 +196,9 @@ get the outputs of a run you are studying. It does not make a failed gate pass.
 
 Vernon reads:
 
-- Meshes and scans: OBJ, STL, PLY, 3MF, XYZ and PTS, E57, LAS.
+- Meshes and scans: OBJ, STL, PLY, 3MF, XYZ and PTS, E57, LAS, and glTF 2.0
+  (`.glb`/`.gltf`, read only; metres turned into Z-up millimetres, see the
+  `gltf_axes` parameter).
 - Scenes: `.vrn` files, read and written by **File > Open** and **File > Save**.
 - Photogrammetry output and other program outputs, through their own nodes
   (see section 9).

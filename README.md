@@ -25,7 +25,7 @@ pass before the following step trusts its output.
 1. **Geometry basics.** Primitives, a test car panel, transforms, merge,
    mirror, normals, noise, and reading and writing OBJ, STL, PLY, 3MF and XYZ.
    These are the building blocks every other step uses.
-2. **Capture.** Import scans (PLY/OBJ/STL/XYZ, E57, LAS) or run external
+2. **Capture.** Import scans (PLY/OBJ/STL/XYZ, E57, LAS, glTF/GLB) or run external
    photogrammetry (COLMAP) on photos. Scale bars and coded markers fix
    real-world scale. Feature registration and a robust multi-scan pose graph
    align several scans into one. *Reports:* registration residuals, marker
@@ -141,7 +141,7 @@ plain `cargo` works.
 |---|---|
 | `crates/vernon-core` | Geometry kernel, attributes, `Report`/`Metric`, materials, process helpers |
 | `crates/vernon-graph` | Node contract, params, graph cooking/caching, registry, gate rules |
-| `crates/vernon-io` | OBJ, STL, PLY, 3MF, XYZ, E57, LAS readers and writers |
+| `crates/vernon-io` | OBJ, STL, PLY, 3MF, XYZ, E57, LAS, glTF/GLB readers and writers |
 | `crates/vernon-render` | Offscreen wgpu viewport renderer |
 | `crates/vernon-nodes-*` | One crate per stage: geo, capture, clean, surface, print, cfd, fea, solar (+ flatten), perf |
 | `crates/vernon-cli` | `list`, `info`, `cook`, `mcp` (stdio MCP server), `agent-guide`; integration and clean-room tests |

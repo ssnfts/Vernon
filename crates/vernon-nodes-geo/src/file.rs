@@ -8,12 +8,29 @@ use vernon_graph::{
     CookContext, CookResult, Data, DataKind, NodeOp, NodeTypeInfo, ParamSpec, Params, PortSpec,
     Stage,
 };
-use vernon_io::{FileUnit, Format, ReadOptions, WriteOptions};
+use vernon_io::{FileUnit, Format, GltfAxes, ReadOptions, WriteOptions};
 
 use crate::util::{non_negative, SPEC};
 
 const UNITS: [&str; 4] = ["mm", "cm", "m", "in"];
 const LAS_UNITS: [&str; 5] = ["auto", "mm", "cm", "m", "in"];
+const GLTF_AXES: [&str; 2] = ["z_up", "y_up"];
+
+/// The glTF axis-mapping parameter shared by the readers.
+pub fn gltf_axes_param() -> ParamSpec {
+    ParamSpec::choice("gltf_axes", "glTF axes", "z_up", &GLTF_AXES).help(
+        "glTF only: glTF files are Y up, right-handed, in metres. 'z_up' rotates the model +90 degrees about X, (x, y, z) -> (x, -z, y), so up is +Z as everywhere else in Vernon; 'y_up' keeps the stored axes. The report states which was used.",
+    )
+}
+
+/// Map a `gltf_axes` choice string to the reader option.
+pub fn gltf_axes(s: &str) -> GltfAxes {
+    if s == "y_up" {
+        GltfAxes::AsStored
+    } else {
+        GltfAxes::ZUp
+    }
+}
 
 /// Map a unit choice string to a file unit.
 pub fn file_unit(s: &str) -> FileUnit {
@@ -65,16 +82,17 @@ impl NodeOp for FileReadNode {
             .output(PortSpec::new("report", DataKind::Report))
             .param(
                 ParamSpec::path("path", "File", Format::extensions(), false)
-                    .help("Mesh or point-cloud file to load (OBJ, STL, PLY, 3MF, XYZ, E57, LAS)."),
+                    .help("Mesh or point-cloud file to load (OBJ, STL, PLY, 3MF, XYZ, E57, LAS, glTF/GLB)."),
             )
             .param(unit_param(
-                "Unit the file's numbers are in; converted to millimetres. 3MF, E57 and LAS state their own unit and ignore this.",
+                "Unit the file's numbers are in; converted to millimetres. 3MF, E57, LAS and glTF state their own unit and ignore this.",
             ))
             .param(
                 ParamSpec::choice("las_unit", "LAS unit", "auto", &LAS_UNITS).help(
                     "LAS only: unit of the coordinates. Auto reads it from the file's coordinate-system records and assumes metres, with a warning, when they state no unit.",
                 ),
             )
+            .param(gltf_axes_param())
             .param(
                 ParamSpec::bool("weld", "Weld vertices", true)
                     .help("Merge coincident vertices, e.g. the per-triangle corners of STL."),
@@ -96,6 +114,7 @@ impl NodeOp for FileReadNode {
             unit: file_unit(params.str("unit")?),
             weld: params.bool("weld")?,
             weld_tolerance: non_negative(params, "weld_tolerance")?,
+            gltf_axes: gltf_axes(params.str("gltf_axes")?),
         };
         let las_unit = params.str("las_unit")?;
         let geo = if las_unit != "auto" && Format::from_path(&path) == Some(Format::Las) {
@@ -114,6 +133,9 @@ impl NodeOp for FileReadNode {
         r.metric("size_y", Metric::new(size.y, "mm"));
         r.metric("size_z", Metric::new(size.z, "mm"));
         r.note(Severity::Info, format!("read {}", path.display()));
+        if let Some(note) = vernon_io::gltf_frame_note(&geo) {
+            r.note(Severity::Info, note);
+        }
         if vernon_io::las_unit_was_assumed(&geo) {
             r.note(
                 Severity::Warning,
