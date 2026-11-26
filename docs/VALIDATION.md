@@ -73,21 +73,62 @@ at 10k, 100k and 1M triangles (tetrahedra for FEA).
 
 ### End to end (E)
 
-`E.pipeline.cook` cooks `examples/bodykit_pipeline.vrn` and requires 38 nodes, 0 failed, 0
-unexpected failing gates and the 2 documented expected gates (AGENTS.md). The brief for this suite
-quoted 40 nodes and 5 expected gates; the file in the repository has 38 and 2, so the suite
-checks what the repository documents. `E.pipeline.stage_smoke` runs `vernon-cli cook --node` for
+`E.pipeline.cook` cooks `examples/bodykit_pipeline.vrn` and requires 40 nodes, 0 failed, 0
+unexpected failing gates and the 5 documented expected gates (AGENTS.md). `E.pipeline.stage_smoke` runs `vernon-cli cook --node` for
 the last node of each stage. `E.app.start_probe` launches the desktop binary and requires it to
 stay up for 6 s; it is SKIPPED unless the app was built (`bench\run.ps1 -WithApp`).
+
+### Real-file checks
+
+Files live in `scratch/real-files/` (git-ignored, never committed). The
+`#[ignore = "needs real sample files"]` tests in
+`crates/vernon-io/tests/real_files.rs` and `capture.import_scan` (in
+`vernon-nodes-capture`, `real_scan_files_import_through_the_node`) read them
+when present.
+
+| File | Source | Licence | SHA-256 |
+|---|---|---|---|
+| `pump.e57` (52,496,384 B) | `http://sourceforge.net/projects/e57-3d-imgfmt/files/E57Example-data/pump.e57/download` (libE57 example data; Leica ScanStation, 2008) | E57 "Test Data License" (modified MIT: free use and copying, keep copyright notices; Carnahan-Proctor and Cross, Inc.) | `5b582e9247979a29ac7cccb6afa942e632d84f91867130f094fa488629e3c124` |
+| `vegetation_1_3.las` (299,359 B) | `https://raw.githubusercontent.com/laspy/laspy/master/tests/data/vegetation_1_3.las` | laspy BSD 3-clause | `c3e882a096b12cecd1c7b803ba8e69d7bc1d327bbc1df05c02375654e097dfcb` |
+| `simple1_4.las` (814,388 B) | `https://raw.githubusercontent.com/laspy/laspy/master/tests/data/simple1_4.las` | laspy BSD 3-clause | `1162a745e71e9eedddf453062e01c476e791ea09a75190f68f52050dad4a0330` |
+
+Results against each file's own header (no reader bug found, nothing changed
+in the readers):
+- **`pump.e57`**: every page CRC-32C passed, so the big-endian checksum
+  layout is right for a real vendor file. 5 scans, 2,878,964 records; 1,213,990
+  valid points kept (`cartesianInvalidState` drops the rest, including the
+  -2147.48 m sentinels of the 1.44 M-record scan). World xMin -3034.4 mm
+  matches scan 1's header bound plus its pose translation (-0.005631 m +
+  -3.028748 m). Intensity stays in 0..1 (header limits 0..1), `Cd` present.
+  Through `capture.import_scan` the count is identical, unit scale 1, metric.
+- **`vegetation_1_3.las`** (LAS 1.3, format 1): 10,683 points and all six
+  header bounds match to under 0.5 mm after the metre to mm conversion. No
+  coordinate-system record, so `las_unit_source` is `assumed_metres` and the
+  node warns, as designed.
+- **`simple1_4.las`** (LAS 1.4, format 7): the file carries EPSG:4326 with
+  angular units, so reading it without a unit is refused. With a unit named it
+  reads 22,600 points and the z range 44..254 matches the header.
+
+fTetWild on a scanned panel: `examples/bodykit_pipeline.vrn` nodes 0 to 11
+(car panel, scan noise 0.05 mm, ICP align, fitted patch, 3 mm thickened shell)
+into `fea.tet_mesh` with `run` on, `edge_len_mm` 12, order 2 (fTetWild commit
+`8118f81` in the `Vernon-Ubuntu-24.04` WSL distro): 28,043 elements, 57,359
+nodes, volume error 1.14 % (mesh 1.6675e6 against surface 1.6488e6 mm3), min
+dihedral 12.0 deg, `placeholder` 0. The default 1e-3 envelope gives a volume
+error just above the 1 % the synthetic shapes reach. The wrapper needs an
+absolute work folder (`--work` with a relative path made the WSL launcher look
+for a path it could not translate). The panel is a synthetic scan, not a
+photogrammetry file; there is no public real car-panel mesh in this set.
 
 ## What is NOT validated
 
 - **No physical-accuracy claim.** There is no wind-tunnel, strain-gauge, scanner-certificate or
   lap-timing reference data in this repository. Agreement with an analytic case or another
   solver proves the arithmetic, not that the car will behave that way.
-- **CFD.** The existing Ahmed-body runs did not converge in 3000 iterations and their drag
-  coefficients sit outside the published window (see the report). Vernon's CFD numbers must not be
-  quoted as drag predictions. The bench starts no CFD job.
+- **CFD.** The steady Ahmed-body runs did not converge in 3000 iterations and their drag
+  coefficients sit outside the published window (see the report). The time-resolved fast tier is
+  limited to the claim in "CFD: what may be claimed" below; outside it, Vernon's CFD numbers must
+  not be quoted as drag predictions. The bench starts no CFD job.
 - **FEA of printed parts.** Linear tetrahedra lock in bending; layer anisotropy, creep, thermal
   expansion and bolt preload are not validated. Material retention curves are placeholders.
 - **Photogrammetry.** COLMAP is not re-run by the bench. Only the reading of a recorded model is
@@ -103,6 +144,77 @@ stay up for 6 s; it is SKIPPED unless the app was built (`bench\run.ps1 -WithApp
 - **Commercial tools.** Nothing is compared with any licensed product until the owner records a
   golden file.
 
+## CFD: what may be claimed
+
+**Status, 2026-11-13: signed off by the owner. The "may say" sentence below is cleared for use
+outside this repository. It covers the 25° body only, whose reference (0.285) is traced (item 1).
+The owner dropped the 35° clause because its reference is unconfirmed. The 35° row stays in the
+table as internal evidence.**
+
+Evidence: contract `docs/research/wp9-fast-tier-v1.json`, runs and per-CTU histories in
+`docs/research/wp9-fast-tier-plan.md` section 6. Classic slant body, half model, about 0.5M
+cells, 40 m/s, time-resolved DDES (hybrid RANS-LES), 16 ranks on one workstation. Each body's
+first run spends its hour leaving the steady start. Later runs continue from its saved end state
+(a checkpoint with checksums and identity checks). A row passes when the fast-tier rules in
+plan section 4 hold. The effective sample size and standard error are reported but do not decide
+a pass.
+
+| Body | Run, averaging window | Cd (1 s.e.) | Experiment | Difference | Fast-tier gates |
+|---|---|---|---|---|---|
+| 25° slant | `-g`, 14–21 CTU | 0.304 ± 0.003 | 0.285 | +6.7% | pass, 24.6 min |
+| 25° slant | `-i`, 21–28 CTU | 0.312 ± 0.002 | 0.285 | +9.6% | pass, 33 min |
+| 35° slant | `-h`, 14–21 CTU | 0.303 ± 0.005 | 0.260 | +16.7% | pass, 24.4 min |
+
+The two 25° windows differ by about four of their standard errors. The wake changes more slowly
+than one window lasts, so one window's interval understates the spread between runs. Quote the
+range, not the interval.
+
+**Vernon may say:**
+- Vernon writes complete OpenFOAM cases and reduces OpenFOAM's own force history to Cd within 1%
+  (`B.openfoam.force_reduction`). This checks the arithmetic, not the flow.
+- "On the classic slant-body test case with a 25° slant, Vernon's fast CFD tier puts drag within
+  about 7–10% of the published 1984 wind-tunnel value. It uses a half model of about half a
+  million cells, and each run after the first takes under 35 minutes on one workstation."
+- Every number above is labelled with its method (fast tier, DDES, 0.5M cells, half model), never
+  as a road-car result.
+
+**Vernon may not say:**
+- "Validated CFD", "wind-tunnel accuracy", "within 5%", or that it matches a commercial tool.
+- Any drag or downforce figure for a road car or a user's body kit presented as a prediction.
+  The road-car contract (`wp9-replication-baseline-v1.json`, 12M cells) is unmet and is out of
+  the one-hour budget.
+- That it can tell which of two designs has less drag. The one pair run, 25° against 35°, came out
+  equal within the intervals (0.304 and 0.303), and the experimental 35° value it would be
+  judged against is unconfirmed.
+- Anything about the 35° body.
+- That a run gives a value to ± its standard error (see above).
+
+**For the owner to settle before signing:**
+1. **Reference values.** Checked 2026-11-13 against public pages. The paper itself (Ahmed, Ramm,
+   Faltin, SAE 840300, 1984) is not publicly readable, so no value is confirmed from it directly.
+   - **25°: 0.285, adopted.** The COMSOL Ahmed-body model document, Table 1 ("Measurements",
+     citing SAE 840300), gives 0.285 as front 0.020 + slant 0.140 + base 0.070 + skin
+     friction 0.055
+     (https://doc.comsol.com/5.6/doc/com.comsol.help.models.cfd.ahmed_body/models.cfd.ahmed_body.pdf).
+     CFD Support's benchmark page also quotes 0.285, citing Ahmed. The 0.299 used earlier is a
+     different and later wind-tunnel test, Meile et al. 2011 (CFD Letters 3(1)), at 40 m/s with
+     A = 0.112 m², as credited at https://help.sim-flow.com/validation/ahmed-body. It is not
+     the 1984 value.
+   - **35°: 0.260, unconfirmed.** No public page opened gives either 0.260 or 0.279 with a traceable
+     source. The ERCOFTAC test-data page (AC 1-05) lists the detailed 1984 flow measurements at 5,
+     12.5, 25 and 30° only. Its 35° case comes from the later Lienhart and Becker experiment at
+     40 m/s. A 35° drag value may still be readable from the 1984 paper's drag-against-slant
+     figure, but that has not been seen. To settle it, someone must read SAE 840300 (or Meile
+     2011 for its 35° value).
+   - **Consequence:** the owner dropped the 35° clause from the claim (2026-11-13). Restore it only
+     after 0.260 is confirmed from the paper, together with a confirmed 35° result.
+2. **35° status.** Run `-j` (another seeded 35° hour) gave no result because WSL would not start.
+   The 35° row rests on one seeded window, which may still be drifting (0.93%/CTU, below
+   significance).
+3. **Wording.** Approved by the owner, 2026-11-13, then narrowed to 25° on the owner's decision.
+   Any change to the 25° reference or to new 25° runs means recomputing the range before using
+   the sentence again.
+
 ## Competitor comparison
 
 Cell types: **measured** = produced by this suite on this machine; **published** = figure with its
@@ -113,8 +225,8 @@ URL; **owner to record** = needs a licensed copy, nothing is claimed.
 | Cloud-to-mesh distance, per point | measured: worst difference vs CloudCompare in `REPORT.md` (`B.cloudcompare.c2m`) | CloudCompare CLI as installed (open source; the stored golden was recorded with 2.13.2) | measured by this suite |
 | Linear static tip deflection and stress | measured: `B.calculix.cantilever` | CalculiX 2.21 (open source) | measured by this suite |
 | Cantilever vs beam theory | measured: `A.fea.beam_deflection` | closed form | Roark, Table 8.1 |
-| Ahmed body Cd, 25 deg slant | measured: 0.369 (finest mesh, **not converged**) | 0.299 | https://skill-lync.com/student-projects/project-1-flow-over-ahmed-body-7 (secondary table; primary: Ahmed, Ramm, Faltin, SAE 840300, 1984; also https://kbwiki.ercoftac.org/w/index.php/AC_1-05; confirm before quoting) |
-| Ahmed body Cd, 35 deg slant | measured: 0.314 (finest mesh, **not converged**) | 0.279 | same as above |
+| Ahmed body Cd, 25 deg slant | fast tier: 0.304–0.312 (see "CFD: what may be claimed"); steady: 0.369 (finest mesh, **not converged**) | 0.285 | Ahmed, Ramm, Faltin, SAE 840300, 1984, as tabulated in https://doc.comsol.com/5.6/doc/com.comsol.help.models.cfd.ahmed_body/models.cfd.ahmed_body.pdf Table 1 (the paper itself not seen) |
+| Ahmed body Cd, 35 deg slant | fast tier: 0.303 (one window); steady: 0.314 (finest mesh, **not converged**) | 0.260, **unconfirmed** | no traceable public source found; see "CFD: what may be claimed", item 1 |
 | Lap time accuracy of a point-mass simulator | Vernon `perf.lap_sim`: not validated | vendor states roughly 10% of real data | https://optimumg.com/product/optimumlap/ (vendor claim, not independently verified) |
 | Quad remesh deviation / quad quality | measured by node report | owner to record | `bench/golden/rhino/` |
 | Mesh to solid / STEP deviation | measured by node report | owner to record | `bench/golden/fusion/` |

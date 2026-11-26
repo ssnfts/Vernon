@@ -252,6 +252,40 @@ fn bodykit_pipeline_cooks_every_node_and_every_stage_reports() {
 }
 
 #[test]
+fn mount_strength_example_solves_and_reads_a_safety_factor() {
+    let reg = vernon_cli::registry();
+    let vrn = repo().join("examples/mount_strength.vrn");
+    let mut graph = vernon_cli::load_graph(&vrn, &reg).expect("example loads");
+    let work = std::env::temp_dir().join(format!("vernon-cli-mount-{}", std::process::id()));
+    graph.work_root = Some(work.clone());
+    let outcomes = vernon_cli::cook_graph(&mut graph, &reg, None).expect("cook runs");
+    let failed: Vec<String> = outcomes
+        .iter()
+        .filter_map(|o| o.result.as_ref().err().map(|e| format!("{}: {e}", o.name)))
+        .collect();
+    assert!(failed.is_empty(), "nodes failed:\n{}", failed.join("\n"));
+    let metric = |node: &str, name: &str| -> f64 {
+        let o = outcomes.iter().find(|o| o.name == node).unwrap_or_else(|| panic!("no node {node}"));
+        o.reports()
+            .find_map(|r| r.metrics.get(name).map(|m| m.value))
+            .unwrap_or_else(|| panic!("{node} has no metric {name}"))
+    };
+    // the box is meshed without volume error and every load case is in equilibrium
+    assert!(metric("solid", "volume_error_pct").abs() < 1e-6);
+    assert!(metric("reactions", "worst_equilibrium_error") < 1e-3);
+    assert_eq!(metric("cases", "case_count"), 4.0);
+    // the safety factor is read and clears the target of 3
+    assert!(metric("safety", "sf_min") >= 3.0);
+    assert!(metric("safety", "sf_mount_min") >= 3.0);
+    // the only failing gate is the declared stand-in mesher
+    let gates = vernon_cli::gate_failures(&outcomes, &graph);
+    assert!(gates.iter().all(|g| g.expected.is_some()), "unexpected gate failures: {gates:#?}");
+    let expected: BTreeSet<_> = gates.iter().map(|g| (g.node.as_str(), g.metric.as_deref().unwrap_or(""))).collect();
+    assert_eq!(expected, BTreeSet::from([("solid", "placeholder")]));
+    let _ = std::fs::remove_dir_all(&work);
+}
+
+#[test]
 fn parse_fills_defaults_and_rejects_unknown_types() {
     let reg = vernon_cli::registry();
     let g = vernon_cli::parse_graph(

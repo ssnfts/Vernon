@@ -1100,7 +1100,7 @@ impl AppState {
             for (id, path) in self.outside_writes() {
                 job.held.insert(
                     id,
-                    format!("held: writes '{path}', a path chosen by the opened file; trust the scene to allow it"),
+                    format!("held until the scene is trusted: it writes '{path}', a path chosen by the opened file"),
                 );
             }
         }
@@ -1498,6 +1498,59 @@ mod tests {
         assert_eq!(s.undo.len(), before + 2);
         s.set_param(b, "center", ParamValue::Float(f64::NAN), 20.0);
         assert_eq!(s.undo.len(), before + 2);
+    }
+
+    #[test]
+    fn importing_a_missing_or_unsupported_file_says_what_to_do() {
+        let mut s = state();
+        let missing = s.import(std::path::Path::new("no_such_folder/scan.obj")).unwrap();
+        let unsupported = s.import(std::path::Path::new("scan.xyzzy")).unwrap();
+        s.cook_all();
+        for id in [missing, unsupported] {
+            let e = s.error_of(id).expect("the import fails").to_string();
+            assert!(crate::hints::next_step(&e).is_some(), "no next step for: {e}");
+        }
+    }
+
+    /// Every hint rule is tied to a real failure: cook it, and fail here if a
+    /// reworded node error no longer finds its hint. Rules 3 (permission) and
+    /// 6 (program missing, reported as a note) have no error that cooks the
+    /// same way on every machine, so they are exempt by index.
+    #[test]
+    fn every_rule_matches_a_cooked_error() {
+        let dir = std::env::temp_dir().join(format!("vernon-hints-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let garbage = dir.join("broken.stl");
+        std::fs::write(&garbage, b"solid x
+facet normal 0 0 1
+outer loop
+vertex a b c
+").unwrap();
+        let mut s = state();
+        let no_path = s.create("geo.file_read").unwrap();
+        s.clear_selection();
+        let bad_ext = s.import(std::path::Path::new("scan.xyzzy")).unwrap();
+        let missing = s.import(&dir.join("absent.obj")).unwrap();
+        let broken = s.import(&garbage).unwrap();
+        s.clear_selection();
+        let unwired = s.create("geo.transform").unwrap();
+        s.clear_selection();
+        let b = s.create("geo.box").unwrap();
+        let w = s.create("geo.file_write").unwrap();
+        s.set_param(w, "path", ParamValue::Str(dir.join("out.obj").to_string_lossy().into()), 0.0);
+        s.trusted = false;
+        s.cook_all();
+        let cases = [(no_path, 0), (bad_ext, 1), (missing, 2), (w, 4), (unwired, 5), (broken, 7)];
+        let _ = b;
+        for (id, rule) in cases {
+            let e = s.error_of(id).unwrap_or_else(|| panic!("rule {rule}: the node did not fail")).to_string();
+            assert_eq!(crate::hints::rule_for(&e), Some(rule), "reworded error lost its hint: {e}");
+        }
+        let covered: Vec<usize> = cases.iter().map(|c| c.1).collect();
+        for i in 0..crate::hints::RULES.len() {
+            assert!(covered.contains(&i) || [3, 6].contains(&i), "rule {i} has no cooked case");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

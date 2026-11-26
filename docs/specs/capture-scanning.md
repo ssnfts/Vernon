@@ -45,7 +45,7 @@ Rules derived from the table:
 | STL (binary/ASCII) | none [M] | user unit, default mm |
 | OBJ, PLY, XYZ/ASC | none (PLY header may carry comments) [M] | user unit, default mm; ASC/XYZ = whitespace columns `x y z [nx ny nz] [r g b]` |
 | 3MF | `unit` attribute on the model; default millimeter [M] | honour the attribute; still run the size check |
-| glTF/GLB | metres by spec [M] | convert x1000 |
+| glTF/GLB | metres by spec, Y up, right-handed [M] | convert x1000; turn Y up into Z up (`(x, y, z) -> (x, -z, y)`) unless the `gltf_axes` parameter says `y_up`, and say which in the report; refuse Draco/meshopt compressed meshes; a phone-scan import keeps it non-metric until scaled |
 | LAS | via CRS metadata [M] | read scale/offset; unit from CRS, else ask |
 | Polycam exports (OBJ/DAE/FBX/GLTF/STL/USDZ meshes; LAS/PLY/PTS/XYZ/DXF clouds on paid tiers) | the help pages do not state units **[S]** | never assume; require explicit unit and run size check |
 

@@ -31,8 +31,10 @@ THIRD_PARTY_LICENSES.md). Version and build: see VERSION.txt.
        bin\vernon-cli.exe list                       (all node types)
        bin\vernon-cli.exe cook examples\bodykit_pipeline.vrn
    It prints one line per node. Exit code 0 = everything cooked and every
-   gate passed, 1 = a node failed, 3 = a report limit (gate) failed. The
-   example is expected to report 2 failing gates; that is by design.
+   gate passed or is listed as expected, 1 = a node failed, 3 = a report limit
+   (gate) failed that the scene does not list as expected. The example lists
+   5 expected failing gates (no wheels on the single panel, placeholder
+   solid mesher, CFD case written but not solved); it still exits 0.
    Outputs go to a "<file>.vrn.work" folder beside the .vrn file (use --work
    DIR to choose). Install the examples somewhere writable.
 

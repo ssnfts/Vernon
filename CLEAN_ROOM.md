@@ -57,6 +57,11 @@ processes**, not linked into Vernon, so Vernon's own code stays Apache-2.0:
 | Blender | GPL-2.0+ | not driven by any node. Run headless as a separate process to record golden references (`tests/golden/blender/`, script `scripts/golden/blender_subd.py`) |
 | FreeCAD (command line) | LGPL-2.1 ([project licence](https://github.com/FreeCAD/FreeCAD/blob/main/LICENSE)) | optional ignored STEP import validation test; runs as a separate process, no library linked or source copied |
 | Instant Meshes / QuadriFlow | BSD-3-Clause / MIT | not driven by any node: `surface` quad remeshing is native (`surface.quad_remesh`). Candidates for an optional external route; licences are as recalled and must be verified against each repository before a node drives either one |
+| Windows Subsystem for Linux (`wsl.exe`) | Microsoft, part of Windows (proprietary) | launches Linux-side tools: the AI model bridge (`crates/vernon-nodes-ai/src/bridge.rs`), the CFD `wsl` runner and the CalculiX/fTetWild wrappers; started as a separate process, nothing linked |
+| Python interpreter (in the user's model environment) | PSF-2.0 | runs the AI model scripts (`bridge.rs`); Vernon writes a request file and reads the result, nothing linked |
+| Docker CLI | Apache-2.0 (licence as recalled; verify against the `docker/cli` repository) | optional CFD `docker` runner (`crates/vernon-nodes-cfd/src/extproc.rs`); runs a user-chosen image as a separate container |
+| `nvidia-smi` | NVIDIA driver utility (proprietary) | read-only query of free GPU memory before an AI model run (`bridge.rs`) and GPU presence for photogrammetry (`colmap.rs`); output parsed, nothing linked |
+| `free` (procps-ng) | GPL-2.0-or-later (licence as recalled; verify) | read-only query of available RAM before an AI model run (`bridge.rs`), on Linux or inside WSL; output parsed, nothing linked |
 
 Vernon writes their input files and reads their output files. It does not
 copy their source code. Any new process-driven tool is added to this table,

@@ -1,0 +1,21 @@
+{
+  "display": 9,
+  "nodes": {
+    "0": { "type_id": "geo.box", "name": "bracket", "pos": [0, 0],
+           "params": { "size": [120.0, 32.0, 40.0], "center": [0.0, 0.0, 0.0], "divisions": 1 } },
+    "1": { "type_id": "fea.tet_mesh", "name": "solid", "pos": [0, 120], "inputs": [[0, 0]], "params": { "edge_len_mm": 8.0 },
+           "expect_fail": { "placeholder": "a box is meshed exactly by the built-in voxel mesher; an external tetrahedral mesher is needed only for curved parts" } },
+    "2": { "type_id": "fea.material_fdm", "name": "material", "pos": [220, 0], "params": { "preset": "asa" } },
+    "3": { "type_id": "fea.material_derate", "name": "derate", "pos": [220, 120], "inputs": [[2, 0]] },
+    "4": { "type_id": "fea.mount_sites", "name": "mount", "pos": [0, 240], "inputs": [[1, 0], null],
+           "params": { "model": "fixed_patch", "r_w_mm": 16.0, "count": 1, "site_a": [-60.0, 0.0, 0.0], "axis": [-1.0, 0.0, 0.0] } },
+    "5": { "type_id": "fea.load_aero", "name": "wing_load", "pos": [0, 360], "inputs": [[4, 1], null, null],
+           "params": { "mode": "net_force", "cla_m2": 0.05, "quantity": "downforce", "v_kmh": 200.0, "direction": [0.0, 0.0, -1.0] } },
+    "6": { "type_id": "fea.load_bump", "name": "bump", "pos": [220, 360], "inputs": [[4, 1], [3, 0]], "params": { "bump_g": 4.0 } },
+    "7": { "type_id": "fea.load_cases", "name": "cases", "pos": [0, 480], "inputs": [[5, 0], [6, 0], [4, 0]] },
+    "8": { "type_id": "fea.solve_linear", "name": "solve", "pos": [0, 600], "inputs": [[4, 1], [3, 0], [4, 0], [7, 0], null] },
+    "11": { "type_id": "fea.result_read", "name": "results", "pos": [0, 720], "inputs": [[8, 0], [4, 1], null] },
+    "9": { "type_id": "fea.safety_factor", "name": "safety", "pos": [0, 840], "inputs": [[11, 0], [11, 1], [3, 0], null, [4, 0]] },
+    "10": { "type_id": "fea.mount_report", "name": "reactions", "pos": [220, 840], "inputs": [[11, 1], [7, 0], [4, 0], null] }
+  }
+}

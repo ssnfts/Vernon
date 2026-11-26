@@ -958,6 +958,70 @@ pub fn heightfield_mesh(points: &[DVec3], cell: f64) -> Geometry {
     g
 }
 
+/// Native ball-pivot route of [`MvsMesh`]: no program is started. Only points
+/// that end up in a triangle are kept; the report states what was left out.
+fn ball_pivot_mesh(ctx: &CookContext, cloud: &Geometry, params: &Params, mut rep: Report) -> CookResult<Vec<Data>> {
+    let n = cloud.points.len();
+    let normals = cloud.point_attribs.vec3s("N").ok().filter(|v| v.len() == n && v.iter().all(|x| x.is_finite() && x.length_squared() > 1e-20));
+    let Some(normals) = normals else {
+        return Err(ctx.fail("ball pivoting needs a unit normal 'N' on every point; estimate normals first"));
+    };
+    let pts: Vec<[f64; 3]> = cloud.points.iter().map(|p| p.to_array()).collect();
+    let nrm: Vec<[f64; 3]> = normals.iter().map(|p| p.to_array()).collect();
+    let steps = params.int("ball_steps")?.clamp(1, 8) as usize;
+    let radii = crate::ball_pivot::auto_radii(&pts, params.float("ball_radius")?, steps);
+    if radii.is_empty() {
+        return Err(ctx.fail("the cloud has no measurable point spacing; set a ball radius"));
+    }
+    let (tris, st) = crate::ball_pivot::ball_pivot(&pts, &nrm, &radii);
+    let (open_edges, nonmanifold) = crate::ball_pivot::edge_counts(&tris);
+    // keep only the points that belong to a triangle, in input order
+    let mut used = vec![false; n];
+    for t in &tris {
+        for &k in t {
+            used[k as usize] = true;
+        }
+    }
+    let mut remap = vec![u32::MAX; n];
+    let mut keep: Vec<usize> = Vec::new();
+    for i in 0..n {
+        if used[i] {
+            remap[i] = keep.len() as u32;
+            keep.push(i);
+        }
+    }
+    let faces: Vec<Vec<u32>> = tris.iter().map(|t| t.iter().map(|&k| remap[k as usize]).collect()).collect();
+    let mut mesh = Geometry::from_polygons(keep.iter().map(|&i| cloud.points[i]).collect(), faces);
+    mesh.point_attribs = cloud.point_attribs.gather_all(&keep);
+    mesh.detail_attribs = cloud.detail_attribs.clone();
+    mesh.compute_normals();
+    if let Some(flagv) = util::metric_flag(cloud) {
+        set_metric_flag(&mut mesh, flagv);
+    } else {
+        rep.note(Severity::Warning, "the cloud is not marked metric; the mesh inherits the arbitrary scale");
+    }
+    rep.metric("faces", Metric::new(tris.len() as f64, "faces"));
+    rep.metric("vertices", Metric::new(keep.len() as f64, "points"));
+    rep.metric("points_used", Metric::new(keep.len() as f64, "points"));
+    rep.metric("points_unused", Metric::new(st.unused_points as f64, "points"));
+    rep.metric("boundary_edges", Metric::new(open_edges as f64, "edges"));
+    rep.metric("nonmanifold_edges", Metric::new(nonmanifold as f64, "edges"));
+    rep.metric("holes", Metric::new(st.holes as f64, "loops"));
+    rep.metric("ball_radius_first", Metric::new(radii[0], "mm"));
+    rep.metric("ball_radius_last", Metric::new(radii[radii.len() - 1], "mm"));
+    if tris.is_empty() {
+        rep.note(Severity::Error, "no triangle could be built: the points are farther apart than the largest ball allows; raise the ball radius or passes");
+    } else {
+        if st.holes > 0 || open_edges > 0 {
+            rep.note(Severity::Warning, format!("the surface is open: {open_edges} border edges in {} loops; the outer border of a partial scan counts here, interior ones are gaps in the sampling", st.holes));
+        }
+        if st.unused_points > 0 {
+            rep.note(Severity::Warning, format!("{} of {n} points are in no triangle and were dropped", st.unused_points));
+        }
+    }
+    Ok(vec![Data::geometry(mesh), Data::report(rep)])
+}
+
 /// Meshing of a dense cloud.
 pub struct MvsMesh;
 
@@ -967,7 +1031,9 @@ impl NodeOp for MvsMesh {
             .input(PortSpec::new("cloud", DataKind::Geometry))
             .output(PortSpec::new("mesh", DataKind::Geometry))
             .output(PortSpec::new("report", DataKind::Report))
-            .param(ParamSpec::choice("mesher", "Mesher", "poisson", &["poisson", "delaunay"]).help("Poisson needs point normals; Delaunay needs the dense workspace folder."))
+            .param(ParamSpec::choice("mesher", "Mesher", "poisson", &["poisson", "delaunay", "ball_pivot"]).help("Poisson needs point normals; Delaunay needs the dense workspace folder. Ball pivoting runs inside Vernon on a cloud with normals; it leaves holes where the sampling is sparse and reports them."))
+            .param(ParamSpec::float("ball_radius", "Ball radius", 0.0, 0.0, 100_000.0).unit("mm").help("First ball radius of the ball-pivot mesher. 0 takes 1.4 times the typical point spacing."))
+            .param(ParamSpec::int("ball_steps", "Ball passes", 3, 1, 8).help("Number of ball radii of the ball-pivot mesher; each is 1.4 times the one before, so later passes close larger gaps."))
             .param(ParamSpec::path("dense_workspace", "Dense workspace", &[],false).help("Dense workspace, or sparse model folder when sparse input is selected for the Delaunay mesher."))
             .param(ParamSpec::choice("delaunay_input_type","Delaunay input","dense",&["dense","sparse"]).help("Sparse uses the sparse model and its camera visibility for the CPU route; dense uses fused stereo results."))
             .param(ParamSpec::float("target_face_ratio", "Target face ratio", 0.1, 0.01, 1.0).help("Share of faces kept by the simplifier; 1 skips simplification."))
@@ -976,7 +1042,7 @@ impl NodeOp for MvsMesh {
         for p in tool_params() {
             info = info.param(p);
         }
-        info.help("Turns a dense point cloud into a triangle mesh by driving an external open-source photogrammetry program. When the program is not run, a simple height-field triangulation stands in so the pipeline keeps flowing; it only suits panel-like clouds seen from one side.")
+        info.help("Turns a dense point cloud into a triangle mesh by driving an external open-source photogrammetry program, or, with the ball-pivot mesher, inside Vernon from points with normals. When the program is not run, a simple height-field triangulation stands in so the pipeline keeps flowing; it only suits panel-like clouds seen from one side.")
             .emulates("Poisson and Delaunay surface reconstruction with mesh simplification")
             .external("COLMAP").spec("docs/specs/real-photogrammetry.md").implemented()
     }
@@ -991,8 +1057,11 @@ impl NodeOp for MvsMesh {
         rep.metric("input_points", Metric::new(cloud.point_count() as f64, "points"));
         let ratio = params.float("target_face_ratio")?;
         let mesher = params.str("mesher")?.to_string();
-        if !["poisson","delaunay"].contains(&mesher.as_str()){return Err(util::bad_choice(ctx,"mesher",&mesher));}
+        if !["poisson","delaunay","ball_pivot"].contains(&mesher.as_str()){return Err(util::bad_choice(ctx,"mesher",&mesher));}
         if !ratio.is_finite()||!(0.01..=1.0).contains(&ratio){return Err(ctx.fail("target face ratio must be finite and within 0.01 to 1"));}
+        if mesher == "ball_pivot" {
+            return ball_pivot_mesh(ctx, &cloud, params, rep);
+        }
         let input_ply = ctx.work_dir.join("cloud.ply");
         let meshed = ctx.work_dir.join("meshed.ply");
         let simplified = ctx.work_dir.join("meshed_simplified.ply");
@@ -1157,6 +1226,104 @@ mod tests {
         let steps=dense_steps(Path::new("images"),Path::new("model"),Path::new("dense"),&d);
         assert!(steps[2].windows(2).any(|a|a==["--input_type","photometric"]));
         assert!(steps[0].windows(2).any(|a|a==["--max_image_size","800"]));
+    }
+
+    fn sphere_cloud(n: usize, r: f64, keep: impl Fn(DVec3) -> bool) -> Geometry {
+        let ga = std::f64::consts::PI * (3.0 - 5f64.sqrt());
+        let (mut p, mut nn) = (Vec::new(), Vec::new());
+        for i in 0..n {
+            let z = 1.0 - 2.0 * (i as f64 + 0.5) / n as f64;
+            let rr = (1.0 - z * z).sqrt();
+            let d = DVec3::new(rr * (ga * i as f64).cos(), rr * (ga * i as f64).sin(), z);
+            if keep(d) {
+                p.push(d * r);
+                nn.push(d);
+            }
+        }
+        let mut g = Geometry::from_points(p);
+        g.point_attribs.set("N", vernon_core::AttribArray::Vec3(nn));
+        set_metric_flag(&mut g, true);
+        g
+    }
+
+    fn ball_params() -> Params {
+        let mut p = defaults(&MvsMesh);
+        p.set("mesher", ParamValue::Str("ball_pivot".into()));
+        p
+    }
+
+    #[test]
+    fn ball_pivot_mesher_reconstructs_a_sampled_sphere_and_reports_counts() {
+        let work = scratch("bp-sphere");
+        let r = 50.0;
+        let cloud = sphere_cloud(2000, r, |_| true);
+        let out = MvsMesh.cook(&ctx(&work), &[Some(Data::geometry(cloud))], &ball_params()).unwrap();
+        let rep = out[1].as_report().unwrap();
+        let m = |k: &str| rep.metrics[k].value;
+        assert!(rep.passes());
+        assert_eq!(m("points_used"), 2000.0);
+        assert_eq!(m("points_unused"), 0.0);
+        assert_eq!(m("boundary_edges"), 0.0);
+        assert_eq!(m("nonmanifold_edges"), 0.0);
+        assert_eq!(m("holes"), 0.0);
+        // closed triangulation of V points has 2V - 4 triangles
+        assert_eq!(m("faces"), 3996.0);
+        assert!(!rep.notes.iter().any(|(_, t)| t.contains("white-box")));
+        assert!(!work.join("cloud.ply").exists(), "native route starts nothing and writes nothing");
+        // error: every vertex lies on the sphere; the worst point of a face is its
+        // centroid, below the surface by at most the sagitta of the longest edge
+        let mesh = out[0].as_geometry().unwrap();
+        let mut worst = 0.0f64;
+        let mut longest = 0.0f64;
+        for (_, t) in mesh.triangles() {
+            let [a, b, c] = t.map(|k| mesh.points[k as usize]);
+            worst = worst.max((r - ((a + b + c) / 3.0).length()).abs());
+            longest = longest.max((a - b).length()).max((b - c).length()).max((c - a).length());
+        }
+        let bound = r - (r * r - longest * longest / 3.0).sqrt() + 1e-9;
+        assert!(worst <= bound, "centroid error {worst} > {bound}");
+        assert!(worst < 1.0, "{worst}");
+        // outward winding: signed volume near 4/3 pi r^3
+        let vol: f64 = mesh.triangles().iter().map(|(_, t)| {
+            let [a, b, c] = t.map(|k| mesh.points[k as usize]);
+            a.dot(b.cross(c)) / 6.0
+        }).sum();
+        let exact = 4.0 / 3.0 * std::f64::consts::PI * r.powi(3);
+        assert!(vol > 0.9 * exact && vol < 1.02 * exact, "{vol} vs {exact}");
+        assert!(mesh.validate().is_ok());
+    }
+
+    #[test]
+    fn ball_pivot_mesher_is_honest_about_the_border_of_a_partial_cloud() {
+        let work = scratch("bp-cap");
+        let cloud = sphere_cloud(4000, 50.0, |d| d.z > 0.0);
+        let n = cloud.points.len();
+        let out = MvsMesh.cook(&ctx(&work), &[Some(Data::geometry(cloud))], &ball_params()).unwrap();
+        let rep = out[1].as_report().unwrap();
+        assert!(rep.metrics["boundary_edges"].value > 10.0, "a cap has an open rim");
+        assert!(rep.metrics["holes"].value >= 1.0);
+        assert!(rep.metrics["points_used"].value + rep.metrics["points_unused"].value == n as f64);
+        assert!(rep.notes.iter().any(|(s, t)| *s == Severity::Warning && t.contains("surface is open")));
+        // the node's own count matches the mesh it returns
+        let mesh = out[0].as_geometry().unwrap();
+        let tris: Vec<[u32; 3]> = mesh.triangles().into_iter().map(|t| t.1).collect();
+        assert_eq!(crate::ball_pivot::edge_counts(&tris).0 as f64, rep.metrics["boundary_edges"].value);
+    }
+
+    #[test]
+    fn ball_pivot_mesher_needs_normals_and_a_workable_radius() {
+        let work = scratch("bp-bad");
+        let mut cloud = sphere_cloud(500, 20.0, |_| true);
+        cloud.point_attribs = Default::default();
+        assert!(MvsMesh.cook(&ctx(&work), &[Some(Data::geometry(cloud))], &ball_params()).is_err());
+        // a ball far smaller than the spacing builds nothing and fails the report
+        let cloud = sphere_cloud(500, 20.0, |_| true);
+        let mut p = ball_params();
+        p.set("ball_radius", ParamValue::Float(0.01));
+        let out = MvsMesh.cook(&ctx(&work), &[Some(Data::geometry(cloud))], &p).unwrap();
+        let rep = out[1].as_report().unwrap();
+        assert!(!rep.passes());
+        assert_eq!(rep.metrics["faces"].value, 0.0);
     }
 
     #[test]

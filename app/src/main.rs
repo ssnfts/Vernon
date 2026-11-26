@@ -4,6 +4,7 @@
 //! `viewport` and is unit-tested; `ui` draws it with egui.
 
 mod gate;
+mod hints;
 mod hotkeys;
 mod listener;
 mod registry;

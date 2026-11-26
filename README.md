@@ -90,7 +90,7 @@ a group of nodes that passes geometry and a numeric `Report` to the next.
 
 1. **Geometry basics.** Primitives, a test car panel, transforms, merge,
    mirror, normals, noise, and OBJ, STL, PLY, 3MF and XYZ files.
-2. **Capture.** Import scans (PLY, OBJ, STL, XYZ, E57, LAS) or run external
+2. **Capture.** Import scans (PLY, OBJ, STL, XYZ, E57, LAS, glTF/GLB) or run external
    photogrammetry (COLMAP). Scale bars and coded markers fix real-world
    scale; feature registration and a robust pose graph align several scans.
    *Reports:* registration residuals, marker scale error, coverage.
@@ -254,7 +254,7 @@ full record of every run, with its numbers, is in
 | `app/` | egui/eframe desktop app (binary `vernon`), including the agent chat panel |
 | `crates/vernon-core` | Geometry kernel, attributes, `Report`/`Metric`, materials, process helpers |
 | `crates/vernon-graph` | Node contract, parameters, graph cooking and caching, registry, gate rules |
-| `crates/vernon-io` | OBJ, STL, PLY, 3MF, XYZ, E57 and LAS readers and writers |
+| `crates/vernon-io` | OBJ, STL, PLY, 3MF, XYZ, E57, LAS and glTF/GLB readers and writers |
 | `crates/vernon-render` | Offscreen wgpu viewport renderer |
 | `crates/vernon-nodes-*` | One crate per stage: geo, capture, clean, surface, print, cfd, fea, solar (with flatten), perf, ai |
 | `crates/vernon-cli` | `list`, `info`, `cook`, `mcp`, `agent-guide`; integration and clean-room tests |

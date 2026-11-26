@@ -20,6 +20,8 @@ pub mod convergence;
 #[cfg(test)]
 mod diagnostic;
 mod extproc;
+#[cfg(test)]
+mod fast_seed;
 mod foam;
 mod loads;
 mod mesh;
@@ -29,6 +31,7 @@ mod reference_record;
 mod study;
 #[cfg(test)]
 mod tests;
+pub mod transient;
 mod tunnel;
 mod types;
 mod util;

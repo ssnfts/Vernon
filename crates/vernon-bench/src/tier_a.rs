@@ -241,14 +241,14 @@ fn file_round_trips() -> Case {
 }
 
 fn ahmed_published_window() -> Case {
-    const REF: &str = "Ahmed, Ramm & Faltin 1984, SAE 840300; ERCOFTAC case AC 1-05 https://kbwiki.ercoftac.org/w/index.php/AC_1-05 ; reference values 0.299 (25 deg) and 0.279 (35 deg) from a secondary table https://skill-lync.com/student-projects/project-1-flow-over-ahmed-body-7 (NOT the primary paper; confirm before quoting)";
+    const REF: &str = "Ahmed, Ramm & Faltin 1984, SAE 840300; ERCOFTAC case AC 1-05 https://kbwiki.ercoftac.org/w/index.php/AC_1-05 ; reference values 0.285 (25 deg, the paper's value as tabulated in https://doc.comsol.com/5.6/doc/com.comsol.help.models.cfd.ahmed_body/models.cfd.ahmed_body.pdf Table 1) and 0.260 (35 deg, UNCONFIRMED: no traceable public source; see docs/VALIDATION.md)";
     let dir = std::env::var_os("VERNON_AHMED_RESULTS").map(std::path::PathBuf::from).unwrap_or_else(|| std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scratch/wp9-ahmed"));
     if !dir.is_dir() {
         return skipped("A.cfd.ahmed_drag_window", TIER, "Ahmed body drag within published window", REF, "no completed Ahmed-body run on this machine (set VERNON_AHMED_RESULTS)");
     }
     run_case("A.cfd.ahmed_drag_window", TIER, "Ahmed body drag within published window (existing OpenFOAM runs, read-only)", REF, |ck| {
         let mut any = false;
-        for (label, angle, reference) in [("a25-g3", 25.0, 0.299), ("a35-g3", 35.0, 0.279)] {
+        for (label, angle, reference) in [("a25-g3", 25.0, 0.285), ("a35-g3", 35.0, 0.260)] {
             let Ok(text) = std::fs::read_to_string(dir.join(format!("{label}.json"))) else { continue };
             let v: serde_json::Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
             let cd = v["cd"].as_f64().ok_or("no cd")?;

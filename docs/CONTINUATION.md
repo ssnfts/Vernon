@@ -6,6 +6,109 @@ Sections are newest first. Older sections use the original machine's paths
 (C:\Users\mabdu\REA\...) and the old flat scripts/ layout, and are kept as
 evidence. For current commands use docs/SETUP.md and docs/CFD-RUNBOOK.md.
 
+## WP9 fast tier built and first one-hour test run (user: "tests complete in 1 hour max, build the plan and execute it, this PC, downloads approved"), 2026-11-11 to 12
+
+- **Contract:** the multi-week DDES schedule was rejected. A new draft
+  contract `docs/research/wp9-fast-tier-v1.json` (one-hour tests on ~0.5M-cell
+  bluff bodies under the v2 transient acceptance, references with published
+  method) sits beside v1, which is unchanged and unmet. Plan and record:
+  `docs/research/wp9-fast-tier-plan.md`.
+- **Downloads (approved, CC BY-SA 4.0, under `scratch/wp9-data/`, never
+  committed):** open slant-body dataset tables, case setup (U 1 m/s, nu
+  3.75e-7, SA-DDES, DEShybrid, ~20M cells, 80 CTU) and runs 1–5 STL; Windsor
+  dataset tables and run 1; road-car dataset tables. SHA-256s in the JSON.
+- **Code (uncommitted at the time of writing; checks running):**
+  `crates/vernon-nodes-cfd/src/transient.rs` (new: time-weighted statistics,
+  stop rule, per-step rule from the solver log, half-step check; 8 tests);
+  `foam.rs`/`case.rs` DDES recipe (DEShybrid momentum convection, limited
+  k/omega gradients, turbulence on every outer loop, fixed-step mode,
+  averaged fields, `PBiCGStab`/`DILU` for U/k/omega after a floating-point
+  exception in the Gauss-Seidel smoother); `tests.rs` harness
+  `real_openfoam_fast_tier_run` (environment-driven, one-hour budget, segments,
+  reference comparison) plus unit tests; `docs/ROADMAP.md` corrected. Runs go
+  through `scratch/wp9-fast/run-fast.ps1`, outside the runner (a `wp9-fast`
+  profile is a follow-up).
+- **Runs:** `-a` crashed at the first momentum solve (recipe defect, fixed);
+  `-b` was stopped: the slant body had been rotated 180° by a wrong
+  `nose_direction` (steady Cd 0.51; fixed with a unit test);
+  **`fast-slant25-20261112-c` completed in 49.8 min: gate not passed (15 CTU
+  cap), time-weighted Cd 0.369 ± 0.008 against the experiment's 0.285
+  (+29.5%)**; per-step rule met on all 1,501 steps; ESS 9.6 against 50; the
+  steady start on the same grid gave 0.391 (October: 0.394).
+- **User decision "Reported interval" (2026-11-12):** the fast tier delivers
+  the time-weighted mean with its 95% interval; ESS and the standard error
+  are reported, not gated (`TransientParams::fast_tier`; the v2 limits stay
+  for the road-car contract). Under that rule: **`-d` (25°)** budget stop at
+  12 CTU, Cd 0.336 ± 0.017, still falling 2.4%/CTU (0.388 → 0.307 over the
+  run; `-c` had held 0.375); **`-e` (35°)** budget stop at 12 CTU, Cd
+  0.332 ± 0.022 against 0.260, falling from a 0.49 steady seed to 0.286 at
+  13 CTU and still dropping. Per-step rule met on every step in both. The
+  time-resolved solution leaves the steady state over 10–15 CTU toward the
+  measured drag; the hour is spent inside that transition. Next piece of
+  work: seed each hour from the previous run's preserved checkpoint (the
+  Stage 2 restart mechanism) so the wash-out is already done. Details and
+  per-CTU histories in the plan's section 6.
+- **Checkpoint seeding (user: "Checkpoint seeding", 2026-11-12/13).** The
+  hash-verified checkpoint with identity checks (`fast_seed.rs`,
+  `diagnostic/arms.rs` generalised, `transient::Continuation`) was written by
+  a parallel session in this checkout; this session wired it into the
+  harness (preserve-only mode, seeded start, checkpoint before the half-step)
+  and checkpointed `-d` and `-e` at 14 CTU. `-f` (seeded) was starved by a
+  saturated external E: drive (other processes; 5.3 s/step) and timed out;
+  working cases moved to the internal disk (`C:\Users\mabdu\vernon-fast`).
+  **First passing fast-tier rows:** `-g` (25°, seeded from `-d`, 24.6 min):
+  Cd 0.304 ± 0.003 vs 0.285 (+6.7%, interval overlaps the 5% band); `-h`
+  (35°, seeded from `-e`, 24.4 min): Cd 0.303 ± 0.005 vs 0.260 (+16.7%, no
+  overlap). Both: stationary over 14–21 CTU, per-step rule on every step,
+  half-step check agrees. The experimental 25° > 35° ordering is not
+  reproduced (equal within intervals). Checkpoints at 21 CTU are on C:.
+- **Another seeded hour (2026-11-13):** `-i` (25°, from `-g`): PASS, Cd
+  0.312 ± 0.002 over 21–28 CTU (+9.6%), half-step agrees; two consecutive
+  stationary windows (0.304, 0.312) differ by about four standard errors, so
+  a 7 CTU window understates the spread: Cd ≈ 0.30–0.31 on this grid. `-j`
+  (35°) never ran: WSL hung (`CreateInstance/ERROR_TIMEOUT`, VM idle); a
+  `wsl --shutdown` restart awaits the user. Fixes: `assess` now rounds the
+  boundary like `next_segment_end_s` (`-i` skipped its 6 CTU check), and the
+  harness reports a solver that never started instead of panicking.
+- **35° hour rerun (2026-11-13, after WSL recovered):** the WSL image is on
+  the external USB drive E: (via the `REA\tools` junction); with E: saturated
+  by another session's build no restart helped, and the user chose to wait.
+  Once E: was idle: `-k` (35°, from `-h`): PASS, Cd 0.302 ± 0.002 over 21–27
+  CTU (+16.0% against 0.260), half-step agrees; stable against `-h`'s 0.303.
+  Fast-tier summary on the 0.5M-cell half model: both slant bodies Cd ≈
+  0.30–0.31; +7–10% at 25°, +16% at 35°; the experimental 25° → 35° drop is
+  not reproduced. The remaining gap is setup and grid, not averaging.
+- **Setup and grid (user, 2026-11-14).** The 0.285 / 0.260 slant references
+  turned out to be unsourced (the spec forbids remembered values; ERCOFTAC
+  gives conditions but no Cd), and our stilted bodies carry 14–15% of their
+  drag on the stilts. The open slant-body dataset's own validation runs are a
+  sourced, same-method reference: the classic 25° body without stilts, full
+  body, SA-DDES, 80 CTU, Cd 0.300 / 0.292 / 0.286 / 0.279 at 3.6M / 10.1M /
+  21.4M / 35.1M cells (files under `scratch/wp9-data/ahmedml/validation/`).
+  That body through our pipeline (harness option `VERNON_FAST_KEEP_CLEARANCE`
+  keeps its 50 mm clearance): fresh hour `-a` not passed (still drifting at
+  the 15 CTU cap), seeded hour `-b` **PASS, Cd 0.267 ± 0.007, −4.3% against
+  the 35M-cell value**, half-step agrees. Fixes on the way: one rounding
+  allowance `BOUNDARY_CTU = 1e-6` (a first `-a` looped 14 times on a zero-
+  length segment and was stopped), and the harness stops on a plan that would
+  not advance. WSL dropped once more mid-run (image on E:). Next useful test:
+  a 1M-cell grid step on this body.
+- **Grid step and WSL move (2026-11-14/15).** The Vernon WSL image moved
+  from the external E: drive to `C:\WSL\Vernon-Ubuntu-24.04` (user-approved;
+  `wsl --manage --move`, 100 s; only that distribution stopped). The harness
+  now checkpoints a budget-stopped run's last complete write. On the
+  0.9M-cell mesh (dx0 0.0708) the validation body settles near **Cd
+  0.24–0.245** (`-d` 0.241 over 15–21 CTU, half-step check failed; `-e`
+  0.245 over 21–29, still trending): lower than the 0.5M mesh's 0.267 and
+  12–14% under the dataset's 0.279, while the dataset's refinement converges
+  from above. The 0.5M agreement does not survive the grid step. Likely
+  causes: the fixed Δt = CTU/100 (Courant peak 11 → 20, half-step
+  disagreement) and wall-function y+ (body mean 72 → 55, min ~2). Next work
+  is setup, not averaging: Δt from a wake Courant target, layer settings for
+  y+, then a full body. Details in the plan's section 6.
+- Nothing was launched through the runner; no gate was lowered; no run was
+  relabelled.
+
 ## WP9 Stage 2 investigation: steady gate unreachable; DDES route planned (2026-11-10 to 11)
 
 - **Stage 2 rerun** `wp9-solve-fastback-20261110-a`:

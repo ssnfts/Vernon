@@ -4,6 +4,7 @@
 | Document | For |
 |---|---|
 | [../README.md](../README.md) | What Vernon does, step by step, and how to build it |
+| [guide/README.md](guide/README.md) | User guide for first-time users, and three tutorials on the example scene |
 | [PLAN.md](PLAN.md) | The project plan: goal, intended users, the free-software landscape, local-AI roadmap, road to a release |
 | [SETUP.md](SETUP.md) | A new Windows PC: toolchain, build, WSL/OpenFOAM, DrivAer data |
 | [CFD-RUNBOOK.md](CFD-RUNBOOK.md) | The next CFD validation stages (0–3) and their run commands |

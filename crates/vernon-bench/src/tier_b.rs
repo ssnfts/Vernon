@@ -20,6 +20,11 @@ fn env_path(var: &str) -> Option<PathBuf> {
     std::env::var_os(var).map(PathBuf::from).filter(|p| p.exists())
 }
 
+/// A program under the machine's Program Files folder (from `%ProgramFiles%`, never a fixed drive).
+fn program_files(rel: &str) -> Option<PathBuf> {
+    std::env::var_os("ProgramFiles").map(|d| PathBuf::from(d).join(rel)).filter(|p| p.is_file())
+}
+
 fn on_path(names: &[&str]) -> Option<PathBuf> {
     let path = std::env::var_os("PATH")?;
     for dir in std::env::split_paths(&path) {
@@ -52,7 +57,7 @@ impl Rng {
 
 fn cloudcompare() -> Case {
     const REF: &str = "CloudCompare CLI (GPL-2.0+, separate process) C2M_DIST; command as in tests/golden/README.md";
-    let Some(exe) = env_path("VERNON_CLOUDCOMPARE").or_else(|| on_path(&["CloudCompare"])).or_else(|| Some(PathBuf::from(r"C:\Program Files\CloudCompare\CloudCompare.exe")).filter(|p| p.is_file())) else {
+    let Some(exe) = env_path("VERNON_CLOUDCOMPARE").or_else(|| on_path(&["CloudCompare"])).or_else(|| program_files(r"CloudCompare\CloudCompare.exe")) else {
         return skipped("B.cloudcompare.c2m", TIER, "Cloud-to-mesh deviation vs CloudCompare", REF, "CloudCompare not found (set VERNON_CLOUDCOMPARE)");
     };
     run_case("B.cloudcompare.c2m", TIER, "Cloud-to-mesh deviation vs CloudCompare (live run)", REF, |ck| {
@@ -198,7 +203,7 @@ fn colmap_sample() -> Case {
 
 fn slicer_gcode() -> Case {
     const REF: &str = "OrcaSlicer (AGPL-3.0) / PrusaSlicer, separate process; G-code accepted by print.flavour_check";
-    let orca = env_path("VERNON_SLICER").or_else(|| on_path(&["orca-slicer", "prusa-slicer-console", "prusa-slicer"])).or_else(|| Some(PathBuf::from(r"C:\Program Files\OrcaSlicer\orca-slicer.exe")).filter(|p| p.is_file()));
+    let orca = env_path("VERNON_SLICER").or_else(|| on_path(&["orca-slicer", "prusa-slicer-console", "prusa-slicer"])).or_else(|| program_files(r"OrcaSlicer\orca-slicer.exe"));
     let Some(exe) = orca else {
         return skipped("B.slicer.flavour_check", TIER, "Slicer G-code accepted by flavour_check", REF, "no slicer found (set VERNON_SLICER)");
     };

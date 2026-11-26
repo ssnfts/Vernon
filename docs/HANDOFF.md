@@ -6,6 +6,57 @@ of done. This document lists the remaining work as ordered **work packages
 (WP)**. Do them in order, one commit each. Every WP ends with the full
 definition-of-done check from `AGENTS.md`.
 
+## Remaining work and owners — 2026-11-12
+
+This section is the current plan. The checkpoints below it are history.
+WP1–WP8 and WP10–WP14 are done; WP9 is unmet, WP15 and WP16 are open, and the
+`docs/ROADMAP.md` items are not wired into their nodes. The newest state of
+WP9 is the first section of `docs/CONTINUATION.md`.
+
+The work is split between role agents. Their definitions are in
+`.claude/agents/` on the development PC (that folder is git-ignored, so on
+another machine recreate them from this table). The main session is the
+**Director**: it briefs, reviews diffs and merges, and writes no bulk code.
+A **lead** is opened for its phase and closed at the end of it.
+
+| Phase | Lead | Task | Agent | Done when |
+|---|---|---|---|---|
+| 1 Reliability | `reliability-lead` | **Done 2026-11-13** (`25bb876`, `aed6f93`): checkpoint warm start for the one-hour transient tier; seeded 25° and 35° rows pass the fast-tier rule (Cd +6.7% and +16.7% against experiment; the measured 25° > 35° ordering is not reproduced) | `cfd-engineer` | 25° and 35° slant-body Cd intervals reported from seeded runs; no gate lowered |
+| 1 | | `wp9-fast` runner profile, transient run node, CFD report into `perf.vehicle` | `cfd-engineer` | example scene cooks with CdA from the CFD report; placeholder guard kept |
+| 1 | | Shipped CFD claim in `docs/VALIDATION.md` (validated against reported-only) | `reliability-lead` | Owner signs off the wording |
+| 1 | | WP15 golden cases under `tests/golden/` | `validation-engineer` | each case has a test at the spec tolerance |
+| 1 | | Real E57, real LAS, fTetWild on a scanned panel | `validation-engineer` | results recorded; readers fixed if wrong |
+| 1 | | **Done 2026-11-13** (`1bb0cc7`, `fe6bf59`): flatten F2 (b)(c)(d) met at the spec bounds and un-ignored; FEA pressure, spring-pad and temperature-dependent stiffness agree with CalculiX. Open: thermal-strain comparison (so `estimate_only` stays), stretch/compress factors in the constrained solver | `numerics-engineer` | the `#[ignore]`d spec tests pass un-ignored |
+| 2 Product | `product-lead` | Wire `docs/ROADMAP.md` items 1–7 and the three extra modules into nodes. **Partly done 2026-11-14** (`fd4ee1b`, `099b203`, `a537e60`): items 5 (snap forces), 1 (dialect table) and 2 (tuft photos, PGM/PPM) wired. Found: only 3 white-box nodes remain (`print.script_bridge`, `cfd.mesh_build`, `cfd.solve_steady`); the cut, partition and island nodes are already implemented, so item 6 adds capability rather than removing a placeholder. Round 2 (`037c949`, `4645718`, `117faa6`, `f6a85bd`): `ball_pivot` wired as a native mesher on `capture.mvs_mesh`; `island_select` wired into `print.cut_region_select` (largest island, area threshold); `qem_simplify`, `polyline_project` and `partition_search` measured against the existing nodes and not adopted (numbers in ROADMAP). Open: items 3–4 (slicer profile keys, script bridge: need the external slicer), `convergence.rs` comparison (CFD crate, other session) | `node-wiring-engineer` | white-box warning gone, metrics checked end to end, `docs/NODES.md` regenerated |
+| 2 | | First run, sample scenes, failure messages, chords, in-app agent. **Partly done 2026-11-14** (`486fbce`, `957ec73`): start panel on an empty scene (demo / import / open), import size and unit-mix-up check, "Next:" lines under node errors and in the Gate Dashboard. Round 2 (`75e2a05`, `58fa30e`): every hint rule is tested against a real cooked error (found and fixed a hint that never matched the untrusted-write hold); start panel kept inside the viewport and narrowed in small windows (checked by tests only, not by screenshot). Open: none of the 22 reserved chords has its feature yet, so none is bound; trust prompt text unchanged | `app-ux-engineer` | a new user cooks the demo and imports a file without the docs |
+| 3 Release (WP16) | `release-lead` | CI, `deny.toml`, package and self-test, `CHANGELOG.md`, stale-branch list. **Done 2026-11-14** (`adf225d`, `f0eb528`, `544eacc`, `fe6a5ee`): cargo-deny and `scripts/release/check-deps.ps1` pass; `dist/Vernon-0.1.0-win64.zip` 18.6 MB, self-test 56/56, no MinGW DLLs needed; CHANGELOG v0.1.0-alpha. Unverified: the CI workflow has never run on GitHub. Merged branches the Owner may delete: `claude/ai-models`, `claude/wp14-consistency`, `qwen/t07-flatten-constraints` (the last two need `git worktree remove` first) | `release-engineer` | package self-test passes on a clean machine |
+| 3 | | Trademark, licence and external-program audit. **Done 2026-11-14:** no licence or build-script findings (440 crates); fixed: five spawned programs added to the `CLEAN_ROOM.md` table, fixed `C:\Program Files` paths in `vernon-bench` replaced by `%ProgramFiles%`. **Owner decisions before a public release:** (1) vendor names in shipped docs (`docs/NODES.md` emulates column, `docs/VALIDATION.md` competitor table, committed `bench/results/`): keep as documentation or move to `docs/research/`; part of the clean-room legal review; (2) the Owner's user name and folder paths in 12 committed docs (including `AGENTS.md` and `docs/CONTINUATION.md`), and the author email in every commit of the git history, become public on push | `clean-room-auditor` | written findings, none open |
+| 4 Market | `market-lead` | User guide and three tutorials. **Done 2026-11-14** (`bfb6420`): `docs/guide/` (guide, scan-to-print, aero check, mount strength), numbers from real cooks. Found: the example has no FEA solve or safety-factor node, so the strength tutorial stops at the deck; the example's CFD mesh first layer (2.41 mm, y+ ≈ 169) disagrees with its refinement plan (0.43 mm, y+ 30); `vernon-cli cook` prints file paths with a literal `\n`; GUI steps checked against source, not clicked | `docs-writer` | each tutorial reproduces from a shipped example |
+| 4 | | Positioning brief, competitor table, landing page, demo script, launch posts. **Drafted 2026-11-14** (`304257b`, `dd8c495`): `docs/launch/`; every claim traced to VALIDATION.md or a cook; quick bench run confirmed (12/13 Tier A, the steady CFD drag check fails as documented). Placeholders `[repo URL]`, `[demo video URL]`; five competitor price facts "not found"; demo narration not checked on screen | `launch-specialist` | drafts approved by the Owner; nothing posted |
+| 4 | | Commercial model proposal for an Apache-2.0 core. **Drafted** in `docs/launch/commercial-options.md` (recommendation: sponsorship and consulting first, signed installers later). Owner decisions: model, "Vernon" name/trademark check, code-signing certificate, launch channels | `market-lead` | Owner picks one |
+| all | | Definition of done before every commit | `verifier` | pass or fail with a log path |
+
+Phase 2 may overlap Phase 1 because it touches other crates. Phase 4 starts
+once the Phase 1 claim wording is signed.
+
+**Owner only** (agents prepare, never perform): clean-room legal review;
+product name and trademark check; pricing and commercial model; creating the
+public repository, pushing, tagging, publishing; running proprietary reference
+tools for goldens; CFD runs longer than one hour; deleting branches.
+
+**Usage rules:**
+1. At most two agents at once, never in the same crate.
+2. Briefs under 300 words: task, files, done-criteria. No pasted logs.
+3. Reports under 200 words plus file paths. Logs stay on disk.
+4. Checks go through `scripts/verification/start-verification.ps1`; the exit
+   status decides. Read a log only when it failed, and only the failing part.
+5. Solver runs are background jobs with no polling.
+6. Two failures on one task go to the lead, not to a third retry.
+7. One commit per task, after the definition of done.
+8. Top-tier models are for the Director, `reliability-lead`, `cfd-engineer`
+   and `numerics-engineer`. Leads and most specialists run mid-tier;
+   `verifier`, `clean-room-auditor` and `docs-writer` run the smallest model.
+
 ## Progress — 2026-10-30 (WP8)
 
 Current continuation checkpoint2026-11-03:WP9 is still incomplete. The
@@ -493,7 +544,7 @@ then the external solvers, then UI polish, then release.
     the repo, translates Windows paths. Run the `needs fTetWild` tests with that
     folder on PATH. They mesh a box, a curved prism and a non-convex prism at
     order 2, all within 1% volume. The node is implemented; its voxel fallback
-    stays flagged. This has not been tried on a scanned car panel.
+    stays flagged. Tried on a scanned, fitted and thickened panel: see "Real-file checks" in `docs/VALIDATION.md`.
 - **`solve_linear`:** DONE, including the external cross-check. Native reference
   solver for C3D4 and C3D10.
   - Element stiffness from linear/quadratic tet shape functions; orthotropic
@@ -514,7 +565,14 @@ then the external solvers, then UI polish, then release.
     `cargo test -p vernon-nodes-fea cantilever -- --ignored`: tip deflection and
     mid-span von Mises agree within 2% for C3D10, C3D4, an anisotropic card, a
     rotated card and gravity; the three newer C3D10 cases also compare all six
-    mid-span stress components. Not compared: pressure, spring pads, temperature.
+    mid-span stress components. Also compared since (C3D10, printed card,
+    six mid-span stress components, tip and von Mises): a 0.025 MPa top-face
+    pressure (tip 3.7701 mm both), spring pads at the root (10.7361 mm both,
+    against 9.9661 mm fixed) and a 23-80 degC temperature field with a
+    retention table halving the stiffness at 80 degC (11.6666 mm both);
+    all agree to the printed four decimals. The temperature case covers
+    temperature-dependent stiffness only: neither solver gets an expansion
+    card, so thermal strain is still not compared.
   - Ten-node results can pass gates. Safety factors keep `estimate_only` (also on
     `fea.mount_report`) for four-node reference results, which read low, and for
     models with `temp_c`, because the built-in solver has no thermal strain.
@@ -537,20 +595,28 @@ pieces are flattened separately, each with an explicit note and no NaNs.
 `outside = down` mirrors the pattern, and the strain, area and fold checks now
 run on the un-mirrored pattern (`flatten.conformal_map` too), so a mirrored
 pattern is no longer reported as folded (a 264-triangle cap used to report 264
-flipped); a note says so. Stretch-only and compress-only are weights of 10000,
-not hard constraints, and the rigid and floppy materials still run the same
-energy (both said in the report). Spec F2 (cap R 1000 mm, half angle 30 deg,
-tested on 10 rings x 64 sectors): (a) holds: the free flatten changes the area
-by -0.043 % and the boundary by +3.496 %, above the isoperimetric minimum of
-3.454 % at that area (the minimum at a preserved area is 3.476 % on this mesh,
-3.53 % on the smooth cap); (e) holds: mean boundary strain 2.4365 % with
-[10,10,1,1] against 3.4958 % with [1,1,1,1]. Not met, and left as `#[ignore]`d
-tests with the spec bounds unchanged: (b) `preserve_boundary` (edge weight 10)
-leaves the boundary 2.4365 % longer, not within 0.1 %, with area -2.078 %
-instead of <= -6.5 %; (c) stretch-only has 79.82 % of the area compressed above
-the 0.01 % dead-band (worst 0.1446 %; area +2.31 %, which is >= 0); (d)
-compress-only has 9.77 % stretched (worst 0.0174 %; area -6.668 %, which is
-<= 0). No fold-free line search yet. `perf.tuft_analysis` reads a CSV
+flipped); a note says so. Spec F2 (cap R 1000 mm, half angle 30 deg,
+tested on 10 rings x 64 sectors) now holds in full. Stretch-only,
+compress-only and preserve-boundary are hard constraints in the constrained
+local/global solver of `flatten_constraints.rs` (ADMM split per triangle and
+a dual per boundary edge after Overby et al. 2017, material projections
+blended as in Projective Dynamics, Bouaziz et al. 2014), with a last uniform
+scale that makes them exact; every global step, in that solver and in the
+plain ARAP, is shortened if it would fold a triangle (Smith and Schaefer
+2015). The floppy material runs its own blend (edge 1, area 0.1, shear 0.3,
+Vernon weights); rigid keeps the plain edge energy, not the spec's proposed
+area 1 / edge 0.3, so the measured ARAP figures above stand. Measured:
+(a) free flatten area -0.043 %, boundary +3.496 %, above the isoperimetric
+minimum of 3.454 % at that area (3.476 % at a preserved area on this mesh,
+3.53 % on the smooth cap); (b) `preserve_boundary` boundary change 0.0000 %
+(bound 0.1 %), area -6.681 % (bound <= -6.5 %), final scale 1.0000000;
+(c) stretch-only compression share 0 % (worst 0.0000 %), area +2.383 %,
+final scale 1.0002288; (d) compress-only stretch share 0 %, area -6.681 %,
+final scale 0.9999974; (e) mean boundary strain 2.4365 % with [10,10,1,1]
+against 3.4958 % with [1,1,1,1]. The stretch/compress factors and the
+`*_mostly` presets still act as reweighted edge energies in the plain ARAP
+only; the constrained solver ignores them (a warning says so), and
+preserve-boundary does not combine with a one-sided mode (warning). `perf.tuft_analysis` reads a CSV
 (`x,y,z,angle_deg`, optional `id` and `flow_deg`) or the JSON series and
 classifies each tuft into the spec's classes: reversed if the mean angle is
 more than `reversed_deg` off the flow, otherwise separated if it is more than
@@ -632,7 +698,8 @@ refused with a clear error; no decoder was added and no dependency changed.
 - **Formats:** `Format::E57` and `Format::Las` in `from_path`, `sniff` and
   `extensions()`; `write_extensions()` and `can_write()` keep them out of
   writing, and the writers refuse them before touching any file.
-- **Not proven against real files:** the tests build small E57 and LAS files
+- **Real files (checked later):** see "Real-file checks" in `docs/VALIDATION.md`: a real E57 and two real LAS files match their headers.
+- **Previously not proven against real files:** the tests build small E57 and LAS files
   inside the test from the public format descriptions (the CRC-32C matches the
   standard check value `0xE3069283`), so the page-checksum byte order (big
   endian) and field layouts are only checked against our own builder. Try a

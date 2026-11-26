@@ -172,6 +172,8 @@ fn setup_info() -> NodeTypeInfo {
         .param(ParamSpec::float("write_interval_s", "Transient write interval", 0.05, 0.0001, 100.0).unit("s").help("Transient recipe only: physical time between field write-outs, in seconds."))
         .param(ParamSpec::int("outer_correctors", "Transient outer correctors", 2, 1, 10).help("Transient recipe only: outer pressure-velocity loops per time step."))
         .param(ParamSpec::int("correctors", "Transient pressure correctors", 2, 1, 10).help("Transient recipe only: pressure corrections per outer loop."))
+        .param(ParamSpec::choice("time_step_mode", "Transient time step", "adjustable", &["adjustable", "fixed"]).help("Transient recipe only. adjustable: the solver shrinks or grows the step to the Courant limit. fixed: the first time step is kept for the whole run, so a half-step check can be made against it."))
+        .param(ParamSpec::float("average_from_s", "Transient averaging start", 0.0, 0.0, 100.0).unit("s").help("Transient recipe only: physical time at which the running averages of velocity and pressure start, normally the end of the wash-out. 0 averages from the start."))
         .help("Writes the two-equation RANS case (k-omega SST, wall functions) by default: initial and boundary fields, transport and turbulence settings, schemes, solver controls, force and force-coefficient monitors, porous and rotating-frame zones. Flag separated-flow features to have the report and the force coefficients warn that steady RANS is only a trend there. The solver recipe setting can instead write a transient detached-eddy case to run outside this graph.")
         .emulates("CFD GUI front end: steady solver case writer")
         .spec("docs/specs/automotive-cfd.md")
@@ -303,6 +305,12 @@ fn setup_cook(ctx: &CookContext, ins: &[Option<Data>], p: &Params) -> CookResult
                 write_interval_s: p.float("write_interval_s")?,
                 outer_correctors: p.int("outer_correctors")?.clamp(0, 1000) as u32,
                 correctors: p.int("correctors")?.clamp(0, 1000) as u32,
+                fixed_step: match p.str("time_step_mode")? {
+                    "fixed" => true,
+                    "adjustable" => false,
+                    other => return Err(ctx.fail(format!("unknown time step mode '{other}'"))),
+                },
+                average_from_s: p.float("average_from_s")?,
             };
             t.validate().map_err(|e| ctx.fail(e))?;
             Some(t)
@@ -461,6 +469,8 @@ fn setup_cook(ctx: &CookContext, ins: &[Option<Data>], p: &Params) -> CookResult
             "delta": "maxDeltaxyz", "time_basis": "seconds", "end_time_s": t.end_time_s, "delta_t_s": t.delta_t_s,
             "max_delta_t_s": t.max_delta_t_s, "max_co": t.max_co, "write_interval_s": t.write_interval_s,
             "outer_correctors": t.outer_correctors, "correctors": t.correctors,
+            "time_step_mode": t.time_step_mode(), "average_from_s": t.average_from_s,
+            "momentum_convection": "DEShybrid linear / linearUpwind", "turbulence_every_outer_loop": true,
             "evidence": "written by the case writer; no accuracy validation",
         }),
         None => serde_json::Value::Null,
@@ -547,8 +557,12 @@ fn setup_cook(ctx: &CookContext, ins: &[Option<Data>], p: &Params) -> CookResult
         report
             .metric("end_time_s", Metric::new(t.end_time_s, "s"))
             .metric("delta_t_s", Metric::new(t.delta_t_s, "s"))
-            .metric("max_delta_t_s", Metric::new(t.max_delta_t_s, "s"))
-            .metric("max_co_requested", Metric::new(t.max_co, "-"));
+            .metric("average_from_s", Metric::new(t.average_from_s, "s"));
+        if !t.fixed_step {
+            report
+                .metric("max_delta_t_s", Metric::new(t.max_delta_t_s, "s"))
+                .metric("max_co_requested", Metric::new(t.max_co, "-"));
+        }
         report.note(Severity::Warning, "transient detached-eddy case written, not run: the settings are starting values, no achieved Courant number, statistical duration or accuracy is established, and the steady run node refuses this case");
         if domain.half_model {
             report.note(Severity::Warning, "a symmetry plane suppresses asymmetric wake modes; use the full car for a detached-eddy run");
@@ -1186,10 +1200,42 @@ mod tests {
         );
         assert!(solution.contains("pFinal") && solution.contains("(U|k|omega)Final"));
         assert!(
+            solution.contains("solver          PBiCGStab;\n        preconditioner  DILU;") && !solution.contains("symGaussSeidel"),
+            "{solution}"
+        );
+        assert!(
             solution.contains("nOuterCorrectors 3;") && solution.contains("nCorrectors     4;")
         );
         let schemes = read(&case, "system/fvSchemes");
         assert!(schemes.contains("default         backward;") && !schemes.contains("steadyState"));
+        // Hybrid RANS-LES numerics (2026-11-11 fast-tier recipe): the
+        // blended central/upwind convection the open slant-body dataset ran
+        // with, limited turbulence gradients (D5), turbulence solved on every
+        // outer loop with outer residual control, and averaged fields.
+        assert!(
+            solution.contains("turbOnFinalIterOnly false;")
+                && solution.contains("outerCorrectorResidualControl")
+                && solution.contains("\"(U|k|omega)\"\n        {\n            tolerance       1e-06;\n            relTol          0.1;"),
+            "{solution}"
+        );
+        assert!(
+            schemes.contains("div(phi,U)      Gauss DEShybrid linear linearUpwind grad(U) delta 0.65 30 ")
+                && schemes.contains(" 0 1 1;\n")
+                && !schemes.contains("div(phi,U)      Gauss linear;"),
+            "{schemes}"
+        );
+        assert!(
+            schemes.contains("grad(k)         cellLimited Gauss linear 1;")
+                && schemes.contains("grad(omega)     cellLimited Gauss linear 1;")
+                && schemes.contains("div(phi,k)      Gauss linearUpwind grad(k);")
+                && schemes.contains("div(phi,omega)  Gauss linearUpwind grad(omega);"),
+            "{schemes}"
+        );
+        assert!(
+            control.contains("fieldAverage1") && control.contains("timeStart       0;") && control.contains("prime2Mean      on;"),
+            "{control}"
+        );
+        assert_eq!(m_time_step_mode(&case), "adjustable");
         let script = read(&case, "Allrun.solve");
         assert!(
             script.contains("pimpleFoam")
@@ -1226,6 +1272,42 @@ mod tests {
             "{r:?}"
         );
         assert!(!r.metrics.contains_key("solve_done"));
+    }
+
+    fn m_time_step_mode(case: &Path) -> String {
+        manifest(case).unwrap()["transient"]["time_step_mode"].as_str().unwrap().to_string()
+    }
+
+    #[test]
+    fn transient_fixed_step_mode_fixes_the_step_and_starts_averaging_later() {
+        let (case, r) = ddes(
+            &[
+                ("end_time_s", ParamValue::Float(1.0)),
+                ("delta_t_s", ParamValue::Float(4e-4)),
+                ("max_delta_t_s", ParamValue::Float(4e-4)),
+                ("time_step_mode", ParamValue::Str("fixed".into())),
+                ("average_from_s", ParamValue::Float(0.25)),
+            ],
+            "ddes-fixed",
+        );
+        let control = read(&case, "system/controlDict");
+        assert!(control.contains("adjustTimeStep  no;") && control.contains("deltaT          0.0004;"), "{control}");
+        assert!(!control.contains("maxCo") && !control.contains("maxDeltaT"), "{control}");
+        assert!(control.contains("timeStart       0.25;"), "{control}");
+        foam::check_syntax(&control).unwrap();
+        let m = manifest(&case).unwrap();
+        assert_eq!(m["transient"]["time_step_mode"], "fixed");
+        assert_eq!(m["transient"]["average_from_s"], 0.25);
+        assert_eq!(r.metrics["average_from_s"].value, 0.25);
+        assert!(!r.metrics.contains_key("max_co_requested"));
+        // Averaging cannot start after the run ends.
+        let c = ctx("ddes-avg-late");
+        let mut p = Params::from_specs(&setup_info().params);
+        p.set("flavour", ParamValue::Str("opencfd2606".into()));
+        p.set("solver_mode", ParamValue::Str("transient_ddes".into()));
+        p.set("end_time_s", ParamValue::Float(0.5));
+        p.set("average_from_s", ParamValue::Float(0.75));
+        assert!(setup_cook(&c, &[], &p).is_err());
     }
 
     #[test]

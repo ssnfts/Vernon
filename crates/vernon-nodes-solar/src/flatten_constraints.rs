@@ -1,6 +1,7 @@
 //! Stretch-aware flattening constraints: a local/global solver whose local
-//! step clamps the singular values of every triangle's 2x2 Jacobian, with
-//! per-triangle rigid/floppy weights and a fold-free line search.
+//! step blends per-material projections of every triangle's 2x2 Jacobian,
+//! with hard one-sided (stretch-only / compress-only) and boundary-length
+//! constraints and a fold-free line search on the global step.
 //!
 //! Standalone functions over plain slices (`[[f64; 3]]` positions in mm,
 //! `[[usize; 3]]` triangles, `[[f64; 2]]` flat coordinates in mm).
@@ -8,70 +9,129 @@
 //! Method, from the papers (equation numbers are not quoted):
 //! * Liu, Zhang, Xu, Liu and Gortler, "A Local/Global Approach to Mesh
 //!   Parameterization", SGP 2008: alternate between a *local* step that finds,
-//!   per triangle, the target matrix `L_t` closest to the current Jacobian
-//!   `J_t` (here: same rotation frame, singular values clamped) and a *global*
-//!   step that minimises `sum_t w_t A_t |J_t - L_t|_F^2`, a sparse linear
-//!   system with the cotangent Laplacian of the triangles' own isometric
-//!   frames. The identity `A |M|_F^2 = 1/2 sum_e cot(theta_e) |M e|^2` for a
-//!   linear map `M` on a triangle turns the energy into edge form.
+//!   per triangle, a target matrix `L_t` from the current Jacobian `J_t` and a
+//!   *global* step that minimises `sum_t w_t A_t |J_t - L_t|_F^2`, a sparse
+//!   linear system with the cotangent Laplacian of the triangles' own
+//!   isometric frames. The identity `A |M|_F^2 = 1/2 sum_e cot(theta_e) |M e|^2`
+//!   for a linear map `M` on a triangle turns the energy into edge form.
+//! * Bouaziz, Deuss, Schwartzburg, Weise and Pauly, "Shape-Up: Shaping
+//!   Discrete Geometry with Projections", SGP 2012, and Bouaziz, Martin, Liu,
+//!   Kavan and Pauly, "Projective Dynamics", SIGGRAPH 2014: several
+//!   constraints, each with its own weight and its own projection, share one
+//!   global solve; the target of the global step is the weighted mean of the
+//!   projections. Used here for the material: the projection onto rotations
+//!   (edge lengths kept), onto unit-determinant maps (area kept) and onto
+//!   similarities (no shear), weighted per material; and for the boundary:
+//!   each boundary edge is projected onto its 3-D length.
+//! * Overby, Brown, Li and Narain, "ADMM ⊇ Projective Dynamics: Fast
+//!   Simulation of Hyperelastic Models with Dynamic Constraints", IEEE TVCG
+//!   2017: hard constraints inside a local/global loop through a scaled dual
+//!   variable that is added to the projection target and updated with the
+//!   remaining violation after every global step (augmented Lagrangian). Used
+//!   here for the one-sided singular-value bounds and the boundary lengths,
+//!   so they are constraints, not large weights.
 //! * Smith and Schaefer, "Bijective Parameterization with Free Boundaries",
 //!   SIGGRAPH 2015: pick the step length so no triangle reaches zero signed
 //!   area. A triangle's signed area along the step is an exact quadratic in
 //!   the step length, so the largest safe step is the smallest positive root;
-//!   the step actually taken is a fraction of it. (The paper's additional
-//!   distortion-energy backtracking is not implemented -- UNVERIFIED which
-//!   details of the paper beyond the root-finding idea this matches.)
+//!   the step actually taken is the full step when that is safe, else a
+//!   fraction of the root. (The paper's barrier energy and its free-boundary
+//!   overlap check are not implemented.)
 //!
-//! Constraint modes act on the singular values `s1 >= s2 > 0` of `J_t` in the
-//! local step by clamping, never by a penalty weight: `Rigid` sets both to 1
-//! (isometry), `StretchOnly` raises values below 1 to 1 (the sheet may
-//! stretch but not compress), `CompressOnly` lowers values above 1 to 1.
-//! The one-sided modes are targets of the least-squares fit, which cannot
-//! guarantee that every edge ends up on the right side; a final uniform
-//! scale about the pinned vertex removes any remaining violation (this makes
-//! the one-sided guarantee exact at the cost of a global scale) and is
-//! reported in [`Output::final_scale`].
+//! The dual iteration drives the violations towards zero but cannot reach
+//! exactly zero in finitely many steps, so a last uniform scale about the
+//! pinned vertex makes the constraint exact: by `1 / min s2` (stretch-only),
+//! `1 / max s1` (compress-only) or the 3-D over flat boundary length
+//! (preserve boundary). A uniform scale multiplies every singular value by
+//! the same factor, so after it the one-sided bound holds on every triangle
+//! to rounding; the factor is reported in [`Output::final_scale`] and is
+//! close to 1 when the dual iteration has converged.
 //!
 //! Orientation: triangles must be counter-clockwise seen from the side the
 //! normal `(v1-v0) x (v2-v0)` points to, and the start layout must have
-//! positive signed area everywhere; the solver keeps it that way.
+//! positive signed area everywhere (unless [`Params::allow_flipped_start`]);
+//! the line search keeps every positive triangle positive.
 
-/// Which singular values the local step may keep.
+/// Which side of the singular values is constrained.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
-    /// Both singular values target 1 (length preserving).
+    /// No hard bound: the material target alone.
     Rigid,
-    /// Singular values below 1 are raised to 1; larger ones are kept.
+    /// Hard bound `s2 >= 1` on every triangle: the sheet may stretch but not compress.
     StretchOnly,
-    /// Singular values above 1 are lowered to 1; smaller ones are kept.
+    /// Hard bound `s1 <= 1` on every triangle: the sheet may compress but not stretch.
     CompressOnly,
+}
+
+/// Weights of the three projections blended in the local step (Projective
+/// Dynamics style). Values are Vernon choices; the spec states only which
+/// term dominates for each material.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MaterialWeights {
+    /// Projection onto rotations: keeps edge lengths (membrane strain).
+    pub edge: f64,
+    /// Projection onto unit-determinant maps: keeps triangle areas.
+    pub area: f64,
+    /// Projection onto similarities: removes shear (angle distortion).
+    pub shear: f64,
+}
+
+impl MaterialWeights {
+    /// Edge term only: the plain as-rigid-as-possible energy.
+    pub const EDGE_ONLY: Self = Self { edge: 1.0, area: 0.0, shear: 0.0 };
+    /// Stiff sheet (spec 3.5 step 4, Vernon numbers): area term 1, edge term 0.3.
+    pub const RIGID: Self = Self { edge: 0.3, area: 1.0, shear: 0.0 };
+    /// Pliable fabric (spec 3.5 step 4, Vernon numbers): edge term 1, area term
+    /// 0.1 and a shear penalty of 0.3.
+    pub const FLOPPY: Self = Self { edge: 1.0, area: 0.1, shear: 0.3 };
+
+    fn total(&self) -> f64 {
+        self.edge + self.area + self.shear
+    }
 }
 
 /// Solver settings.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Params {
     pub mode: Mode,
+    pub material: MaterialWeights,
+    /// Weight of the boundary-length constraint relative to the material
+    /// terms; 0 leaves the boundary free. When it is on, the total boundary
+    /// length is made exact by the final scale (unless a one-sided mode needs
+    /// that scale).
+    pub boundary_weight: f64,
     pub max_iterations: usize,
     /// Stop when the largest vertex move of an iteration is below
-    /// `tolerance * bounding box diagonal` of the layout.
+    /// `tolerance * bounding box diagonal` of the layout and the constraint
+    /// violation is below `constraint_tolerance`.
     pub tolerance: f64,
-    /// Fraction of the largest fold-free step actually taken, in (0, 1).
+    /// Largest remaining violation (singular value or relative boundary edge
+    /// length) accepted as converged before the final scale.
+    pub constraint_tolerance: f64,
+    /// Fraction of the largest fold-free step taken when the full step would fold, in (0, 1).
     pub step_fraction: f64,
     /// Vertex held at its start position (removes the translation freedom).
     pub pin: usize,
-    /// Relative edge-length tolerance of the one-sided modes' final scale.
+    /// Relative tolerance below which the final scale is skipped.
     pub edge_tolerance: f64,
+    /// Accept a start layout with flipped triangles: they are left out of the
+    /// line search (and counted in [`Output::flipped`] if still flipped).
+    pub allow_flipped_start: bool,
 }
 
 impl Default for Params {
     fn default() -> Self {
         Self {
             mode: Mode::Rigid,
+            material: MaterialWeights::EDGE_ONLY,
+            boundary_weight: 0.0,
             max_iterations: 200,
             tolerance: 1e-10,
+            constraint_tolerance: 1e-6,
             step_fraction: 0.8,
             pin: 0,
             edge_tolerance: 1e-9,
+            allow_flipped_start: false,
         }
     }
 }
@@ -81,14 +141,26 @@ impl Default for Params {
 pub struct Output {
     pub uv: Vec<[f64; 2]>,
     pub iterations: usize,
+    /// The vertex moves and the constraint violation fell below the
+    /// tolerances before the iteration limit.
+    pub converged: bool,
+    /// Material energy `sum_t w_t A_t |J_t - L_t|^2` of the last iteration
+    /// (plus the boundary term when it is on), before the final scale.
+    pub energy: f64,
     /// Singular values `[s1, s2]` of every triangle's Jacobian in the result
     /// (`s1 >= s2`; zero-area triangles report `[1, 1]`).
     pub sigma: Vec<[f64; 2]>,
     /// Smallest and largest edge length ratio (flat / 3-D) over all edges.
     pub min_edge_ratio: f64,
     pub max_edge_ratio: f64,
-    /// Uniform scale applied last by the one-sided modes (1 when none).
+    /// Uniform scale applied last to make a hard constraint exact (1 when none).
     pub final_scale: f64,
+    /// Largest violation left by the iteration, before the final scale.
+    pub violation_before_scale: f64,
+    /// Flat over 3-D boundary length after the final scale (1 for a mesh without boundary).
+    pub boundary_ratio: f64,
+    /// Iterations whose full global step would have folded a triangle, so a shorter step was taken.
+    pub shortened_steps: usize,
     /// Triangles with non-positive signed area (0 on success).
     pub flipped: usize,
 }
@@ -340,11 +412,67 @@ fn conjugate_gradient(a: &Csr, b: &[f64], x: &mut [f64], free: &[bool]) {
 
 // --- the solver ------------------------------------------------------------------------
 
-/// Flatten with constrained singular values. `uv0` is the start layout (must
-/// have positive signed area in every triangle; e.g. a conformal map);
+/// Closest `[a, 1/a]` (unit determinant) to the singular values `[s1, s2]`:
+/// the stationary point of `(a - s1)^2 + (1/a - s2)^2`, i.e. the root of
+/// `a^4 - s1 a^3 + s2 a - 1 = 0`, by safeguarded Newton from `sqrt(s1/s2)`.
+fn area_projection(s1: f64, s2: f64) -> [f64; 2] {
+    let mut a = if s2 > 1e-9 { (s1 / s2).sqrt() } else { s1.max(1.0) };
+    for _ in 0..30 {
+        let f = a.powi(4) - s1 * a.powi(3) + s2 * a - 1.0;
+        let df = 4.0 * a.powi(3) - 3.0 * s1 * a * a + s2;
+        if df.abs() < 1e-300 {
+            break;
+        }
+        let next = a - f / df;
+        let next = if next > 0.0 { next } else { 0.5 * a };
+        if (next - a).abs() <= 1e-15 * a {
+            a = next;
+            break;
+        }
+        a = next;
+    }
+    let a = a.max(1.0 / a); // s1 >= s2, so the larger value goes first
+    [a, 1.0 / a]
+}
+
+/// The material target singular values for the current `[s1, s2]`: the
+/// weighted mean of the three projections.
+pub fn material_target(s: [f64; 2], m: &MaterialWeights) -> [f64; 2] {
+    let w = m.total();
+    if w <= 0.0 {
+        return [1.0, 1.0];
+    }
+    let ar = if m.area > 0.0 { area_projection(s[0], s[1]) } else { [1.0, 1.0] };
+    let mean = 0.5 * (s[0] + s[1]);
+    [0, 1].map(|i| (m.edge + m.area * ar[i] + m.shear * mean) / w)
+}
+
+/// Largest `alpha > 0` such that every triangle of `uv + alpha * step` keeps
+/// twice its signed area above `min_area2` (or above half its start value
+/// when that is smaller); `f64::INFINITY` when none ever gets there.
+/// Triangles that are not positive at `alpha = 0` give 0.
+pub fn max_step_keeping_area(tris: &[[usize; 3]], uv: &[[f64; 2]], step: &[[f64; 2]], min_area2: f64) -> f64 {
+    let mut best = f64::INFINITY;
+    for t in tris {
+        let e1 = sub2(uv[t[1]], uv[t[0]]);
+        let e2 = sub2(uv[t[2]], uv[t[0]]);
+        let d1 = sub2(step[t[1]], step[t[0]]);
+        let d2 = sub2(step[t[2]], step[t[0]]);
+        let cr = |a: [f64; 2], b: [f64; 2]| a[0] * b[1] - a[1] * b[0];
+        let (c0, c1, c2) = (cr(e1, e2), cr(e1, d2) + cr(d1, e2), cr(d1, d2));
+        if c0 <= 0.0 {
+            return 0.0;
+        }
+        let floor = min_area2.min(0.5 * c0);
+        best = best.min(smallest_positive_root(c0 - floor, c1, c2));
+    }
+    best
+}
+
+/// Flatten with a material energy and hard constraints. `uv0` is the start
+/// layout (positive signed area in every triangle, e.g. a conformal map);
 /// `weights` holds one weight per triangle in `(0, 1]` (an empty slice means
-/// all rigid, values below 1e-6 are raised to 1e-6 to keep the system
-/// solvable).
+/// all 1; values below 1e-6 are raised to 1e-6 to keep the system solvable).
 pub fn flatten_constrained(
     pos: &[[f64; 3]],
     tris: &[[usize; 3]],
@@ -365,65 +493,236 @@ pub fn flatten_constrained(
     if let Some(t) = tris.iter().find(|t| t.iter().any(|&v| v >= n)) {
         return Err(format!("triangle {t:?} refers to a missing vertex"));
     }
+    if p.material.total() <= 0.0 || [p.material.edge, p.material.area, p.material.shear].iter().any(|w| *w < 0.0) {
+        return Err("material weights must be non-negative with a positive sum".into());
+    }
     let frames: Vec<Option<Frame>> = tris.iter().map(|t| frame(pos, t)).collect();
-    let w = |ti: usize| weights.get(ti).copied().unwrap_or(1.0).max(1e-6);
+    let wsum = p.material.total();
+    let w = |ti: usize| weights.get(ti).copied().unwrap_or(1.0).max(1e-6) * wsum;
 
-    // Constant system matrix: edge form of the weighted Dirichlet energy.
+    let mut uv = uv0.to_vec();
+    let positive: Vec<bool> = tris.iter().zip(&frames).map(|(t, f)| f.is_some() && area2(uv[t[0]], uv[t[1]], uv[t[2]]) > 0.0).collect();
+    if !p.allow_flipped_start && frames.iter().zip(&positive).any(|(f, ok)| f.is_some() && !ok) {
+        return Err("the start layout has a flipped or degenerate triangle".into());
+    }
+    // the line search guards the triangles that start positive
+    let guarded: Vec<[usize; 3]> = tris.iter().zip(&positive).filter(|(_, ok)| **ok).map(|(t, _)| *t).collect();
+    let mean_area2 = {
+        let (s, c) = frames.iter().flatten().fold((0.0, 0usize), |(s, c), f| (s + f.l * f.q, c + 1));
+        if c > 0 { s / c as f64 } else { 0.0 }
+    };
+    let min_area2 = 1e-6 * mean_area2;
+
+    // boundary edges (used by one triangle) with their 3-D lengths
+    let boundary: Vec<(usize, usize, f64)> = {
+        let mut count = std::collections::BTreeMap::new();
+        for (t, f) in tris.iter().zip(&frames) {
+            if f.is_none() {
+                continue;
+            }
+            for k in 0..3 {
+                let (a, b) = (t[k], t[(k + 1) % 3]);
+                *count.entry((a.min(b), a.max(b))).or_insert(0usize) += 1;
+            }
+        }
+        count
+            .into_iter()
+            .filter(|(_, c)| *c == 1)
+            .map(|((a, b), _)| (a, b, dot3(sub3(pos[a], pos[b]), sub3(pos[a], pos[b])).sqrt()))
+            .collect()
+    };
+    let wb = if p.boundary_weight > 0.0 { p.boundary_weight * wsum } else { 0.0 };
+
+    // Constant system matrix: edge form of the weighted Dirichlet energy, plus the boundary springs.
     let mut trip = Vec::new();
     for (ti, t) in tris.iter().enumerate() {
         let Some(f) = frames[ti] else { continue };
         let x = f.x();
         for k in 0..3 {
             let (i, j) = ((k + 1) % 3, (k + 2) % 3);
-            let (a, b) = (sub2(x[i], x[k]), sub2(x[j], x[k]));
-            let cot = (a[0] * b[0] + a[1] * b[1]) / (a[0] * b[1] - a[1] * b[0]).abs();
-            let c = 0.5 * w(ti) * cot;
+            let c = 0.5 * w(ti) * cot_at(&x, k);
             let (vi, vj) = (t[i], t[j]);
             trip.extend([(vi, vi, c), (vj, vj, c), (vi, vj, -c), (vj, vi, -c)]);
+        }
+    }
+    if wb > 0.0 {
+        for &(a, b, _) in &boundary {
+            trip.extend([(a, a, wb), (b, b, wb), (a, b, -wb), (b, a, -wb)]);
         }
     }
     let a = Csr::from_triplets(n, trip);
     let mut free = vec![true; n];
     free[p.pin] = false;
 
-    let mut uv = uv0.to_vec();
-    if frames.iter().zip(tris).any(|(f, t)| f.is_some() && area2(uv[t[0]], uv[t[1]], uv[t[2]]) <= 0.0) {
-        return Err("the start layout has a flipped or degenerate triangle".into());
-    }
+    // scaled dual variables (Overby et al. 2017): a 2x2 matrix per triangle for a one-sided
+    // mode (ADMM with the split Z_t = J_t), one scalar per boundary edge for the boundary length
+    let one_sided = p.mode != Mode::Rigid;
+    let mut dual_t = vec![[[0.0f64; 2]; 2]; tris.len()];
+    let mut split_t: Vec<Option<M2>> = vec![None; tris.len()];
+    let mut dual_b = vec![0.0f64; boundary.len()];
     let diag = bbox_diag(&uv).max(1e-300);
     let mut iterations = 0;
+    let mut converged = false;
+    let mut energy = 0.0;
+    let mut shortened_steps = 0;
+    let mut violation = 0.0;
     for it in 0..p.max_iterations {
         iterations = it + 1;
-        // local step (inside `rhs`): clamp the singular values, keep the rotation frames
-        let (bx, by) = rhs(tris, &frames, &uv, p.mode, &w, n);
+        // local step: targets for every triangle and boundary edge
+        let targets: Vec<Option<M2>> = tris
+            .iter()
+            .enumerate()
+            .map(|(ti, t)| {
+                let f = frames[ti]?;
+                let j = f.jacobian([uv[t[0]], uv[t[1]], uv[t[2]]]);
+                if !one_sided {
+                    // plain local step: the material target of the current Jacobian
+                    let (phi, theta, s1, s2) = svd2(&j);
+                    let b = material_target([s1.abs(), s2.abs()], &p.material);
+                    return Some(compose(phi, theta, b));
+                }
+                // ADMM local step: Z = argmin material(Z) + rho/2 |Z - (J + Y)|^2 over the
+                // admissible set, with the material projections taken at J + Y and rho equal
+                // to the material weight; the global target is then Z - Y
+                let y = dual_t[ti];
+                let v = madd(&j, &y, 1.0);
+                let (phi, theta, s1, s2) = svd2(&v);
+                let sv = [s1.abs(), s2.abs()];
+                let b = material_target(sv, &p.material);
+                let z = [0, 1].map(|i| {
+                    let m = 0.5 * (b[i] + sv[i]);
+                    match p.mode {
+                        Mode::StretchOnly => m.max(1.0),
+                        _ => m.min(1.0),
+                    }
+                });
+                let zm = compose(phi, theta, z);
+                split_t[ti] = Some(zm);
+                Some(madd(&zm, &y, -1.0))
+            })
+            .collect();
+        let edge_targets: Vec<[f64; 2]> = boundary
+            .iter()
+            .zip(&dual_b)
+            .map(|(&(i, j, l3), z)| {
+                let d = sub2(uv[i], uv[j]);
+                let len = d[0].hypot(d[1]);
+                let u = if len > 1e-300 { [d[0] / len, d[1] / len] } else { [1.0, 0.0] };
+                [(l3 + z) * u[0], (l3 + z) * u[1]]
+            })
+            .collect();
         // global step
+        let (mut bx, mut by) = rhs(tris, &frames, &targets, &w, n);
+        if wb > 0.0 {
+            for (&(i, j, _), d) in boundary.iter().zip(&edge_targets) {
+                bx[i] += wb * d[0];
+                by[i] += wb * d[1];
+                bx[j] -= wb * d[0];
+                by[j] -= wb * d[1];
+            }
+        }
         let mut gx: Vec<f64> = uv.iter().map(|q| q[0]).collect();
         let mut gy: Vec<f64> = uv.iter().map(|q| q[1]).collect();
         conjugate_gradient(&a, &bx, &mut gx, &free);
         conjugate_gradient(&a, &by, &mut gy, &free);
         let step: Vec<[f64; 2]> = (0..n).map(|i| [gx[i] - uv[i][0], gy[i] - uv[i][1]]).collect();
-        // fold-free line search
-        let amax = max_fold_free_step(tris_ok(tris, &frames).as_slice(), &uv, &step);
-        let alpha = if amax.is_finite() { (p.step_fraction * amax).min(1.0) } else { 1.0 };
+        // fold-free line search (Smith and Schaefer 2015): full step when it is safe
+        let amax = max_step_keeping_area(&guarded, &uv, &step, min_area2);
+        let alpha = if amax >= 1.0 {
+            1.0
+        } else {
+            shortened_steps += 1;
+            p.step_fraction * amax
+        };
         let mut moved = 0.0f64;
         for i in 0..n {
             uv[i][0] += alpha * step[i][0];
             uv[i][1] += alpha * step[i][1];
             moved = moved.max(alpha * step[i][0].hypot(step[i][1]));
         }
-        if moved <= p.tolerance * diag {
+        // energy with this iteration's targets
+        energy = 0.0;
+        for (ti, t) in tris.iter().enumerate() {
+            let (Some(f), Some(l)) = (frames[ti], targets[ti]) else { continue };
+            let x = f.x();
+            for k in 0..3 {
+                let (i, j) = ((k + 1) % 3, (k + 2) % 3);
+                let e = sub2(x[i], x[j]);
+                let le = [l[0][0] * e[0] + l[0][1] * e[1], l[1][0] * e[0] + l[1][1] * e[1]];
+                let du = sub2(uv[t[i]], uv[t[j]]);
+                energy += 0.5 * w(ti) * cot_at(&x, k) * ((du[0] - le[0]).powi(2) + (du[1] - le[1]).powi(2));
+            }
+        }
+        for (&(i, j, _), d) in boundary.iter().zip(&edge_targets) {
+            let du = sub2(uv[i], uv[j]);
+            energy += wb * ((du[0] - d[0]).powi(2) + (du[1] - d[1]).powi(2));
+        }
+        // dual update with the remaining violation
+        violation = 0.0f64;
+        if one_sided {
+            for (ti, t) in tris.iter().enumerate() {
+                let (Some(f), Some(z)) = (frames[ti], split_t[ti]) else { continue };
+                let j = f.jacobian([uv[t[0]], uv[t[1]], uv[t[2]]]);
+                // Y += J - Z; the primal residual |J - Z| and the bound on J both count
+                let r = madd(&j, &z, -1.0);
+                dual_t[ti] = madd(&dual_t[ti], &r, 1.0);
+                let s = singular_values(&j);
+                let bound = match p.mode {
+                    Mode::StretchOnly => 1.0 - s[1],
+                    _ => s[0] - 1.0,
+                };
+                let res = r.iter().flatten().fold(0.0f64, |m, v| m.max(v.abs()));
+                violation = violation.max(bound).max(res);
+            }
+        }
+        if wb > 0.0 {
+            for (k, &(i, j, l3)) in boundary.iter().enumerate() {
+                let d = sub2(uv[i], uv[j]);
+                let len = d[0].hypot(d[1]);
+                dual_b[k] += l3 - len;
+                violation = violation.max((len / l3 - 1.0).abs());
+            }
+        }
+        if moved <= p.tolerance * diag && violation <= p.constraint_tolerance {
+            converged = true;
             break;
         }
     }
 
-    // One-sided modes: remove any remaining edge violation by a uniform scale.
-    let (mut lo, mut hi) = edge_ratio_range(pos, tris, &uv);
-    let mut final_scale = 1.0;
-    let scale = match p.mode {
-        Mode::StretchOnly if lo < 1.0 - p.edge_tolerance && lo > 0.0 => Some(1.0 / lo),
-        Mode::CompressOnly if hi > 1.0 + p.edge_tolerance => Some(1.0 / hi),
-        _ => None,
+    // Make the hard constraint exact with one uniform scale about the pinned vertex.
+    let sigma_of = |uv: &[[f64; 2]]| -> Vec<[f64; 2]> {
+        tris.iter()
+            .zip(&frames)
+            .map(|(t, f)| match f {
+                Some(f) => singular_values(&f.jacobian([uv[t[0]], uv[t[1]], uv[t[2]]])),
+                None => [1.0, 1.0],
+            })
+            .collect()
     };
+    let boundary_len = |uv: &[[f64; 2]]| -> (f64, f64) {
+        boundary.iter().fold((0.0, 0.0), |(l2, l3), &(i, j, d3)| {
+            let d = sub2(uv[i], uv[j]);
+            (l2 + d[0].hypot(d[1]), l3 + d3)
+        })
+    };
+    let sigma = sigma_of(&uv);
+    let positive_sigma = || sigma.iter().zip(&frames).filter(|(_, f)| f.is_some());
+    let scale = match p.mode {
+        Mode::StretchOnly => {
+            let lo = positive_sigma().map(|(s, _)| s[1]).fold(f64::INFINITY, f64::min);
+            (lo.is_finite() && lo > 0.0 && lo < 1.0 - p.edge_tolerance).then(|| 1.0 / lo)
+        }
+        Mode::CompressOnly => {
+            let hi = positive_sigma().map(|(s, _)| s[0]).fold(0.0, f64::max);
+            (hi > 1.0 + p.edge_tolerance).then(|| 1.0 / hi)
+        }
+        Mode::Rigid if wb > 0.0 => {
+            let (l2, l3) = boundary_len(&uv);
+            (l2 > 0.0 && (l2 / l3 - 1.0).abs() > p.edge_tolerance).then(|| l3 / l2)
+        }
+        Mode::Rigid => None,
+    };
+    let mut final_scale = 1.0;
     if let Some(s) = scale {
         let o = uv[p.pin];
         for q in uv.iter_mut() {
@@ -431,31 +730,49 @@ pub fn flatten_constrained(
             q[1] = o[1] + s * (q[1] - o[1]);
         }
         final_scale = s;
-        (lo, hi) = (lo * s, hi * s);
     }
-
-    let sigma = tris
-        .iter()
-        .zip(&frames)
-        .map(|(t, f)| match f {
-            Some(f) => singular_values(&f.jacobian([uv[t[0]], uv[t[1]], uv[t[2]]])),
-            None => [1.0, 1.0],
-        })
-        .collect();
+    let sigma = sigma_of(&uv);
+    let (lo, hi) = edge_ratio_range(pos, tris, &uv);
+    let (l2, l3) = boundary_len(&uv);
     let flipped = tris
         .iter()
         .zip(&frames)
         .filter(|(t, f)| f.is_some() && area2(uv[t[0]], uv[t[1]], uv[t[2]]) <= 0.0)
         .count();
-    Ok(Output { uv, iterations, sigma, min_edge_ratio: lo, max_edge_ratio: hi, final_scale, flipped })
+    Ok(Output {
+        uv,
+        iterations,
+        converged,
+        energy,
+        sigma,
+        min_edge_ratio: lo,
+        max_edge_ratio: hi,
+        final_scale,
+        violation_before_scale: violation,
+        boundary_ratio: if l3 > 0.0 { l2 / l3 } else { 1.0 },
+        shortened_steps,
+        flipped,
+    })
 }
 
 fn sub2(a: [f64; 2], b: [f64; 2]) -> [f64; 2] {
     [a[0] - b[0], a[1] - b[1]]
 }
 
-fn tris_ok(tris: &[[usize; 3]], frames: &[Option<Frame>]) -> Vec<[usize; 3]> {
-    tris.iter().zip(frames).filter(|(_, f)| f.is_some()).map(|(t, _)| *t).collect()
+/// `a + k b` for 2x2 matrices.
+fn madd(a: &M2, b: &M2, k: f64) -> M2 {
+    [[a[0][0] + k * b[0][0], a[0][1] + k * b[0][1]], [a[1][0] + k * b[1][0], a[1][1] + k * b[1][1]]]
+}
+
+/// `Rot(phi) diag(s) Rot(theta)`.
+fn compose(phi: f64, theta: f64, s: [f64; 2]) -> M2 {
+    mul(&mul(&rot(phi), &[[s[0], 0.0], [0.0, s[1]]]), &rot(theta))
+}
+
+/// Cotangent of the angle at corner `k` of a frame triangle.
+fn cot_at(x: &[[f64; 2]; 3], k: usize) -> f64 {
+    let (a, b) = (sub2(x[(k + 1) % 3], x[k]), sub2(x[(k + 2) % 3], x[k]));
+    (a[0] * b[0] + a[1] * b[1]) / (a[0] * b[1] - a[1] * b[0]).abs()
 }
 
 fn bbox_diag(uv: &[[f64; 2]]) -> f64 {
@@ -469,28 +786,21 @@ fn bbox_diag(uv: &[[f64; 2]]) -> f64 {
     (hi[0] - lo[0]).hypot(hi[1] - lo[1])
 }
 
-/// Right-hand sides of the global step for the current layout.
+/// Right-hand sides of the global step for the given per-triangle targets.
 fn rhs(
     tris: &[[usize; 3]],
     frames: &[Option<Frame>],
-    uv: &[[f64; 2]],
-    mode: Mode,
+    targets: &[Option<M2>],
     w: &dyn Fn(usize) -> f64,
     n: usize,
 ) -> (Vec<f64>, Vec<f64>) {
     let (mut bx, mut by) = (vec![0.0; n], vec![0.0; n]);
     for (ti, t) in tris.iter().enumerate() {
-        let Some(f) = frames[ti] else { continue };
-        let j = f.jacobian([uv[t[0]], uv[t[1]], uv[t[2]]]);
-        let (phi, theta, s1, s2) = svd2(&j);
-        let target = clamp_singular_values([s1.abs(), s2.abs()], mode);
-        let l = mul(&mul(&rot(phi), &[[target[0], 0.0], [0.0, target[1]]]), &rot(theta));
+        let (Some(f), Some(l)) = (frames[ti], targets[ti]) else { continue };
         let x = f.x();
         for k in 0..3 {
             let (i, jn) = ((k + 1) % 3, (k + 2) % 3);
-            let (xa, xb) = (sub2(x[i], x[k]), sub2(x[jn], x[k]));
-            let cot = (xa[0] * xb[0] + xa[1] * xb[1]) / (xa[0] * xb[1] - xa[1] * xb[0]).abs();
-            let c = 0.5 * w(ti) * cot;
+            let c = 0.5 * w(ti) * cot_at(&x, k);
             let e = sub2(x[i], x[jn]);
             let le = [l[0][0] * e[0] + l[0][1] * e[1], l[1][0] * e[0] + l[1][1] * e[1]];
             bx[t[i]] += c * le[0];
@@ -690,5 +1000,38 @@ mod tests {
         let ok: Vec<[f64; 2]> = pos.iter().map(|q| [q[0], q[1]]).collect();
         assert!(flatten_constrained(&pos, &tris, &ok, &[1.0], &Params::default()).is_err());
         assert!(flatten_constrained(&pos, &tris, &ok[..2], &[], &Params::default()).is_err());
+    }
+
+    #[test]
+    fn flatten_constraints_material_targets() {
+        // the area projection has unit determinant and is the closest such pair
+        for s in [[1.3, 0.9], [2.0, 0.5], [1.0, 1.0], [0.8, 0.7]] {
+            let a = area_projection(s[0], s[1]);
+            assert!((a[0] * a[1] - 1.0).abs() < 1e-12, "{a:?}");
+            let d = |x: f64| (x - s[0]).powi(2) + (1.0 / x - s[1]).powi(2);
+            assert!(d(a[0]) <= d(a[0] * 1.001) && d(a[0]) <= d(a[0] * 0.999), "{s:?} -> {a:?}");
+        }
+        assert_eq!(material_target([1.3, 0.9], &MaterialWeights::EDGE_ONLY), [1.0, 1.0]);
+        // a pure shear term targets the mean singular value on both axes
+        let t = material_target([1.3, 0.9], &MaterialWeights { edge: 0.0, area: 0.0, shear: 1.0 });
+        assert!((t[0] - 1.1).abs() < 1e-12 && (t[1] - 1.1).abs() < 1e-12);
+    }
+
+    #[test]
+    fn flatten_constraints_boundary_constraint_keeps_boundary_edges() {
+        let (pos, tris, uv0) = cap(6, 24, 50f64.to_radians());
+        let p = Params { boundary_weight: 10.0, ..Params::default() };
+        let o = flatten_constrained(&pos, &tris, &uv0, &[], &p).unwrap();
+        assert_eq!(o.flipped, 0);
+        assert!((o.boundary_ratio - 1.0).abs() < 1e-12, "{}", o.boundary_ratio);
+        assert!((o.final_scale - 1.0).abs() < 1e-4, "the iteration did the work: scale {}", o.final_scale);
+        // every boundary edge, not only the total, is at its 3-D length
+        let ring = |s: usize| 1 + 5 * 24 + s % 24;
+        for s in 0..24 {
+            let (a, b) = (ring(s), ring(s + 1));
+            let d3 = dot3(sub3(pos[a], pos[b]), sub3(pos[a], pos[b])).sqrt();
+            let d2 = (o.uv[a][0] - o.uv[b][0]).hypot(o.uv[a][1] - o.uv[b][1]);
+            assert!((d2 / d3 - 1.0).abs() < 1e-4, "edge {s}: {}", d2 / d3);
+        }
     }
 }

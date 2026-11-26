@@ -303,6 +303,9 @@ fn modify_tab(app: &mut VernonApp, ui: &mut Ui) {
         }
         if let Some(e) = app.st.error_of(entry) {
             ui.label(RichText::new(format!("✖ {e}")).color(theme::FAIL_TEXT));
+            if let Some(step) = crate::hints::next_step(e) {
+                ui.label(RichText::new(format!("Next: {step}")).small().color(theme::WARN));
+            }
         }
         ui.add_space(4.0);
         params::rollout(app, ui, entry);

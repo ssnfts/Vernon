@@ -1318,9 +1318,9 @@ fn golden_tuft_classes() {
     close(rep.metrics["reversed_fraction"].value, 0.5, 1e-12, "reversed fraction");
     assert!(!rep.notes.iter().any(|(_, t)| t.contains("white-box placeholder")));
     assert_eq!(out[1].as_geometry().unwrap().point_count(), 2);
-    // without series the node says it is a placeholder
+    // without any input the node says so and makes no numbers
     let ph = cook("perf.tuft_analysis", vec![None, None, None], &[]).unwrap();
-    assert!(ph[2].as_report().unwrap().notes.iter().any(|(_, t)| t.starts_with("white-box placeholder")));
+    assert!(ph[2].as_report().unwrap().notes.iter().any(|(_, t)| t.starts_with("no tuft input is connected")));
 }
 
 /// `n` alternating samples `centre +- amp`; the circular SD of that series is about `amp`.
@@ -1463,29 +1463,98 @@ fn tuft_csv_is_classified_mapped_onto_the_surface_and_summarised_per_region() {
     assert!(!r2.notes.iter().any(|(_, t)| t.contains("white-box placeholder")));
 }
 
+/// A PGM photo: grey 100 with +-8 noise and bright Gaussian-profile lines
+/// `(centre x, centre y, length, angle deg ccw on screen)`.
+fn tuft_photo(tag: &str, w: usize, h: usize, lines: &[(f32, f32, f32, f32)]) -> std::path::PathBuf {
+    let mut seed = 0x1234_5678_9abc_def1u64;
+    let mut v: Vec<f32> = (0..w * h)
+        .map(|_| {
+            seed ^= seed >> 12;
+            seed ^= seed << 25;
+            seed ^= seed >> 27;
+            100.0 + 16.0 * (((seed.wrapping_mul(0x2545_F491_4F6C_DD1D) >> 40) as f32) / (1u64 << 24) as f32 - 0.5)
+        })
+        .collect();
+    for &(cx, cy, len, ang) in lines {
+        let (ux, uy) = (ang.to_radians().cos(), -ang.to_radians().sin());
+        let (ax, ay, bx, by) = (cx - ux * len / 2.0, cy - uy * len / 2.0, cx + ux * len / 2.0, cy + uy * len / 2.0);
+        for y in 0..h {
+            for x in 0..w {
+                let (px, py) = (x as f32 - ax, y as f32 - ay);
+                let (dx, dy) = (bx - ax, by - ay);
+                let t = ((px * dx + py * dy) / (dx * dx + dy * dy)).clamp(0.0, 1.0);
+                let d2 = (px - t * dx).powi(2) + (py - t * dy).powi(2);
+                v[y * w + x] += 140.0 * (-d2 / (2.0 * 0.8 * 0.8)).exp();
+            }
+        }
+    }
+    let mut bytes = format!("P5\n# test photo\n{w} {h}\n255\n").into_bytes();
+    bytes.extend(v.iter().map(|q| q.clamp(0.0, 255.0) as u8));
+    let dir = std::env::temp_dir().join(format!("vernon-perf-tuft-photo-{}-{tag}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("photo.pgm");
+    std::fs::write(&path, bytes).unwrap();
+    path
+}
+
 #[test]
-fn tuft_photo_route_stays_white_box_and_invents_no_numbers() {
-    let photo = std::env::temp_dir().join("vernon-perf-tuft-photo-not-read.jpg");
-    // a photo and no CSV: the placeholder warning, no tuft, no metric
-    let out = cook("perf.tuft_analysis", vec![Some(Data::File(photo.clone())), None, None, Some(Data::geometry(tuft_strip()))], &[]).unwrap();
+fn tuft_photo_is_searched_for_tufts_and_classified_on_the_surface() {
+    // 200 x 100 px photo of the 400 x 100 mm strip seen from +z: 2 mm per pixel along x, 1 mm along y.
+    // A tuft along the flow (0 deg) at px 40 (front panels) and one at 60 deg at px 160 (rear panels).
+    let photo = tuft_photo("two", 200, 100, &[(40.0, 50.0, 36.0, 0.0), (160.0, 50.0, 36.0, 60.0)]);
+    let out = cook("perf.tuft_analysis", vec![Some(Data::File(photo)), None, None, Some(Data::geometry(tuft_strip()))], &[("view_axis", ParamValue::Str("z".into()))]).unwrap();
     let rep = out[2].as_report().unwrap();
-    assert!(rep.notes.iter().any(|(s, t)| *s == vernon_core::Severity::Warning && t.starts_with("white-box placeholder:")), "{:?}", rep.notes);
-    assert!(rep.metrics.is_empty(), "no numbers without data: {:?}", rep.metrics.keys().collect::<Vec<_>>());
-    assert_eq!(out[1].as_geometry().unwrap().point_count(), 0);
-    assert_eq!(out[0].as_json().unwrap()["rows"].as_array().unwrap().len(), 0);
-    // nothing connected at all: the same warning
+    assert!(!rep.notes.iter().any(|(_, t)| t.starts_with("white-box placeholder")), "{:?}", rep.notes);
+    close(rep.metrics["tufts"].value, 2.0, 0.0, "tufts found in the photo");
+    close(rep.metrics["tufts_on_surface"].value, 2.0, 0.0, "tufts placed on the surface");
+    close(rep.metrics["separated_pct"].value, 50.0, 1e-9, "separated share");
+    close(rep.metrics["separated_pct_region_front"].value, 0.0, 1e-9, "front panels");
+    close(rep.metrics["separated_pct_region_rear"].value, 100.0, 1e-9, "rear panels");
+    // positions are in mm: px 40 -> x = 80, px 160 -> x = 320, mid height -> y = 50
+    let g = out[1].as_geometry().unwrap();
+    assert_eq!(g.point_count(), 2);
+    let mut xs: Vec<f64> = g.points.iter().map(|q| q.x).collect();
+    xs.sort_by(f64::total_cmp);
+    close(xs[0], 80.0, 6.0, "first tuft x");
+    close(xs[1], 320.0, 6.0, "second tuft x");
+    assert!(g.points.iter().all(|q| (q.y - 50.0).abs() < 4.0 && q.z.abs() < 1e-9));
+    let classes = g.point_attribs.ints("class").unwrap();
+    assert_eq!(classes.iter().filter(|&&c| c == 1).count(), 1, "one separated tuft");
+    // the faces next to each tuft take its class
+    let surf = out[3].as_geometry().unwrap();
+    let tc = surf.prim_attribs.ints("tuft_class").unwrap();
+    assert_eq!(tc[0], 0);
+    assert_eq!(tc[3], 1);
+}
+
+#[test]
+fn tuft_photo_edge_cases_invent_no_numbers() {
+    // a photo without a surface is ignored with a note, and nothing is classified
+    let photo = tuft_photo("nosurf", 100, 100, &[(50.0, 50.0, 36.0, 0.0)]);
+    let out = cook("perf.tuft_analysis", vec![Some(Data::File(photo.clone())), None, None, None], &[]).unwrap();
+    let rep = out[2].as_report().unwrap();
+    assert!(rep.notes.iter().any(|(_, t)| t.starts_with("the photograph was ignored")), "{:?}", rep.notes);
+    assert!(rep.metrics.is_empty());
+    // a photo with no tuft in it says so and gives no metric
+    let blank = tuft_photo("blank", 100, 100, &[]);
+    let out = cook("perf.tuft_analysis", vec![Some(Data::File(blank)), None, None, Some(Data::geometry(tuft_strip()))], &[]).unwrap();
+    let rep = out[2].as_report().unwrap();
+    assert!(rep.notes.iter().any(|(_, t)| t.starts_with("no tuft was found")));
+    assert!(rep.metrics.is_empty());
+    assert!(out[3].as_geometry().unwrap().prim_attribs.ints("tuft_class").unwrap().iter().all(|&c| c == -1));
+    // an unsupported or missing photo file is an error, not a silent skip
+    let jpg = std::env::temp_dir().join("vernon-perf-tuft-photo-not-an-image.jpg");
+    std::fs::write(&jpg, b"\xff\xd8\xff\xe0 not a pnm").unwrap();
+    let err = cook("perf.tuft_analysis", vec![Some(Data::File(jpg)), None, None, Some(Data::geometry(tuft_strip()))], &[]).unwrap_err().to_string();
+    assert!(err.contains("PGM"), "{err}");
+    // nothing connected at all: a warning, no numbers
     let none = cook("perf.tuft_analysis", vec![None, None, None, None], &[]).unwrap();
     let rn = none[2].as_report().unwrap();
-    assert!(rn.notes.iter().any(|(s, t)| *s == vernon_core::Severity::Warning && t.starts_with("white-box placeholder:")));
+    assert!(rn.notes.iter().any(|(s, t)| *s == vernon_core::Severity::Warning && t.starts_with("no tuft input is connected")));
     assert!(rn.metrics.is_empty());
-    // the surface passes through unclassified: every face is -1 (no tuft), none invented
-    let surf = out[3].as_geometry().unwrap();
-    assert!(surf.prim_attribs.ints("tuft_class").unwrap().iter().all(|&c| c == -1));
-    // a photo and a CSV: the photo is ignored with the warning, the CSV is still classified
-    let both = cook("perf.tuft_analysis", vec![Some(Data::File(photo)), None, Some(Data::File(tuft_files("photo"))), None], &[]).unwrap();
-    let rb = both[2].as_report().unwrap();
-    assert!(rb.notes.iter().any(|(s, t)| *s == vernon_core::Severity::Warning && t.starts_with("white-box placeholder:")));
-    close(rb.metrics["tufts"].value, 4.0, 0.0, "csv tufts");
+    // a photo and a CSV: the tufts of both are classified together
+    let both = cook("perf.tuft_analysis", vec![Some(Data::File(photo)), None, Some(Data::File(tuft_files("photo"))), Some(Data::geometry(tuft_strip()))], &[("view_axis", ParamValue::Str("z".into()))]).unwrap();
+    close(both[2].as_report().unwrap().metrics["tufts"].value, 5.0, 0.0, "csv tufts plus one photo tuft");
 }
 
 #[test]

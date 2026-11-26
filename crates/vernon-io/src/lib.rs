@@ -22,9 +22,10 @@
 //! | 3MF | all build items, components and transforms flattened; model `unit` honoured; prim `part` = build item index | one object per distinct prim `part` value |
 //! | XYZ/PTS | `x y z [nx ny nz] [r g b]`, PTS `x y z i [r g b]`; headers and comments skipped | XYZ: `x y z [nx ny nz] [r g b]`; PTS: count line then `x y z i [r g b]` |
 //! | E57 | every `data3D` scan: `cartesianX/Y/Z`, `colorRed/Green/Blue` -> `Cd` (0..1), `intensity`; scan pose applied; metres -> mm; page checksums verified | read only |
+//! | glTF 2.0 (`.glb`, `.gltf`) | triangle, strip and fan primitives (indexed or not) of the default scene with node transforms applied; lines -> polylines; `NORMAL` -> `N`, `TEXCOORD_0` -> `uv` (v flipped), `COLOR_0` -> `Cd`; embedded, data-URI or neighbouring-file buffers; metres -> mm; Y-up turned Z-up unless [`ReadOptions::gltf_axes`] says otherwise, recorded in the `gltf_source_frame` / `gltf_axes` detail attributes (see [`gltf_frame_note`]); Draco and meshopt compression refused | read only |
 //! | LAS 1.2-1.4 | point formats 0-10: scale and offset applied, `intensity`, `classification`, colour -> `Cd` (0..1); unit from the CRS records (horizontal and vertical units apart) or [`read_las_bytes`], metres by default; the detail attribute `las_unit_source` says which (`parameter`, `header` or `assumed_metres`, see [`las_unit_was_assumed`]); LAZ refused | read only |
 //!
-//! E57 and LAS carry their own length units (E57 always metres), so
+//! E57, LAS and glTF carry their own length units (E57 and glTF always metres), so
 //! [`ReadOptions::unit`] does not apply to them, as with 3MF. Reading a
 //! `.laz` path reports that LAZ is unsupported. E57 refuses a kept point
 //! whose `intensity` or `Cd` value is NaN or infinite.
@@ -37,7 +38,8 @@
 //! non-finite points and write through a temporary file that is renamed over
 //! the target, so a failed write leaves an existing file untouched. STL weld
 //! tolerances are floored at `f32` resolution (an exact weld, tolerance 0, is
-//! honoured). Z is up and axes are never swapped.
+//! honoured). Z is up and axes are never swapped, except that glTF (Y up by
+//! definition) is turned Z-up by default, explicitly and on the record.
 
 use std::fs::File;
 use std::io::{BufWriter, Write};
@@ -48,6 +50,7 @@ use vernon_core::Geometry;
 
 mod bin;
 mod e57;
+mod gltf;
 mod las;
 mod obj;
 mod ply;
@@ -59,6 +62,7 @@ mod xml;
 mod xyz;
 mod zip;
 
+pub use gltf::GltfAxes;
 pub use weld::weld_points;
 
 /// Supported file formats.
@@ -77,6 +81,8 @@ pub enum Format {
     E57,
     /// LAS 1.2 to 1.4 airborne/terrestrial point cloud. Read only; LAZ is refused.
     Las,
+    /// glTF 2.0, binary (`.glb`) or JSON (`.gltf`). Read only; geometry only.
+    Gltf,
 }
 
 impl Format {
@@ -91,12 +97,14 @@ impl Format {
             "e57" => Format::E57,
             // `.laz` is accepted so that reading it says LAZ is unsupported.
             "las" | "laz" => Format::Las,
+            "glb" | "gltf" => Format::Gltf,
             _ => return None,
         })
     }
 
     /// Identify a file image from its leading bytes. Only formats with a
-    /// signature are recognised (PLY, 3MF/zip, E57, LAS, STL ASCII or binary);
+    /// signature are recognised (PLY, 3MF/zip, E57, LAS, glTF binary or JSON,
+    /// STL ASCII or binary);
     /// OBJ and XYZ/PTS are plain text and need their extension.
     pub fn sniff(bytes: &[u8]) -> Option<Format> {
         if bytes.starts_with(b"ASTM-E57") {
@@ -104,6 +112,9 @@ impl Format {
         }
         if bytes.starts_with(b"LASF") {
             return Some(Format::Las);
+        }
+        if gltf::sniff(bytes) {
+            return Some(Format::Gltf);
         }
         if bytes.starts_with(b"ply") && matches!(bytes.get(3), Some(b'\n' | b'\r')) {
             return Some(Format::Ply);
@@ -126,9 +137,22 @@ impl Format {
         None
     }
 
+    /// The format to read a file as, given the format its extension names and
+    /// its contents: glTF content (GLB magic or glTF JSON) is read as glTF
+    /// whatever the extension, and a `.glb`/`.gltf` whose contents carry
+    /// another signature is read as that. Everything else keeps its
+    /// extension, so existing files read exactly as before.
+    pub fn refine(self, bytes: &[u8]) -> Format {
+        match Format::sniff(bytes) {
+            Some(Format::Gltf) => Format::Gltf,
+            Some(sniffed) if self == Format::Gltf => sniffed,
+            _ => self,
+        }
+    }
+
     /// Extensions [`read()`] accepts.
     pub fn extensions() -> &'static [&'static str] {
-        &["obj", "stl", "ply", "3mf", "xyz", "pts", "e57", "las"]
+        &["obj", "stl", "ply", "3mf", "xyz", "pts", "e57", "las", "glb", "gltf"]
     }
 
     /// Extensions [`write()`] accepts: [`Format::extensions`] without the
@@ -137,9 +161,9 @@ impl Format {
         &["obj", "stl", "ply", "3mf", "xyz", "pts"]
     }
 
-    /// Whether this format can be written (E57 and LAS are read only).
+    /// Whether this format can be written (E57, LAS and glTF are read only).
     pub fn can_write(self) -> bool {
-        !matches!(self, Format::E57 | Format::Las)
+        !matches!(self, Format::E57 | Format::Las | Format::Gltf)
     }
 }
 
@@ -165,13 +189,16 @@ impl FileUnit {
 
 #[derive(Debug, Clone)]
 pub struct ReadOptions {
-    /// Unit the file is in. 3MF declares its own unit and ignores this.
+    /// Unit the file is in. 3MF, E57, LAS and glTF declare their own unit and
+    /// ignore this.
     pub unit: FileUnit,
     /// Merge coincident vertices (STL stores each triangle separately).
     /// Applied to STL only; the other formats store shared vertices already.
     pub weld: bool,
     /// Weld tolerance in mm.
     pub weld_tolerance: f64,
+    /// glTF only: how the file's Y-up axes are mapped (default: turned Z-up).
+    pub gltf_axes: GltfAxes,
 }
 
 impl Default for ReadOptions {
@@ -180,6 +207,7 @@ impl Default for ReadOptions {
             unit: FileUnit::Millimetre,
             weld: true,
             weld_tolerance: 1e-6,
+            gltf_axes: GltfAxes::ZUp,
         }
     }
 }
@@ -237,12 +265,32 @@ pub fn read(path: &Path, opts: &ReadOptions) -> IoResult<Geometry> {
     let format =
         Format::from_path(path).ok_or_else(|| IoError::Unsupported(path.display().to_string()))?;
     let bytes = std::fs::read(path)?;
-    read_named(format, &bytes, opts, &path.display().to_string())
+    let format = format.refine(&bytes);
+    read_named(format, &bytes, opts, &path.display().to_string(), path.parent())
 }
 
-/// Read a file image held in memory.
+/// Read a file image held in memory. A `.gltf` whose buffers live in
+/// separate files needs [`read_bytes_in`] instead.
 pub fn read_bytes(format: Format, bytes: &[u8], opts: &ReadOptions) -> IoResult<Geometry> {
-    read_named(format, bytes, opts, "<memory>")
+    read_named(format, bytes, opts, "<memory>", None)
+}
+
+/// Like [`read_bytes`], resolving files a `.gltf` refers to against `dir`
+/// (the folder the file came from). Other formats ignore `dir`.
+pub fn read_bytes_in(format: Format, bytes: &[u8], opts: &ReadOptions, dir: &Path) -> IoResult<Geometry> {
+    read_named(format, bytes, opts, "<memory>", Some(dir))
+}
+
+/// A one-line statement of the source frame and axis mapping of a geometry
+/// read from glTF (from its `gltf_source_frame` / `gltf_axes` detail
+/// attributes), for a node report. `None` for every other geometry.
+pub fn gltf_frame_note(geo: &Geometry) -> Option<String> {
+    let first = |k: &str| geo.detail_attribs.strs(k).ok().and_then(|v| v.first().cloned());
+    first("gltf_source_frame")?;
+    Some(match first("gltf_axes").as_deref() {
+        Some("as_stored_y_up") => "glTF: source frame is Y up, right-handed, metres; converted to mm with the axes kept as stored, so up is +Y (not Vernon's +Z)".to_string(),
+        _ => "glTF: source frame is Y up, right-handed, metres; converted to mm and turned Z up by rotating +90 degrees about X, (x, y, z) -> (x, -z, y)".to_string(),
+    })
 }
 
 /// Read a LAS 1.2 to 1.4 file image held in memory, naming the unit of its
@@ -265,7 +313,13 @@ pub fn las_unit_was_assumed(geo: &Geometry) -> bool {
         .is_ok_and(|v| v.first().map(String::as_str) == Some(las::UNIT_ASSUMED_METRES))
 }
 
-fn read_named(format: Format, bytes: &[u8], opts: &ReadOptions, file: &str) -> IoResult<Geometry> {
+fn read_named(
+    format: Format,
+    bytes: &[u8],
+    opts: &ReadOptions,
+    file: &str,
+    dir: Option<&Path>,
+) -> IoResult<Geometry> {
     let geo = match format {
         Format::Obj => obj::read(bytes, file)?,
         Format::Stl => stl::read(bytes, file)?,
@@ -274,6 +328,7 @@ fn read_named(format: Format, bytes: &[u8], opts: &ReadOptions, file: &str) -> I
         Format::Xyz => xyz::read(bytes, file)?,
         Format::E57 => e57::read(bytes, file)?,
         Format::Las => las::read(bytes, file, None)?,
+        Format::Gltf => gltf::read(bytes, file, dir, opts.gltf_axes)?,
     };
     finish_read(geo, opts, format, file)
 }
@@ -281,8 +336,8 @@ fn read_named(format: Format, bytes: &[u8], opts: &ReadOptions, file: &str) -> I
 /// Unit conversion, finiteness check, optional STL weld and validation shared
 /// by every reader.
 fn finish_read(mut geo: Geometry, opts: &ReadOptions, format: Format, file: &str) -> IoResult<Geometry> {
-    // 3MF, E57 and LAS state their own unit and arrive in millimetres.
-    if !matches!(format, Format::ThreeMf | Format::E57 | Format::Las) {
+    // 3MF, E57, LAS and glTF state their own unit and arrive in millimetres.
+    if !matches!(format, Format::ThreeMf | Format::E57 | Format::Las | Format::Gltf) {
         let k = opts.unit.to_mm();
         if k != 1.0 {
             for p in &mut geo.points {
@@ -418,7 +473,7 @@ fn write_to<W: Write>(
         Format::Stl => stl::write(w, geo, scale, opts.ascii),
         Format::Ply => ply::write(w, geo, scale, opts.ascii),
         Format::Xyz => xyz::write(w, geo, scale, pts),
-        Format::E57 | Format::Las => {
+        Format::E57 | Format::Las | Format::Gltf => {
             ensure_writable_format(format)?;
             Ok(())
         }
