@@ -143,6 +143,122 @@ smoke settings) took 366 s. These figures are inference speed only. **There is n
 accuracy or speed-up-versus-OpenFOAM figure in this document, because none has
 been measured.**
 
+## More local models (added 2026-11-14)
+
+Three further nodes follow the same pattern (separate process, user-run
+install script, no download from a node, results cached by input hash). Each
+has its own short contract:
+
+| Node | Id | Model | Contract |
+|---|---|---|---|
+| AI Speech from Text | `geo.ai_text_to_speech` | Kokoro-82M (Apache-2.0) | [ai-local/speech-out.md](ai-local/speech-out.md) |
+| AI Text from Speech | `geo.ai_speech_to_text` | Whisper large-v3-turbo (MIT) | [ai-local/speech-in.md](ai-local/speech-in.md) |
+| AI Convergence Forecast | `cfd.ai_convergence_forecast` | Chronos-2 (Apache-2.0) | [ai-local/forecast.md](ai-local/forecast.md) |
+
+Checked on this PC on 2026-11-14 with the real models, single runs, each in a
+fresh work folder (`cargo test -p vernon-nodes-ai -- --ignored real_`):
+
+* Speech out: a 3.7 s, 24 kHz WAV; peak RAM 1.23 GB; CPU only.
+* Speech in: an 11 s public-domain clip transcribed with its expected words;
+  peak GPU 1.83 GB, peak RAM 2.55 GB.
+* Round trip: a 15-word, two-sentence text spoken by the first node and written
+  back by the second; 15 of 15 words matched.
+* Forecast: on a synthetic decaying series the median at step 200 was 1.023
+  times the true continuation; peak GPU 0.49 GB, peak RAM 1.42 GB.
+
+A second forecast check on 2026-11-20 used a completed steady-solver log:
+six residual fields, two fixed 200-iteration holdouts, and no active CFD run.
+Operational checks and an independent input/error check passed. The model
+beat a constant last-value baseline on 5 of 12 field/window comparisons;
+its nominal 80% band covered 78.1% of held-out values, with substantial
+variation between windows. This is not an accuracy qualification. Protocol,
+provenance and limits are in [the forecast spec](ai-local/forecast.md).
+
+The forecast is **advice only**. It is trained on general time series, not on
+CFD; a forecast is not evidence of convergence, and no acceptance gate reads
+it. The speech nodes work on files; there is no microphone button in the app
+yet. Only FLAC and WAV input were run through the speech-to-text node.
+
+### Second group (added 2026-11-15)
+
+| Node | Id | Model | Contract |
+|---|---|---|---|
+| AI Document Search | `geo.ai_document_search` | bge-m3 (MIT) | [ai-local/document-search.md](ai-local/document-search.md) |
+| AI Photo Cut-out | `capture.ai_photo_cutout` | SAM 2.1 hiera-large (Apache-2.0) | [ai-local/photo-cutout.md](ai-local/photo-cutout.md) |
+| AI Vision Check | `geo.ai_vision_check` | Qwen3-VL 4B (Apache-2.0) | [ai-local/vision-check.md](ai-local/vision-check.md) |
+
+Checked on this PC on 2026-11-15 with the real models, single runs, each in a
+fresh work folder:
+
+* Document search: over this folder (26 files, 968 passages), five of six topic
+  questions returned the expected file in the top three; the pass bar, set
+  before the run, was five. A question asking for one number inside a long
+  paragraph missed. Peak GPU 2.6 GB, peak RAM 3.4 GB; about 17 s per query, most
+  of it loading the model.
+* Photo cut-out: a drawn disc masked from one click overlapped the true disc by
+  99.4% (intersection over union). Peak GPU 1.25 GB, peak RAM 1.65 GB; 67 s for
+  the whole call. On 2026-11-20 it was run on 11 real pet photos with
+  hand-drawn outlines. On ten photos no mask pixels fell outside the outline's
+  outer edge; on the eleventh one pixel did. Treating the wide "unsure" band
+  entirely as background or pet gave median overlaps of 0.82 and 0.84,
+  respectively. These alternatives do not establish exact edge precision.
+* Vision check: on two drawn test pictures it counted three squares and named a
+  circle's colour. Peak GPU 8.35 GB, peak RAM 9.1 GB; model load took 124 s and
+  382 s from the weights drive, answers 2 s and 19 s. On 2026-11-20 it was run on
+  viewport renders of meshes with known defects and **failed** that bar (8 of 12
+  right). It caught a floating part, but missed a see-through hole and counted 4
+  legs on a 3-leg table. It never reported a defect on an intact mesh. It is not
+  a defect finder.
+
+The vision answer is labelled **"AI description: a hint, not a measurement"**
+and no acceptance gate reads it. Search scores are similarity, not proof that a
+passage is correct.
+
+### Third group (added 2026-11-16)
+
+| Node | Id | Model | Contract |
+|---|---|---|---|
+| AI Sketch from Words | `geo.ai_sketch_from_words` | FLUX.2-klein-4B (Apache-2.0) | [ai-local/sketch-from-words.md](ai-local/sketch-from-words.md) |
+| AI Print Watchdog | `print.ai_print_watchdog` | Qwen3-VL 4B (Apache-2.0), shared with the vision check | [ai-local/print-watchdog.md](ai-local/print-watchdog.md) |
+| AI Body Fit from Photo | `capture.ai_body_fit` | SAM 3D Body, DINOv3-H+ backbone (SAM License, **opt-in, not open source**) | [ai-local/body-fit.md](ai-local/body-fit.md) |
+
+Checked on this PC on 2026-11-16 with the real model, one run in a fresh work
+folder: a prompt for a red ball on a white background, 512 x 512, 4 steps. The
+picture's middle was red (R 245, G 16, B 24) and its corners white. Peak GPU
+7.8 GB, peak RAM 16.7 GB, with the model's parts moved to the GPU one at a time
+because 14.9 GB of weights don't fit beside other work on a 16 GB card. Loading
+took 110 s and drawing 228 s. The whole call took 2553 s because the
+environment's drive was saturated by other jobs; a quiet machine was not
+measured. One prompt only: picture quality on design prompts is not assessed.
+
+The picture is labelled **"AI picture: a concept sketch, not a design or a
+measurement"** and no acceptance gate reads it.
+
+The print watchdog takes the newest picture in a camera folder and asks the
+vision model whether the print looks failed. Checked on 2026-11-16 with the real
+model on drawn pictures and a stand-in question: it picked the newer of two
+pictures both times and turned a yes and a no into the right verdicts. Peak GPU
+8.3 GB, peak RAM 9.1 GB. On 2026-11-17 it was run on 20 photographs (10 failed
+prints, 10 good): the first question flagged 6 of 10 failures and 0 of 10 good
+ones; the reworded current question flagged 10 of 10 and 0 of 10, but it was
+reworded on those same photos, so that number is optimistic and no fresh photos
+were tried. It is labelled **"AI print
+check: a hint, not a measurement; it never stops a print"**, it does not talk
+to a printer, and no acceptance gate reads it.
+
+The body fit estimates a body surface and 70 key points from one photo of one
+person. It is **opt-in**: the model and its code are under Meta's SAM and
+DINOv3 licences (not open source; no military, weapons, nuclear or espionage
+use), the install script needs `--accept-licence`, and the node will not start
+the model until its licence box is ticked. Checked on 2026-11-17 with the real
+model on two photos of one person: the wrists were below the shoulders with the
+arms down and above the nose with the arms raised, and the model's own height
+guesses were 1783 mm and 2083 mm (raised hands included). Peak GPU 3.4 GB, peak
+RAM 5.0 GB, about 1.5 minutes per photo. It is a sanity check on two photos,
+not an accuracy test, and the side-on body came out too deep along the camera
+axis. It is labelled **"AI body estimate from one photo: a guess at shape and
+pose, not a measurement of the person"** and no acceptance gate reads it.
+
 ## Safety behaviour
 
 * Free GPU memory (`nvidia-smi`) and RAM in the model environment (`free -m`)

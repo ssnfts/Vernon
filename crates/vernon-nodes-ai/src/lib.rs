@@ -4,6 +4,15 @@
 //! * `ai.select_part` picks one generated part.
 //! * `ai.aero_preview` runs the DoMINO DrivAerML surface and volume surrogates (NVIDIA Open Model License).
 //! * `ai.aero_compare` compares two previews.
+//! * `ai.text_to_speech` speaks text into a WAV file (Kokoro-82M, Apache-2.0).
+//! * `ai.speech_to_text` writes a recording out as text (Whisper large-v3-turbo, MIT).
+//! * `ai.convergence_forecast` forecasts a number series as advice only (Chronos-2, Apache-2.0).
+//! * `ai.document_search` finds the passages in a folder of documents that match a question (bge-m3, MIT).
+//! * `ai.photo_cutout` masks one part in a photo from a click or a box (SAM 2.1, Apache-2.0).
+//! * `ai.vision_check` answers a question about a picture, as a hint only (Qwen3-VL 4B, Apache-2.0).
+//! * `ai.sketch_from_words` draws one concept picture from a prompt, to look at only (FLUX.2-klein-4B, Apache-2.0).
+//! * `ai.print_watchdog` asks the vision model whether the newest camera picture of a print looks failed, as a hint only.
+//! * `ai.body_fit` (opt-in, restrictive licence) estimates a body surface and key points from one photo of a person.
 //!
 //! Nothing here validates CFD. Every DoMINO output is labelled
 //! [`AERO_LABEL`], carries `cfd_validation = DEFERRED`, and uses `ai_`-prefixed
@@ -13,15 +22,26 @@ use glam::DVec3;
 use vernon_graph::Registry;
 
 pub mod aero;
+pub mod bodyfit;
 pub mod bridge;
 pub mod compare;
+pub mod cutout;
+pub mod docsearch;
+pub mod forecast;
 pub mod parts;
 pub mod prep;
+pub mod sketch;
+pub mod speak;
+pub mod transcribe;
+pub mod vision;
+pub mod watchdog;
+#[cfg(test)]
+mod roundtrip_tests;
 #[cfg(test)]
 mod tests;
 
 /// The label every DoMINO result carries.
-pub const AERO_LABEL: &str = "AI prediction — CFD validation pending";
+pub const AERO_LABEL: &str = "AI prediction â€” CFD validation pending";
 /// Status string stored in provenance next to the label.
 pub const CFD_VALIDATION: &str = "DEFERRED";
 
@@ -29,6 +49,15 @@ pub fn register(reg: &mut Registry) {
     parts::register(reg);
     aero::register(reg);
     compare::register(reg);
+    speak::register(reg);
+    transcribe::register(reg);
+    forecast::register(reg);
+    docsearch::register(reg);
+    cutout::register(reg);
+    vision::register(reg);
+    sketch::register(reg);
+    watchdog::register(reg);
+    bodyfit::register(reg);
 }
 
 /// Stable 64-bit FNV-1a hash, used to name artifact folders by their inputs.
